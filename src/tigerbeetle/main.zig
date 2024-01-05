@@ -105,20 +105,45 @@ const Command = struct {
     }
 
     pub fn format(allocator: mem.Allocator, options: SuperBlock.FormatOptions, path: [:0]const u8) !void {
-        var command: Command = undefined;
-        try command.init(allocator, path, true);
-        defer command.deinit(allocator);
+        // We're going to write to a temp file then rename it to the final location,
+        // so that if the formatting fails we aren't left with a broken db.
+        const tmp_ext_bytes = 10; // ".tmp." + 4 digits + nul
+        // fixme can i allocate a [:0]u6?
+        var tmp_path = try allocator.alloc(u8, path.len + tmp_ext_bytes);
+        defer allocator.free(tmp_path);
+        const rand_num = std.crypto.random.int(u16);
+        const tmp_path_slice = try std.fmt.bufPrintZ(tmp_path, "{s}.tmp.{x:0>4}", .{ path, rand_num });
+        assert(tmp_path.len == tmp_path_slice.len + 1);
 
-        var superblock = try SuperBlock.init(
-            allocator,
-            .{
-                .storage = &command.storage,
-                .storage_size_limit = data_file_size_min,
-            },
-        );
-        defer superblock.deinit(allocator);
+        // Best-effort check that the destination path doesn't exist before
+        // doing the work; avoid overwriting an existing db.
+        if (std.fs.cwd().statFile(path)) |_| {
+            return error.PathAlreadyExists;
+        } else |err| switch (err) {
+            error.FileNotFound => { }, // ok
+            else => return err,
+        }
 
-        try vsr.format(Storage, allocator, options, &command.storage, &superblock);
+        // Do the initialization.
+        {
+            var command: Command = undefined;
+            try command.init(allocator, tmp_path_slice, true);
+            defer command.deinit(allocator);
+
+            var superblock = try SuperBlock.init(
+                allocator,
+                .{
+                    .storage = &command.storage,
+                    .storage_size_limit = data_file_size_min,
+                },
+            );
+            defer superblock.deinit(allocator);
+
+            try vsr.format(Storage, allocator, options, &command.storage, &superblock);
+        }
+
+        // Rename db to final location.
+        try std.fs.cwd().renameZ(tmp_path_slice, path);
 
         log_main.info("{}: formatted: cluster={} replica_count={}", .{
             options.replica,
