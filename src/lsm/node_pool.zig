@@ -92,7 +92,7 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
         }
 
         pub fn release2(pool: *Self, node: Node2) void {
-            assert(node.len == node_size);
+            assert(node.len == pool.node_size2);
             pool.release(@ptrCast(node));
         }
     };
