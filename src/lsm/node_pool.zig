@@ -22,6 +22,7 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             assert(node_size % node_alignment == 0);
         }
 
+        node_size2: u32,
         buffer: []align(node_alignment) u8,
         free: std.bit_set.DynamicBitSetUnmanaged,
 
@@ -36,6 +37,7 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             errdefer free.deinit(allocator);
 
             return Self{
+                .node_size2 = node_size,
                 .buffer = buffer,
                 .free = free,
             };
@@ -54,19 +56,20 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             pool.free.setRangeValue(.{ .start = 0, .end = pool.free.capacity() }, true);
 
             pool.* = .{
+                .node_size2 = pool.node_size2,
                 .buffer = pool.buffer,
                 .free = pool.free,
             };
         }
 
-        fn acquire(pool: *Self) Node {
+        fn acquire(pool: *Self) Node2 {
             // TODO: To ensure this "unreachable" is never reached, the primary must reject
             // new requests when storage space is too low to fulfill them.
             const node_index = pool.free.findFirstSet() orelse unreachable;
             assert(pool.free.isSet(node_index));
             pool.free.unset(node_index);
 
-            const node = pool.buffer[node_index * node_size ..][0..node_size];
+            const node = pool.buffer[node_index * pool.node_size2 ..][0..pool.node_size2];
             return @alignCast(node);
         }
 
