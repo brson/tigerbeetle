@@ -77,15 +77,15 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             return pool.acquire();
         }
 
-        fn release(pool: *Self, node: Node) void {
+        fn release(pool: *Self, node: Node2) void {
             // Our pointer arithmetic assumes that the unit of node_size is a u8.
             comptime assert(meta.Elem(Node) == u8);
             comptime assert(meta.Elem(@TypeOf(pool.buffer)) == u8);
 
-            assert(@intFromPtr(node) >= @intFromPtr(pool.buffer.ptr));
-            assert(@intFromPtr(node) + node_size <= @intFromPtr(pool.buffer.ptr) + pool.buffer.len);
+            assert(@intFromPtr(&node[0]) >= @intFromPtr(pool.buffer.ptr));
+            assert(@intFromPtr(&node[0]) + node_size <= @intFromPtr(pool.buffer.ptr) + pool.buffer.len);
 
-            const node_offset = @intFromPtr(node) - @intFromPtr(pool.buffer.ptr);
+            const node_offset = @intFromPtr(&node[0]) - @intFromPtr(pool.buffer.ptr);
             const node_index = @divExact(node_offset, node_size);
             assert(!pool.free.isSet(node_index));
             pool.free.set(node_index);
