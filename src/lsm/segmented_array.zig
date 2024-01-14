@@ -150,7 +150,7 @@ fn SegmentedArrayType(
             if (options.verify) array.verify();
 
             for (array.nodes[0..array.node_count]) |node| {
-                node_pool.?.release2(
+                node_pool.?.release(
                     @alignCast(@as([*]u8, @ptrCast(node.?))[0..NodePool.node_size])
                 );
             }
@@ -432,7 +432,7 @@ fn SegmentedArrayType(
             );
 
             array.node_count += 1;
-            const node_pointer = node_pool.acquire2();
+            const node_pointer = node_pool.acquire();
             comptime {
                 // @ptrCast does not check that the size or alignment agree
                 assert(std.meta.alignment(@TypeOf(node_pointer)) >= @alignOf(T));
@@ -637,7 +637,7 @@ fn SegmentedArrayType(
             assert(node < array.node_count);
             assert(array.count(node) == 0);
 
-            node_pool.release2(
+            node_pool.release(
                 @alignCast(@as([*]u8, @ptrCast(array.nodes[node].?))[0..NodePool.node_size])
             );
 

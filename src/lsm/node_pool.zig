@@ -62,7 +62,7 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             };
         }
 
-        fn acquire(pool: *Self) Node2 {
+        pub fn acquire(pool: *Self) Node2 {
             // TODO: To ensure this "unreachable" is never reached, the primary must reject
             // new requests when storage space is too low to fulfill them.
             const node_index = pool.free.findFirstSet() orelse unreachable;
@@ -73,27 +73,21 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             return @alignCast(node);
         }
 
-        pub fn acquire2(pool: *Self) Node2 {
-            return pool.acquire();
-        }
-
-        fn release(pool: *Self, node: Node2) void {
+        pub fn release(pool: *Self, node: Node2) void {
             // Our pointer arithmetic assumes that the unit of node_size is a u8.
             comptime assert(meta.Elem(Node) == u8);
             comptime assert(meta.Elem(@TypeOf(pool.buffer)) == u8);
 
+            assert(node.len == pool.node_size2);
             assert(@intFromPtr(&node[0]) >= @intFromPtr(pool.buffer.ptr));
-            assert(@intFromPtr(&node[0]) + node_size <= @intFromPtr(pool.buffer.ptr) + pool.buffer.len);
+            assert(
+                @intFromPtr(&node[0]) + node_size <= @intFromPtr(pool.buffer.ptr) + pool.buffer.len
+            );
 
             const node_offset = @intFromPtr(&node[0]) - @intFromPtr(pool.buffer.ptr);
             const node_index = @divExact(node_offset, node_size);
             assert(!pool.free.isSet(node_index));
             pool.free.set(node_index);
-        }
-
-        pub fn release2(pool: *Self, node: Node2) void {
-            assert(node.len == pool.node_size2);
-            pool.release(@ptrCast(node));
         }
     };
 }
@@ -175,7 +169,7 @@ fn TestContext(comptime node_size: usize, comptime node_alignment: u12) type {
         fn acquire(context: *Self) !void {
             if (context.node_map.count() == context.node_count) return;
 
-            const node = context.node_pool.acquire2();
+            const node = context.node_pool.acquire();
 
             // Verify that this node has not already been acquired.
             for (mem.bytesAsSlice(u64, node)) |word| {
