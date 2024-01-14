@@ -150,7 +150,9 @@ fn SegmentedArrayType(
             if (options.verify) array.verify();
 
             for (array.nodes[0..array.node_count]) |node| {
-                node_pool.?.release(@ptrCast(@alignCast(node.?)));
+                node_pool.?.release2(
+                    @alignCast(@as([*]u8, @ptrCast(node.?))[0..NodePool.node_size])
+                );
             }
             allocator.free(array.nodes);
             allocator.free(array.indexes);
@@ -430,12 +432,14 @@ fn SegmentedArrayType(
             );
 
             array.node_count += 1;
-            const node_pointer = node_pool.acquire();
+            const node_pointer = node_pool.acquire2();
             comptime {
                 // @ptrCast does not check that the size or alignment agree
                 assert(std.meta.alignment(@TypeOf(node_pointer)) >= @alignOf(T));
-                assert(@sizeOf(@TypeOf(node_pointer.*)) >= @sizeOf([node_capacity]T));
+                //assert(@sizeOf(@TypeOf(node_pointer.*)) >= @sizeOf([node_capacity]T));
             }
+            assert(node_pointer.len >= @sizeOf([node_capacity]T));
+
             array.nodes[node] = @as(*[node_capacity]T, @ptrCast(node_pointer));
             assert(array.indexes[node] == array.indexes[node + 1]);
         }
@@ -633,7 +637,9 @@ fn SegmentedArrayType(
             assert(node < array.node_count);
             assert(array.count(node) == 0);
 
-            node_pool.release(@ptrCast(@alignCast(array.nodes[node].?)));
+            node_pool.release2(
+                @alignCast(@as([*]u8, @ptrCast(array.nodes[node].?))[0..NodePool.node_size])
+            );
 
             stdx.copy_left(
                 .exact,

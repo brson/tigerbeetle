@@ -11,6 +11,7 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
         pub const node_size = _node_size;
         pub const node_alignment = _node_alignment;
         pub const Node = *align(node_alignment) [node_size]u8;
+        pub const Node2 = []align(node_alignment) u8;
 
         comptime {
             assert(node_size > 0);
@@ -58,7 +59,7 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             };
         }
 
-        pub fn acquire(pool: *Self) Node {
+        fn acquire(pool: *Self) Node {
             // TODO: To ensure this "unreachable" is never reached, the primary must reject
             // new requests when storage space is too low to fulfill them.
             const node_index = pool.free.findFirstSet() orelse unreachable;
@@ -69,7 +70,11 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             return @alignCast(node);
         }
 
-        pub fn release(pool: *Self, node: Node) void {
+        pub fn acquire2(pool: *Self) Node2 {
+            return pool.acquire();
+        }
+
+        fn release(pool: *Self, node: Node) void {
             // Our pointer arithmetic assumes that the unit of node_size is a u8.
             comptime assert(meta.Elem(Node) == u8);
             comptime assert(meta.Elem(@TypeOf(pool.buffer)) == u8);
@@ -82,7 +87,16 @@ pub fn NodePool(comptime _node_size: u32, comptime _node_alignment: u13) type {
             assert(!pool.free.isSet(node_index));
             pool.free.set(node_index);
         }
+
+        pub fn release2(pool: *Self, node: Node2) void {
+            assert(node.len == node_size);
+            pool.release(@ptrCast(node));
+        }
     };
+}
+
+test "foo" {
+    std.testing.refAllDecls(NodePool(16, 16));
 }
 
 fn TestContext(comptime node_size: usize, comptime node_alignment: u12) type {
@@ -97,7 +111,7 @@ fn TestContext(comptime node_size: usize, comptime node_alignment: u12) type {
         node_count: u32,
         random: std.rand.Random,
         node_pool: TestPool,
-        node_map: std.AutoArrayHashMap(TestPool.Node, u64),
+        node_map: std.AutoArrayHashMap([*]align(TestPool.node_alignment) u8, u64),
         sentinel: u64,
 
         acquires: u64 = 0,
@@ -107,7 +121,9 @@ fn TestContext(comptime node_size: usize, comptime node_alignment: u12) type {
             var node_pool = try TestPool.init(testing.allocator, node_count);
             errdefer node_pool.deinit(testing.allocator);
 
-            var node_map = std.AutoArrayHashMap(TestPool.Node, u64).init(testing.allocator);
+            var node_map = std.AutoArrayHashMap(
+                [*]align(TestPool.node_alignment) u8, u64
+            ).init(testing.allocator);
             errdefer node_map.deinit();
 
             const sentinel = random.int(u64);
@@ -156,14 +172,17 @@ fn TestContext(comptime node_size: usize, comptime node_alignment: u12) type {
         fn acquire(context: *Self) !void {
             if (context.node_map.count() == context.node_count) return;
 
-            const node = context.node_pool.acquire();
+            const node = context.node_pool.acquire2();
 
             // Verify that this node has not already been acquired.
             for (mem.bytesAsSlice(u64, node)) |word| {
                 try testing.expectEqual(context.sentinel, word);
             }
 
-            const gop = try context.node_map.getOrPut(node);
+            const gop = try context.node_map.getOrPut(
+                @as([*]align(TestPool.node_alignment) u8,
+                    @ptrCast(node))
+            );
             try testing.expect(!gop.found_existing);
 
             // Write unique data into the node so we can test that it doesn't get overwritten.
@@ -178,7 +197,8 @@ fn TestContext(comptime node_size: usize, comptime node_alignment: u12) type {
             if (context.node_map.count() == 0) return;
 
             const index = context.random.uintLessThanBiased(usize, context.node_map.count());
-            const node = context.node_map.keys()[index];
+            const node_ = context.node_map.keys()[index];
+            const node = node_[0..TestPool.node_size];
             const id = context.node_map.values()[index];
 
             // Verify that the data of this node has not been overwritten since we acquired it.
