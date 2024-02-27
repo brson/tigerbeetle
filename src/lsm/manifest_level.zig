@@ -324,6 +324,29 @@ pub fn ManifestLevelType(
             key_max: Key, // Inclusive.
         };
 
+        pub fn iterator_from_index(
+            level: *const Self,
+            visibility: Visibility,
+            snapshots: []const u64,
+            direction: Direction,
+            index: u32,
+        ) Iterator {
+            for (snapshots) |snapshot| {
+                assert(snapshot <= lsm.snapshot_latest);
+            }
+
+            const inner = level.tables.iterator_from_index(index, direction);
+
+            return .{
+                .level = level,
+                .inner = inner,
+                .visibility = visibility,
+                .snapshots = snapshots,
+                .direction = direction,
+                .key_range = null,
+            };
+        }
+
         pub fn iterator(
             level: *const Self,
             visibility: Visibility,

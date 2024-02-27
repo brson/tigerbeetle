@@ -167,6 +167,10 @@ pub fn ManifestType(comptime Table: type, comptime Storage: type) type {
         const Grid = GridType(Storage);
         const Callback = *const fn (*Manifest) void;
 
+        const TableCoalesceWindow = struct {
+            tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor),
+        };
+
         const CompactionTableRange = struct {
             table_a: TableInfoReference,
             range_b: CompactionRange,
@@ -475,6 +479,280 @@ pub fn ManifestType(comptime Table: type, comptime Storage: type) type {
                 .key_exclusive = parameters.key_exclusive,
                 .direction = parameters.direction,
             });
+        }
+
+        /// Find a window of tables that can be coalesced,
+        /// and which will free up at least one empty table.
+        ///
+        /// This performs a bounded search of tables in the level,
+        /// limited by `lsm_manifest_coalesce_max_windows_to_search`.
+        /// The search begins at a pseudo-random index to avoid
+        /// repeatedly searching and coalescing the same space;
+        /// the prng must be seeded deterministically by the caller
+        /// with a number that changes each compaction and that is identical
+        /// on all replicas.
+        ///
+        /// todo this code might want to live in manifest_level.zig
+        pub fn find_table_coalesce_window(
+            manifest: *const Manifest,
+            level: u8,
+            prng_seed: u64,
+        ) ?TableCoalesceWindow {
+            assert(level < constants.lsm_levels);
+
+            const window_size = constants.lsm_growth_factor;
+            const manifest_level: *const Level = &manifest.levels[level];
+            const num_tables = manifest_level.tables.len();
+
+            // todo need a heuristic to decide level is too full and not worth searching at all
+
+            if (num_tables <= 1) {
+                return null;
+            }
+
+            std.log.debug("maybe coalescing {s}, level {}, {} tables", .{
+                manifest.config.name, level, num_tables,
+            });
+
+            {
+                const snapshots = [1]u64{snapshot_latest};
+                var it = manifest_level.iterator_from_index(
+                    .visible,
+                    &snapshots,
+                    .ascending,
+                    0,
+                );
+
+                while (it.next()) |table| {
+                    std.log.debug("value_count {}", .{ table.value_count });
+                }
+            }
+
+            if (num_tables < window_size) {
+                // This is a special case that can't use the WindowedIterator relied
+                // on by the main search function, but is probably worth supporting because
+                // level 0 will mostly be smaller than the window size.
+                return find_table_coalesce_window_small(manifest, level);
+            }
+
+            var timer = std.time.Timer.start() catch unreachable;
+
+            const num_windows = num_tables - window_size + 1;
+
+            // Pick an index to start searching from pseudo-randomly,
+            // but deterministically.
+            //
+            // todo joran prefers to use a hash here instead of prng,
+            // but hashes don't provide unbiased distributions.
+            var pcg = std.rand.Pcg.init(prng_seed);
+            var rng = pcg.random();
+            // todo could use uintLessThanBiased to be a little faster
+            const start_index = rng.uintLessThan(u32, num_windows);
+
+            const result = manifest.find_table_coalesce_window_from_index(
+                level, start_index
+            );
+
+            const ns = timer.read();
+
+            var found = false;
+            if (result) |_| {
+                found = true;
+            }
+
+            std.log.debug("num tables {}, ns {}, found {}", .{
+                num_tables, ns, found,
+            });
+
+            return result;
+        }
+
+        /// Find the table coalesce window, begining the search at a given index.
+        ///
+        /// The search may "wrap around" the end of the level and begin searching
+        /// again at the 0 index.
+        fn find_table_coalesce_window_from_index(
+            manifest: *const Manifest,
+            level: u8,
+            start_index: u32,
+        ) ?TableCoalesceWindow {
+            const max_windows_to_search = constants.lsm_manifest_coalesce_max_windows_to_search;
+            const window_size = constants.lsm_growth_factor;
+            const manifest_level: *const Level = &manifest.levels[level];
+            const num_tables = manifest_level.tables.len();
+            assert(num_tables >= window_size); // short levels are handled elsewhere
+
+            // NB: we calculate the number of windows based on the total
+            // number of tables, but during iteration we only visit _visible_
+            // tables.
+            // todo think about what this implies - we might need to instead bound
+            // the search by tables, not windows.
+
+            const num_windows = num_tables - window_size + 1;
+            assert(start_index < num_windows);
+
+            // If searching max_windows_to_search from start_index would hit the end of the tables,
+            // we may need to "loop around" and search again from index 0.
+            const may_search_twice = num_windows -| max_windows_to_search < start_index;
+            if (!may_search_twice) {
+                return manifest.find_table_coalesce_window_from_index_with_max(
+                    level, start_index, max_windows_to_search
+                );
+            } else {
+                const first_max_windows_to_search = num_windows - start_index;
+                const second_max_windows_to_search = @min(
+                    start_index,
+                    max_windows_to_search - first_max_windows_to_search,
+                );
+                const first_result = manifest.find_table_coalesce_window_from_index_with_max(
+                    level, start_index, first_max_windows_to_search
+                );
+                if (first_result) |window| {
+                    return window;
+                } else {
+                    return manifest.find_table_coalesce_window_from_index_with_max(
+                        level, 0, second_max_windows_to_search
+                    );
+                }
+            }
+        }
+
+        /// Find a table coalesce window, beginning the search at a given index,
+        /// and searching no more than a given number of windows.
+        ///
+        /// This function only searches through fixed sized windows of tables,
+        /// window size defined by `lsm_growth_factor`.
+        ///
+        /// Because it only searches fixed sized windows, there must be at least
+        /// one window of tables beginning at `start_index` for it to do any work.
+        ///
+        /// There is a special case of "short" windows at the tail end of each level,
+        /// where the window size must be less than `lsm_growth_factor`. This case
+        /// is not handled - for large levels it is assumed not worth the complexity.
+        ///
+        /// A second special case, where the entire level has fewer than `lsm_growth_factor`
+        /// tables, is handled by `find_table_coalesce_window_small`.
+        fn find_table_coalesce_window_from_index_with_max(
+            manifest: *const Manifest,
+            level: u8,
+            start_index: u32,
+            max_windows_to_search: usize,
+        ) ?TableCoalesceWindow {
+            const manifest_level: *const Level = &manifest.levels[level];
+
+            const snapshots = [1]u64{snapshot_latest};
+            var it = manifest_level.iterator_from_index(
+                .visible,
+                &snapshots,
+                .ascending,
+                start_index,
+            );
+            const window_size = constants.lsm_growth_factor;
+            const TableWindowsIterator = stdx.WindowedIteratorType(*const TreeTableInfo, Level.Iterator, window_size);
+            var wit = TableWindowsIterator.init(it);
+
+            var windows_searched: usize = 0;
+            while (wit.next()) |tables| {
+                if (tables[0].value_count == Table.value_count_max) {
+                    // The first table in this window is full;
+                    // move to the next window.
+                    continue;
+                }
+
+                // fixme weird pattern to coerce an array to slice
+                var zero: usize = 0;
+                _ = &zero;
+                const tables_slice: []const *const TreeTableInfo = tables[zero..tables.len];
+                const maybe_window_result = manifest.find_table_coalesce_window_slice(
+                    tables_slice, manifest_level
+                );
+                if (maybe_window_result) |window_result| {
+                    return window_result;
+                }
+
+                windows_searched += 1;
+
+                if (windows_searched == max_windows_to_search) {
+                    return null;
+                }
+            }
+
+            return null;
+        }
+
+        fn find_table_coalesce_window_small(
+            manifest: *const Manifest,
+            level: u8,
+        ) ?TableCoalesceWindow {
+            const manifest_level: *const Level = &manifest.levels[level];
+
+            const snapshots = [1]u64{snapshot_latest};
+            var it = manifest_level.iterator_from_index(
+                .visible,
+                &snapshots,
+                .ascending,
+                0,
+            );
+
+            const max_window_size = constants.lsm_growth_factor - 1;
+            var window: [max_window_size]*const TreeTableInfo = undefined;
+            var index: usize = 0;
+            while (it.next()) |table| {
+                if (table.value_count == Table.value_count_max) {
+                    // Ignore full tables at the beginning of the window.
+                    continue;
+                }
+                window[index] = table;
+                index += 1;
+            }
+
+            const window_slice = window[0..index];
+
+            return manifest.find_table_coalesce_window_slice(
+                window_slice, manifest_level,
+            );
+        }
+
+        fn find_table_coalesce_window_slice(
+            manifest: *const Manifest,
+            tables: []const *const TreeTableInfo,
+            manifest_level: *const Level,
+        ) ?TableCoalesceWindow {
+            _ = manifest;
+
+            const max_window_size = constants.lsm_growth_factor;
+            assert(tables.len <= max_window_size);
+
+            var table_count: u8 = 0;
+            var value_count_sum: u64 = 0;
+
+            for (tables) |table| {
+                value_count_sum += @as(u64, @intCast(table.value_count));
+                table_count += 1;
+
+                const max_values = table_count * Table.value_count_max;
+                assert(value_count_sum <= max_values);
+                const free_value_slots = max_values - value_count_sum;
+                const can_free_table = free_value_slots >= Table.value_count_max;
+                if (can_free_table) {
+                    std.log.debug("can free table {} >= {}, from {} tables", .{
+                        free_value_slots, Table.value_count_max, table_count,
+                    });
+                    var tables_result = TableCoalesceWindow {
+                        .tables = .{},
+                    };
+                    for (tables[0..table_count]) |table_| {
+                        var table_reference = TableInfoReference {
+                            .table_info = @constCast(table_), // todo suspicious...
+                            .generation = manifest_level.generation,
+                        };
+                        tables_result.tables.append_assume_capacity(table_reference);
+                    }
+                    return tables_result;
+                }
+            }
+
+            return null;
         }
 
         /// Returns the most optimal table from a level that is due for compaction.
