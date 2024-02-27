@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 pub const BoundedArray = @import("./stdx/bounded_array.zig").BoundedArray;
+pub const WindowedIteratorType = @import("./stdx/windowed_iterator.zig").WindowedIteratorType;
 
 pub inline fn div_ceil(numerator: anytype, denominator: anytype) @TypeOf(numerator, denominator) {
     comptime {
