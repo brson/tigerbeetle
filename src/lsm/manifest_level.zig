@@ -14,6 +14,9 @@ const Direction = @import("../direction.zig").Direction;
 const SegmentedArray = @import("segmented_array.zig").SegmentedArray;
 const SortedSegmentedArray = @import("segmented_array.zig").SortedSegmentedArray;
 
+const max_coalesce_window_size = constants.lsm_growth_factor;
+const max_coalesce_tables_to_search = constants.lsm_manifest_coalesce_max_tables_to_search;
+
 pub fn ManifestLevelType(
     comptime NodePool: type,
     comptime Key: type,
@@ -729,6 +732,257 @@ pub fn ManifestLevelType(
 
             return range;
         }
+
+        const TableCoalesceWindow = struct {
+            tables: stdx.BoundedArray(TableInfoReference, max_coalesce_window_size),
+        };
+
+        const TableCoalesceWindowCandidate = struct {
+            tables: stdx.BoundedArray(*const TableInfo, max_coalesce_window_size),
+            total_values: u64,
+        };
+
+        pub fn find_table_coalesce_window(
+            level: *const Self,
+            prng_seed: u64,
+        ) ?TableCoalesceWindow {
+            const num_tables = level.tables.len();
+
+            // {
+            //     var it = level.tables.iterator_from_index(0, .ascending);
+            //     while (it.next()) |table| {
+            //         std.log.info("{}", .{ table.value_count });
+            //     }
+            // }
+
+            // todo need a heuristic to decide level is too full and not worth searching at all
+
+            if (num_tables <= 1) {
+                return null;
+            }
+
+            if (num_tables <= max_coalesce_tables_to_search) {
+                return level.find_table_coalesce_window_from_index(0);
+            } else {
+                var pcg = std.rand.Pcg.init(prng_seed);
+                var rng = pcg.random();
+
+                const max_start_table = num_tables - max_coalesce_tables_to_search;
+                const max_start_table_exclusive = max_start_table + 1;
+                const start_index = rng.uintLessThan(u32, max_start_table_exclusive);
+                return level.find_table_coalesce_window_from_index(start_index);
+            }
+        }
+
+        fn find_table_coalesce_window_from_index(
+            level: *const Self,
+            start_index: u32,
+        ) ?TableCoalesceWindow {
+            var table_iter = CoalesceTableIterator.from_index(&level.tables, start_index);
+            var best_candidate: ?TableCoalesceWindowCandidate = null;
+
+            while (table_iter.next()) |window_iter| {
+                const next_candidate = level.next_coalesce_window_candidate(
+                    window_iter,
+                );
+                if (next_candidate) |nc| {
+                    std.log.info("candidate {} / tables {}", .{ nc.total_values, nc.tables.count(), });
+                }
+                best_candidate = level.choose_coalesce_window_candidate(
+                    best_candidate, next_candidate,
+                );
+            }
+
+            if (best_candidate) |best_candidate_| {
+                std.log.info("best candidate {} / tables {}", .{ best_candidate_.total_values, best_candidate_.tables.count(), });
+                var result = TableCoalesceWindow {
+                    .tables = .{},
+                };
+                for (best_candidate_.tables.const_slice()) |table| {
+                    var table_reference = TableInfoReference {
+                        .table_info = @constCast(table), // todo suspicious...
+                        .generation = level.generation,
+                    };
+                    result.tables.append_assume_capacity(table_reference);
+                }
+                return result;
+            } else {
+                return null;
+            }
+        }
+
+        fn next_coalesce_window_candidate(
+            level: *const Self,
+            window_iter: CoalesceWindowIterator,
+        ) ?TableCoalesceWindowCandidate {
+            _ = level;
+            // fixme how to avoid this?
+            var window_iter_mut = window_iter;
+            var tables: stdx.BoundedArray(*const TableInfo, max_coalesce_window_size) = .{};
+            var value_count_sum: u64 = 0;
+
+            while (window_iter_mut.next()) |table| {
+                if (tables.count() == 0 and table.value_count == TableInfo.value_count_max) {
+                    return null;
+                }
+
+                tables.append_assume_capacity(table);
+                value_count_sum += table.value_count;
+
+                const max_values = tables.count() * TableInfo.value_count_max;
+                assert(value_count_sum <= max_values);
+                const free_value_slots = max_values - value_count_sum;
+                const can_free_table = free_value_slots >= TableInfo.value_count_max;
+
+                if (can_free_table) {
+                    return TableCoalesceWindowCandidate {
+                        .tables = tables,
+                        .total_values = value_count_sum,
+                    };
+                }
+            }
+
+            return null;
+        }
+
+        fn choose_coalesce_window_candidate(
+            level: *const Self,
+            candidate_a: ?TableCoalesceWindowCandidate,
+            candidate_b: ?TableCoalesceWindowCandidate,
+        ) ?TableCoalesceWindowCandidate {
+            _ = level;
+            if (candidate_a) |candidate_a_| {
+                if (candidate_b) |candidate_b_| {
+                    // todo should we care about the table count?
+                    if (candidate_a_.total_values < candidate_b_.total_values) {
+                        return candidate_a_;
+                    } else {
+                        return candidate_b_;
+                    }
+                } else {
+                    return candidate_a_;
+                }
+            } else {
+                return candidate_b;
+            }
+        }
+
+        const CoalesceTableIterator = struct {
+            inner: Tables.Iterator,
+            buffer: stdx.BoundedArray(*const TableInfo, max_coalesce_window_size),
+            double_buffer: stdx.BoundedArray(*const TableInfo, max_coalesce_window_size),
+            tables_visited: u32,
+            end_of_iter: bool,
+
+            pub fn from_index(tables: *const Tables, start_index: u32) CoalesceTableIterator {
+                return CoalesceTableIterator {
+                    .inner = tables.iterator_from_index(start_index, .ascending),
+                    .buffer = .{},
+                    .double_buffer = .{},
+                    .tables_visited = 0,
+                    .end_of_iter = false,
+                };
+            }
+
+            pub fn next(it: *CoalesceTableIterator) ?CoalesceWindowIterator {
+                assert(it.tables_visited <= max_coalesce_tables_to_search);
+                if (it.tables_visited == max_coalesce_tables_to_search) {
+                    return null;
+                }
+
+                if (it.end_of_iter) {
+                    return null;
+                }
+
+                it.prepare_buffer();
+
+                return CoalesceWindowIterator {
+                    .parent = it,
+                    .window_size = 0,
+                };
+            }
+
+
+            fn pop_buffer_queue(it: *CoalesceTableIterator) ?*const TableInfo {
+                if (it.buffer.empty()) {
+                    return null;
+                }
+
+                const retval = it.buffer.get(0);
+
+                var index: usize = 0;
+                while (index < it.buffer.count() - 1) {
+                    it.buffer.slice()[index] = it.buffer.get(index + 1);
+                    index += 1;
+                }
+
+                it.buffer.truncate(it.buffer.count() - 1);
+
+                return retval;
+            }
+
+            fn push_double_buffer_queue(it: *CoalesceTableIterator, t: *const TableInfo) void {
+                assert(it.double_buffer.count() < max_coalesce_window_size);
+                it.double_buffer.append_assume_capacity(t);
+            }
+
+            fn prepare_buffer(it: *CoalesceTableIterator) void {
+                assert(it.buffer.count() + it.double_buffer.count() <= max_coalesce_window_size);
+                if (!it.double_buffer.empty()) {
+                    while (it.pop_buffer_queue()) |table| {
+                        it.push_double_buffer_queue(table);
+                    }
+                    std.mem.swap(
+                        stdx.BoundedArray(*const TableInfo, max_coalesce_window_size),
+                        &it.buffer,
+                        &it.double_buffer,
+                    );
+                }
+            }
+        };
+
+        const CoalesceWindowIterator = struct {
+            parent: *CoalesceTableIterator,
+            window_size: u32,
+
+            pub fn next(it: *CoalesceWindowIterator) ?*const TableInfo {
+                assert(it.parent.tables_visited <= max_coalesce_tables_to_search);
+                if (it.parent.tables_visited == max_coalesce_tables_to_search) {
+                    return null;
+                }
+
+                assert(it.window_size <= max_coalesce_window_size);
+                if (it.window_size == max_coalesce_window_size) {
+                    return null;
+                }
+
+                if (it.parent.pop_buffer_queue()) |table| {
+                    // Save every table after the first for the next iterator
+                    if (it.window_size != 0) {
+                        it.parent.push_double_buffer_queue(table);
+                    }
+                    it.window_size += 1;
+                    return table;
+                } else {
+                    while (it.parent.inner.next()) |table| {
+                        it.parent.tables_visited += 1;
+
+                        if (table.visible(lsm.snapshot_latest)) {
+                            it.window_size += 1;
+                            it.parent.push_double_buffer_queue(table);
+                            return table;
+                        }
+
+                        if (it.parent.tables_visited == max_coalesce_tables_to_search) {
+                            return null;
+                        }
+                    }
+
+                    it.parent.end_of_iter = true;
+                    return null;
+                }
+            }
+        };
     };
 }
 

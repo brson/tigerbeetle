@@ -753,6 +753,47 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             });
         }
 
+        fn maybe_coalesce(tree: *Tree, op_min: u64, context: CompactionTableContext) bool {
+            if (!std.mem.eql(u8, tree.config.name, "tigerbeetle.Account")) {
+                return false;
+            }
+
+            if (tree.manifest.levels[context.level_a].tables.len() > 0) {
+                std.log.info("looking for coalesce window in {s}, level {}, tables {}", .{
+                    tree.config.name, context.level_a,
+                    tree.manifest.levels[context.level_a].tables.len(),
+                });
+            }
+            const prng_seed = tree.compaction_op.?;
+            const level = tree.manifest.levels[context.level_a];
+            const tables = level.find_table_coalesce_window(
+                prng_seed,
+            ) orelse return false;
+
+            std.log.info("starting coalesce", .{});
+
+            assert(tables.tables.count() >= 1);
+
+            const range_a = Manifest.CompactionRange {
+                .key_min = tables.tables.get(0).table_info.key_min,
+                .key_max = tables.tables.get(tables.tables.count() - 1).table_info.key_max,
+                .tables = tables.tables,
+            };
+
+            tree.compaction_io_pending += 1;
+            context.compaction.start(.{
+                .grid = tree.grid,
+                .tree = tree,
+                .op_min = op_min,
+                .table_info_a = .{ .immutable = &[_]Table.Value{} },
+                .level_b = context.level_a,
+                .range_b = range_a,
+                .callback = compact_table_finish,
+            });
+
+            return true;
+        }
+
         fn compact_start_table(tree: *Tree, op_min: u64, context: CompactionTableContext) void {
             const compaction_beat = tree.compaction_op.? % half_bar_beat_count;
             assert(compaction_beat == 0);
@@ -760,6 +801,10 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             assert(context.level_a < constants.lsm_levels);
             assert(context.level_b < constants.lsm_levels);
             assert(context.level_a + 1 == context.level_b);
+
+            if (tree.maybe_coalesce(op_min, context)) {
+                return;
+            }
 
             // Do not start compaction if level A does not require compaction.
             const table_range = tree.manifest.compaction_table(context.level_a) orelse return;
