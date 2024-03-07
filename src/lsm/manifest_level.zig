@@ -968,8 +968,10 @@ pub fn ManifestLevelType(
                         it.parent.tables_visited += 1;
 
                         if (table.visible(lsm.snapshot_latest)) {
+                            if (it.window_size != 0) {
+                                it.parent.push_double_buffer_queue(table);
+                            }
                             it.window_size += 1;
-                            it.parent.push_double_buffer_queue(table);
                             return table;
                         }
 
