@@ -748,12 +748,14 @@ pub fn ManifestLevelType(
         ) ?TableCoalesceWindow {
             const num_tables = level.tables.len();
 
-            // {
-            //     var it = level.tables.iterator_from_index(0, .ascending);
-            //     while (it.next()) |table| {
-            //         std.log.info("{}", .{ table.value_count });
-            //     }
-            // }
+            {
+                var it = level.tables.iterator_from_index(0, .ascending);
+                while (it.next()) |table| {
+                    if (table.visible(lsm.snapshot_latest)) {
+                        std.log.info("{}", .{ table.value_count });
+                    }
+                }
+            }
 
             // todo need a heuristic to decide level is too full and not worth searching at all
 
