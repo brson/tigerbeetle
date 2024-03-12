@@ -754,7 +754,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
         }
 
         fn maybe_coalesce(tree: *Tree, op_min: u64, context: CompactionTableContext) bool {
-            if (!std.mem.eql(u8, tree.config.name, "tigerbeetle.Account")) {
+            if (!std.mem.eql(u8, tree.config.name, "tigerbeetle.Account.code")) {
                 return false;
             }
 
@@ -770,7 +770,9 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
                 prng_seed,
             ) orelse return false;
 
-            std.log.info("starting coalesce", .{});
+            std.log.info("starting coalesce for level {}", .{
+                context.level_a,
+            });
 
             assert(tables.tables.count() >= 1);
 
@@ -788,10 +790,22 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
                 .table_info_a = .{ .immutable = &[_]Table.Value{} },
                 .level_b = context.level_a,
                 .range_b = range_a,
-                .callback = compact_table_finish,
+                .callback = coalesce_table_finish,
             });
 
             return true;
+        }
+
+        fn coalesce_table_finish(compaction: *Compaction) void {
+            const tree = compaction.context.tree;
+            log.info("{s}: coalesced {d} tables in level {d}", .{
+                tree.config.name,
+                compaction.context.range_b.tables.count(),
+                compaction.context.level_b,
+            });
+
+            tree.compaction_io_pending -= 1;
+            tree.compact_finish_join();
         }
 
         fn compact_start_table(tree: *Tree, op_min: u64, context: CompactionTableContext) void {
