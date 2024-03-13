@@ -223,9 +223,17 @@ const Benchmark = struct {
         // Reset batch.
         b.batch_accounts.clearRetainingCapacity();
 
+        const account_count_this_batch = actb: {
+            var pcg = std.rand.Pcg.init(@as(u64, @intCast(b.account_index)));
+            var rng = pcg.random();
+            break :actb rng.uintLessThan(u32, account_count_per_batch) + 1;
+            //_ = rng;
+            //break :actb account_count_per_batch;
+        };
+
         // Fill batch.
         while (b.account_index < b.account_count and
-            b.batch_accounts.items.len < account_count_per_batch)
+            b.batch_accounts.items.len < account_count_this_batch)
         {
             b.batch_accounts.appendAssumeCapacity(.{
                 .id = b.account_id_permutation.encode(b.account_index + 1),
@@ -291,9 +299,17 @@ const Benchmark = struct {
         while (b.transfer_next_arrival_ns >= b.timer.read()) {}
         b.batch_start_ns = b.timer.read();
 
+        const transfer_count_this_batch = tctb: {
+            var pcg = std.rand.Pcg.init(@as(u64, @intCast(b.transfer_index)));
+            var rng = pcg.random();
+            break :tctb rng.uintLessThan(u32, transfer_count_per_batch) + 1;
+            //_ = rng;
+            //break :tctb transfer_count_per_batch;
+        };
+
         // Fill batch.
         while (b.transfer_index < b.transfer_count and
-            b.batch_transfers.items.len < transfer_count_per_batch and
+            b.batch_transfers.items.len < transfer_count_this_batch and
             b.transfer_next_arrival_ns < b.batch_start_ns)
         {
             const debit_account_index = random.uintLessThan(u64, b.account_count);
