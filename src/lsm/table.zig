@@ -128,6 +128,15 @@ pub fn TableType(
             };
         };
 
+        pub const value_count_max_actual = vcma: {
+            const block_value_count_max = @divFloor(
+                block_body_size,
+                value_size,
+            );
+
+            break :vcma block_value_count_max * layout.data_block_count_max;
+        };
+
         const index_block_count = 1;
         pub const data_block_count_max = layout.data_block_count_max;
         pub const block_count_max = index_block_count + data_block_count_max;

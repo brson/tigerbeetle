@@ -28,6 +28,7 @@ pub fn TreeTableInfoType(comptime Table: type) type {
         const TreeTableInfo = @This();
 
         const value_count_max = Table.value_count_max;
+        const value_count_max_actual = Table.value_count_max_actual;
 
         /// Checksum of the table's index block.
         checksum: u128,
@@ -445,9 +446,11 @@ pub fn ManifestType(comptime Table: type, comptime Storage: type) type {
                 var iter = manifest_level.tables.iterator_from_index(0, .ascending);
                 while (iter.next()) |table| {
                     if (table.value_count > TreeTableInfo.value_count_max) {
-                        std.log.info("big table {s} {} {}", .{
+                    //if (table.value_count == TreeTableInfo.value_count_max_actual) {
+                        std.log.info("big table {s} {} {} {}", .{
                             manifest.config.name,
                             table.value_count,
+                            TreeTableInfo.value_count_max_actual,
                             TreeTableInfo.value_count_max,
                         });
                         //assert(table.value_count <= TreeTableInfo.value_count_max);
