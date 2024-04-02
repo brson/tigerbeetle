@@ -80,6 +80,7 @@ pub const CompactionInfo = struct {
     /// Are we doing a move_table? In which case, certain things like grid reservation
     /// must be skipped by the caller.
     move_table: bool,
+    coalesce: bool,
 
     tree_id: u16,
     level_b: u8,
@@ -305,6 +306,7 @@ pub fn CompactionType(
             /// Specifically, this field is set to True if the optimal compaction
             /// table in level A can simply be moved to level B.
             move_table: bool,
+            coalesce: bool,
 
             table_info_a: TableInfoA,
             range_b: CompactionRange,
@@ -553,12 +555,79 @@ pub fn CompactionType(
             assert(compaction.beat == null);
         }
 
+        pub fn maybe_coalesce(compaction: *Compaction, tree: *Tree, op: u64) ?CompactionInfo {
+            //if (compaction.level_b == 0) {
+            //    return null;
+            //}
+
+            //const level = compaction.level_b - 1;
+            const level = compaction.level_b;
+
+            if (tree.manifest.levels[level].tables.len() > 0) {
+                std.log.info("looking for coalesce window in {s}, level {}, tables {}", .{
+                    tree.config.name, level,
+                    tree.manifest.levels[level].tables.len(),
+                });
+            }
+
+            const prng_seed = tree.compaction_op.?;
+            const manifest_level = tree.manifest.levels[level];
+            const tables = manifest_level.find_table_coalesce_window(
+                prng_seed,
+            ) orelse return null;
+
+            const range_b = Manifest.CompactionRange {
+                .key_min = tables.tables.get(0).table_info.key_min,
+                .key_max = tables.tables.get(tables.tables.count() - 1).table_info.key_max,
+                .tables = tables.tables,
+            };
+
+            var compaction_tables_value_count: usize = 0;
+            for (range_b.tables.const_slice()) |*table| {
+                compaction_tables_value_count += table.table_info.value_count;
+            }
+
+            compaction.bar = .{
+                .tree = tree,
+                .op_min = compaction_op_min(op),
+
+                .move_table = false,
+                .coalesce = true,
+                .table_info_a = .{ .immutable = &[_]Table.Value{} },
+                .range_b = range_b,
+                .drop_tombstones = false,
+
+                .compaction_tables_value_count = compaction_tables_value_count,
+
+                .target_index_blocks = null,
+                .beats_max = null,
+            };
+
+            // The last level must always drop tombstones.
+            assert(compaction.bar.?.drop_tombstones or
+                level < constants.lsm_levels - 1);
+
+            return .{
+                .compaction_tables_value_count = compaction_tables_value_count,
+                .target_key_min = compaction.bar.?.range_b.key_min,
+                .target_key_max = compaction.bar.?.range_b.key_max,
+                .move_table = compaction.bar.?.move_table,
+                .coalesce = true,
+                .tree_id = tree.config.id,
+                .level_b = level,
+            };
+        }
+
         /// Perform the bar-wise setup, and returns the compaction work that needs to be done for
         /// scheduling decisions. Returns null if there's no compaction work, or if move_table
         /// is happening (since it only touches the manifest).
         pub fn bar_setup(compaction: *Compaction, tree: *Tree, op: u64) ?CompactionInfo {
             assert(compaction.bar == null);
             assert(compaction.beat == null);
+
+            //if (compaction.maybe_coalesce(tree, op)) |compaction_info| {
+            //    return compaction_info;
+            //}
 
             // level_b 0 is special; unlike all the others which have level_a on disk, level 0's
             // level_a comes from the immutable table. This means that blip_read will be a partial,
@@ -602,6 +671,7 @@ pub fn CompactionType(
                     .op_min = compaction_op_min(op),
 
                     .move_table = false,
+                    .coalesce = false,
                     .table_info_a = .{ .immutable = tree.table_immutable.values_used() },
                     .range_b = range_b,
                     .drop_tombstones = tree.manifest.compaction_must_drop_tombstones(
@@ -645,6 +715,7 @@ pub fn CompactionType(
                     .op_min = compaction_op_min(op),
 
                     .move_table = range_b.tables.empty(),
+                    .coalesce = false,
                     .table_info_a = .{ .disk = table_range.table_a },
                     .range_b = range_b,
                     .drop_tombstones = tree.manifest.compaction_must_drop_tombstones(
@@ -695,6 +766,7 @@ pub fn CompactionType(
                 .target_key_min = compaction.bar.?.range_b.key_min,
                 .target_key_max = compaction.bar.?.range_b.key_max,
                 .move_table = compaction.bar.?.move_table,
+                .coalesce = false,
                 .tree_id = tree.config.id,
                 .level_b = compaction.level_b,
             };
@@ -1364,6 +1436,8 @@ pub fn CompactionType(
                             filled,
                             bar.source_a_values_consumed_for_fill,
                         });
+                    } else {
+                        bar.source_a_immutable_values = &[_]Table.Value{};
                     }
                 }
 
@@ -1957,7 +2031,7 @@ pub fn CompactionType(
                 // references to modify the ManifestLevel in-place.
                 switch (bar.table_info_a) {
                     .immutable => {
-                        if (bar.table_info_a.immutable.len == 0) {
+                        if (bar.table_info_a.immutable.len == 0 and !bar.coalesce) {
                             manifest_removed_value_count = bar.tree.table_immutable.count();
                         }
                     },
