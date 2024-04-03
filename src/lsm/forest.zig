@@ -456,9 +456,6 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             // that is requested.
             if (last_beat or last_half_beat) {
                 for (forest.compaction_pipeline.compactions.slice()) |*compaction| {
-                    if (compaction.level_b % 2 == 0 and last_half_beat) continue;
-                    if (compaction.level_b % 2 != 0 and last_beat) continue;
-
                     assert(forest.manifest_log_progress == .compacting or
                         forest.manifest_log_progress == .done);
                     switch (tree_id_cast(compaction.tree_id)) {
@@ -492,7 +489,9 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                     // Ensure tables haven't overflowed.
                     tree.manifest.assert_level_table_counts();
                 }
+            }
 
+            if (last_beat or last_half_beat) {
                 // While we're here, check that all compactions have finished by the last beat, and
                 // reset our pipeline state.
                 assert(forest.compaction_pipeline.bar_active.count() == 0);
@@ -981,7 +980,7 @@ fn CompactionPipelineType(comptime Forest: type, comptime Grid: type) type {
             if ((first_beat or half_beat) and
                 !forest.grid.superblock.working.vsr_state.op_compacted(op))
             {
-                if (first_beat)
+                if (first_beat or half_beat)
                     assert(self.compactions.count() == 0);
 
                 // Iterate by levels first, then trees, as we expect similar levels to have similar
@@ -1019,8 +1018,6 @@ fn CompactionPipelineType(comptime Forest: type, comptime Grid: type) type {
                     self.bar_active = CompactionBitset.initEmpty();
 
                 for (self.compactions.slice(), 0..) |*compaction, i| {
-                    if (compaction.level_b % 2 == 0 and first_beat) continue;
-                    if (compaction.level_b % 2 != 0 and half_beat) continue;
                     if (compaction.move_table) continue;
 
                     assert(
