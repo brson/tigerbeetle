@@ -1412,7 +1412,7 @@ pub fn CompactionType(
                 // Immutable table can never .need_read, since all its values come from memory.
                 assert(bar.source_a_immutable_block != null);
                 stdx.maybe(bar.source_a_immutable_values == null);
-                assert(compaction.level_b == 0);
+                assert(compaction.level_b == 0 or bar.coalesce);
 
                 // If our immutable values 'block' is empty, refill it from its iterator.
                 // TODO: Cleanup the logic here!
