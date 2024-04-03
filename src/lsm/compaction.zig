@@ -564,7 +564,7 @@ pub fn CompactionType(
             const level = compaction.level_b;
 
             if (tree.manifest.levels[level].tables.len() > 0) {
-                std.log.info("looking for coalesce window in {s}, level {}, tables {}", .{
+                std.log.debug("looking for coalesce window in {s}, level {}, tables {}", .{
                     tree.config.name, level,
                     tree.manifest.levels[level].tables.len(),
                 });

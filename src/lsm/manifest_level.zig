@@ -766,7 +766,7 @@ pub fn ManifestLevelType(
                 var it = level.tables.iterator_from_index(0, .ascending);
                 while (it.next()) |table| {
                     if (table.visible(lsm.snapshot_latest)) {
-                        std.log.info("{}", .{ table.value_count });
+                        std.log.debug("{}", .{ table.value_count });
                     }
                 }
             }
@@ -812,7 +812,7 @@ pub fn ManifestLevelType(
                     window_iter,
                 );
                 if (next_candidate) |nc| {
-                    std.log.info("candidate {} / tables {}", .{ nc.total_values, nc.tables.count(), });
+                    std.log.debug("candidate {} / tables {}", .{ nc.total_values, nc.tables.count(), });
                 }
                 best_candidate = level.choose_coalesce_window_candidate(
                     best_candidate, next_candidate,
@@ -820,7 +820,7 @@ pub fn ManifestLevelType(
             }
 
             if (best_candidate) |best_candidate_| {
-                std.log.info("best candidate {} / tables {}", .{ best_candidate_.total_values, best_candidate_.tables.count(), });
+                std.log.debug("best candidate {} / tables {}", .{ best_candidate_.total_values, best_candidate_.tables.count(), });
                 var result = TableCoalesceWindow {
                     .tables = .{},
                 };
