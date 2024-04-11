@@ -7,7 +7,7 @@ const Time = @import("time.zig").Time;
 const IO = @import("io.zig").IO;
 
 const Config = struct {
-    iodepth: u64 = 16,
+    iodepth: u64 = 128,
     block_size: u64 = 256 * 1024,
     file_size: u64 = 1024 * 1024 * 1024,
     runtime_secs: u64 = 1,
