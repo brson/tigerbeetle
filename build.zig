@@ -199,6 +199,29 @@ pub fn build(b: *std.Build) !void {
         run_step.dependOn(&run_cmd.step);
     }
 
+    {
+        const fio = b.addExecutable(.{
+            .name = "fio",
+            .root_source_file = .{ .path = "src/fio.zig" },
+            .target = target,
+            .optimize = mode,
+        });
+        fio.addOptions("vsr_options", options);
+        link_tracer_backend(fio, git_clone_tracy, tracer_backend, target);
+
+        const run_cmd = b.addRunArtifact(fio);
+        if (b.args) |args| run_cmd.addArgs(args);
+
+        const move_cmd = b.addInstallBinFile(
+            fio.getOutputSource(),
+            b.pathJoin(&.{ "../../", "fio" }),
+        );
+        move_cmd.step.dependOn(&run_cmd.step);
+
+        const run_step = b.step("fio", "Run fio Utility");
+        run_step.dependOn(&move_cmd.step);
+    }
+
     // Linting targets
     // We currently have: lint_zig_fmt, lint_shellcheck.
     // The meta-target lint runs them all

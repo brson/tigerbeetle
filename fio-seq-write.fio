@@ -1,0 +1,22 @@
+[global]
+name=fio-seq-write
+filename=fio-seq-write.tmp
+unlink=1
+rw=write
+bs=256K
+direct=1
+buffered=0
+numjobs=1
+time_based
+runtime=1
+sync=dsync
+
+[file1]
+nonvectored=1
+size=1G
+ioengine=io_uring
+iodepth=16
+iodepth_batch_submit=1024 ; more than needed
+iodepth_batch_complete_max=1024 ; "
+;fixedbufs
+;registerfiles

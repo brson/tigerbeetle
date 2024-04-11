@@ -88,6 +88,13 @@ pub const IO = struct {
         var timeouts: usize = 0;
         var etime = false;
         while (!etime) {
+            {
+                if (self.ring.sq_ready() > 0) {
+                    try self.flush(0, &timeouts, &etime);
+                    continue;
+                }
+            }
+            //std.log.info("x {} {} {}", .{ self.ios_queued, self.ios_in_kernel, timeouts, });
             const timeout_sqe = self.ring.get_sqe() catch blk: {
                 // The submission queue is full, so flush submissions to make space:
                 try self.flush_submissions(0, &timeouts, &etime);
@@ -929,6 +936,13 @@ pub const IO = struct {
         AccessDenied,
         BrokenPipe,
     } || os.UnexpectedError;
+
+    pub fn register_file(
+        self: *IO,
+        fd: os.fd_t,
+    ) !void {
+        try self.ring.register_files(&[_]os.fd_t { fd });
+    }
 
     pub fn write(
         self: *IO,
