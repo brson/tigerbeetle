@@ -8,10 +8,16 @@ const IO = @import("io.zig").IO;
 const flags = @import("flags.zig");
 
 const Config = struct {
+    workload: Workload = Workload.write_seq,
     iodepth: u12 = 128,
     block_size: u64 = 256 * 1024,
     file_size: u64 = 1024 * 1024 * 1024,
     runtime_secs: u64 = 1,
+};
+
+const Workload = enum {
+    write_seq,
+    read_seq,
 };
 
 const event_loop_delay_ns = 1_000_000;
@@ -22,13 +28,13 @@ const GlobalContext = struct {
     next_block: u64 = 0,
     live_ios: u32 = 0,
     stop: bool = false,
-    write_block: []u8,
     fd: os.fd_t,
     bytes_written: u64 = 0,
 };
 
 const CompletionContext = struct {
     global_context: *GlobalContext,
+    block: []u8 = &[_]u8 { }
 };
 
 pub fn main() !void {
@@ -41,14 +47,6 @@ pub fn main() !void {
     var config = flags.parse(&arg_iterator, Config);
 
     assert(config.iodepth * config.block_size <= config.file_size);
-
-    // todo how does fio handle blocks to be written?
-    var write_block = try allocator.alloc(u8, config.block_size);
-    defer allocator.free(write_block);
-
-    for (write_block) |*byte| {
-        byte.* = 0xF0;
-    }
 
     var io = try IO.init(config.iodepth * 2, 0);
     defer io.deinit();
@@ -64,7 +62,6 @@ pub fn main() !void {
     var global_context = GlobalContext {
         .config = config,
         .io = &io,
-        .write_block = write_block,
         .fd = file,
     };
 
@@ -73,11 +70,28 @@ pub fn main() !void {
     var completions = try allocator.alloc(IO.Completion, config.iodepth);
     defer allocator.free(completions);
 
-    for (contexts, completions) |*context, *completion| {
+    for (contexts) |*context| {
         context.* = CompletionContext {
             .global_context = &global_context,
         };
 
+        context.block = try allocator.alloc(u8, config.block_size);
+        for (context.block) |*byte| {
+            byte.* = 0xF0;
+        }
+    }
+
+    defer {
+        for (contexts) |*context| {
+            allocator.free(context.block);
+        }
+    }
+
+    var time = Time {};
+    const start_time_ns = time.monotonic();
+    const end_time_ns = start_time_ns + config.runtime_secs * 1_000_000_000;
+
+    for (contexts, completions) |*context, *completion| {
         const offset = global_context.next_block * config.block_size % config.file_size;
         global_context.next_block += 1;
         global_context.live_ios += 1;
@@ -87,14 +101,10 @@ pub fn main() !void {
             callback,
             completion,
             file,
-            write_block,
+            context.block,
             offset,
         );
     }
-
-    var time = Time {};
-    const start_time_ns = time.monotonic();
-    const end_time_ns = start_time_ns + config.runtime_secs * 1_000_000_000;
 
     while (true) {
         try io.run_for_ns(event_loop_delay_ns);
@@ -164,7 +174,7 @@ fn callback(
         callback,
         completion,
         global_context.fd,
-        global_context.write_block,
+        context.block,
         offset,
     );
 }
