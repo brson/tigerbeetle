@@ -5,9 +5,10 @@ const log = std.log.scoped(.io_benchmark);
 
 const Time = @import("time.zig").Time;
 const IO = @import("io.zig").IO;
+const flags = @import("flags.zig");
 
 const Config = struct {
-    iodepth: u64 = 128,
+    iodepth: u12 = 128,
     block_size: u64 = 256 * 1024,
     file_size: u64 = 1024 * 1024 * 1024,
     runtime_secs: u64 = 1,
@@ -31,12 +32,15 @@ const CompletionContext = struct {
 };
 
 pub fn main() !void {
-    const config = Config { };
-
-    assert(config.iodepth * config.block_size <= config.file_size);
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+
+    var arg_iterator = try std.process.argsWithAllocator(allocator);
+    defer arg_iterator.deinit();
+
+    var config = flags.parse(&arg_iterator, Config);
+
+    assert(config.iodepth * config.block_size <= config.file_size);
 
     // todo how does fio handle blocks to be written?
     var write_block = try allocator.alloc(u8, config.block_size);
