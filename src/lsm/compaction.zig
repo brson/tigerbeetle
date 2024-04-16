@@ -559,6 +559,13 @@ pub fn CompactionType(
             //if (compaction.level_b == 0) {
             //    return null;
             //}
+            if (Table.usage != .secondary_index) {
+                return null;
+            }
+
+            if (!std.mem.eql(u8, tree.config.name, "tigerbeetle.Account.user_data_32")) {
+                //return null;
+            }
 
             //const level = compaction.level_b - 1;
             const level = compaction.level_b;
@@ -595,7 +602,10 @@ pub fn CompactionType(
                 .coalesce = true,
                 .table_info_a = .{ .immutable = &[_]Table.Value{} },
                 .range_b = range_b,
-                .drop_tombstones = false,
+                .drop_tombstones = tree.manifest.compaction_must_drop_tombstones(
+                    level,
+                    range_b,
+                ),
 
                 .compaction_tables_value_count = compaction_tables_value_count,
 
@@ -2224,6 +2234,12 @@ pub fn CompactionType(
                         source_b_index += 1;
 
                         if (Table.usage == .secondary_index) {
+                            if (tombstone(value_a) == tombstone(value_b)) {
+                                std.log.info("XXX {s} {} {} {} {}", .{
+                                    compaction.tree_config.name,
+                                    value_a, value_b, tombstone(value_a), tombstone(value_b),
+                                });
+                            }
                             // Secondary index optimization --- cancel out put and remove.
                             assert(tombstone(value_a) != tombstone(value_b));
                             continue;
