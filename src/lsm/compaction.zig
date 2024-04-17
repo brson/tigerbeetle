@@ -559,13 +559,9 @@ pub fn CompactionType(
             //if (compaction.level_b == 0) {
             //    return null;
             //}
-            if (Table.usage != .secondary_index) {
-                return null;
-            }
-
-            if (!std.mem.eql(u8, tree.config.name, "tigerbeetle.Account.user_data_32")) {
-                //return null;
-            }
+            //if (Table.usage != .secondary_index) {
+            //    return null;
+            //}
 
             //const level = compaction.level_b - 1;
             const level = compaction.level_b;
@@ -593,6 +589,12 @@ pub fn CompactionType(
             for (range_b.tables.const_slice()) |*table| {
                 compaction_tables_value_count += table.table_info.value_count;
             }
+
+            std.log.debug("found coalesce window in {s}, level {}, tables {}/{}, values {}", .{
+                tree.config.name, level,
+                tables.tables.count(), tree.manifest.levels[level].tables.len(),
+                compaction_tables_value_count,
+            });
 
             compaction.bar = .{
                 .tree = tree,
@@ -2019,7 +2021,7 @@ pub fn CompactionType(
                 assert(bar.beats_finished <= bar.beats_max.?);
 
             // Mark the immutable table as flushed, if we were compacting into level 0.
-            if (compaction.level_b == 0 and bar.table_info_a.immutable.len == 0) {
+            if (compaction.level_b == 0 and bar.table_info_a.immutable.len == 0 and !bar.coalesce) {
                 bar.tree.table_immutable.mutability.immutable.flushed = true;
             }
 
