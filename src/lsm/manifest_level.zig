@@ -1578,3 +1578,82 @@ test "ManifestLevel" {
         try context.run();
     }
 }
+
+const CoalesceTestContext = struct {
+    const Self = @This();
+
+    const testing = std.testing;
+
+    const node_size = 1024;
+    const Key = u64;
+    const table_count_max = 1024;
+
+    const Value = packed struct {
+        key: Key,
+        tombstone: bool,
+        padding: u63 = 0,
+
+        comptime {
+            assert(stdx.no_padding(Value));
+            assert(@bitSizeOf(Value) == @sizeOf(Value) * 8);
+        }
+    };
+
+    inline fn key_from_value(value: *const Value) Key {
+        return value.key;
+    }
+
+    inline fn tombstone_from_key(key: Key) Value {
+        return .{ .key = key, .tombstone = true };
+    }
+
+    inline fn tombstone(value: *const Value) bool {
+        return value.tombstone;
+    }
+
+    const Table = @import("table.zig").TableType(
+        Key,
+        Value,
+        key_from_value,
+        std.math.maxInt(Key),
+        tombstone,
+        tombstone_from_key,
+        1,
+        .general,
+    );
+
+    const TableInfo = @import("manifest.zig").TreeTableInfoType(Table);
+    const NodePool = @import("node_pool.zig").NodePool;
+
+    const TestPool = NodePool(node_size, @alignOf(TableInfo));
+    const TestLevel = ManifestLevelType(TestPool, Key, TableInfo, table_count_max);
+
+    pool: TestPool,
+    level: TestLevel,
+
+    fn init() !Self { 
+       var pool = try TestPool.init(
+            testing.allocator,
+            TestLevel.Keys.node_count_max + TestLevel.Tables.node_count_max,
+        );
+        errdefer pool.deinit(testing.allocator);
+
+        var level = try TestLevel.init(testing.allocator);
+        errdefer level.deinit(testing.allocator, &pool);
+
+        return Self {
+            .pool = pool,
+            .level = level,
+        };
+    }
+
+    fn deinit(context: *Self) void {
+        context.level.deinit(testing.allocator, &context.pool);
+        context.pool.deinit(testing.allocator);
+    }
+};
+
+test "ManifestLevel Coalesce" {
+    var context = try CoalesceTestContext.init();
+    context.deinit();
+}
