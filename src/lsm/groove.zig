@@ -17,6 +17,7 @@ const CacheMapType = @import("cache_map.zig").CacheMapType;
 const ScopeCloseMode = @import("tree.zig").ScopeCloseMode;
 const ManifestLogType = @import("manifest_log.zig").ManifestLogType;
 const ScanBuilderType = @import("scan_builder.zig").ScanBuilderType;
+const CompStrat = @import("compstrat.zig").CompStrat;
 
 const snapshot_latest = @import("tree.zig").snapshot_latest;
 
@@ -487,6 +488,7 @@ pub fn GrooveType(
             node_pool: *NodePool,
             grid: *Grid,
             options: Options,
+            compstrat: *const CompStrat,
         ) !Groove {
             assert(options.tree_options_object.batch_value_count_limit *
                 constants.lsm_batch_multiple <= ObjectTree.Table.value_count_max);
@@ -520,6 +522,7 @@ pub fn GrooveType(
                     .name = @typeName(Object),
                 },
                 options.tree_options_object,
+                compstrat,
             );
             errdefer object_tree.deinit(allocator);
 
@@ -532,6 +535,7 @@ pub fn GrooveType(
                     .name = @typeName(Object) ++ ".id",
                 },
                 options.tree_options_id,
+                compstrat,
             ));
             errdefer if (has_id) id_tree.deinit(allocator);
 
@@ -556,6 +560,7 @@ pub fn GrooveType(
                         .name = @typeName(Object) ++ "." ++ field.name,
                     },
                     @field(options.tree_options_index, field.name),
+                    compstrat,
                 );
                 index_trees_initialized += 1;
             }

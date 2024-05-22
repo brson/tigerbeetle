@@ -21,6 +21,7 @@ const ManifestLogType = @import("manifest_log.zig").ManifestLogType;
 const ManifestLevelType = @import("manifest_level.zig").ManifestLevelType;
 const NodePool = @import("node_pool.zig").NodePool(constants.lsm_manifest_node_size, 16);
 const TableInfo = schema.ManifestNode.TableInfo;
+const CompStrat = @import("compstrat.zig").CompStrat;
 
 pub fn TreeTableInfoType(comptime Table: type) type {
     const Key = Table.Key;
@@ -197,11 +198,16 @@ pub fn ManifestType(comptime Table: type, comptime Storage: type) type {
         // registered snapshot seen so far.
         snapshot_max: u64 = 1,
 
-        pub fn init(allocator: mem.Allocator, node_pool: *NodePool, config: TreeConfig) !Manifest {
+        pub fn init(
+            allocator: mem.Allocator,
+            node_pool: *NodePool,
+            config: TreeConfig,
+            compstrat: *const CompStrat,
+        ) !Manifest {
             var levels: [constants.lsm_levels]Level = undefined;
             for (&levels, 0..) |*level, i| {
                 errdefer for (levels[0..i]) |*l| l.deinit(allocator, node_pool);
-                level.* = try Level.init(allocator);
+                level.* = try Level.init(allocator, compstrat);
             }
             errdefer for (&levels) |*level| level.deinit(allocator, node_pool);
 
@@ -503,8 +509,9 @@ pub fn ManifestType(comptime Table: type, comptime Storage: type) type {
             assert(manifest_level_a.table_count_visible <= table_count_visible_max + 1);
             if (manifest_level_a.table_count_visible < table_count_visible_max) return null;
 
-            const least_overlap_table = manifest_level_a.table_with_least_overlap(
+            const least_overlap_table = manifest_level_a.best_compaction_table(
                 manifest_level_b,
+                level_a,
                 snapshot_latest,
                 growth_factor,
             ) orelse return null;

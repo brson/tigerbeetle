@@ -42,6 +42,7 @@ const RingBuffer = @import("../ring_buffer.zig").RingBuffer;
 const schema = @import("schema.zig");
 const TableInfo = schema.ManifestNode.TableInfo;
 const BlockReference = vsr.BlockReference;
+const CompactionStats = @import("compstrat.zig").CompactionStats;
 
 const block_builder_schema = schema.ManifestNode{
     .entry_count = schema.ManifestNode.entry_count_max,
@@ -141,6 +142,8 @@ pub fn ManifestLogType(comptime Storage: type) type {
         // from the grid cache or node pool instead so that we don't pay for it during normal
         // operation.
         tables_removed: TablesRemoved,
+
+        comp_stats: CompactionStats = .{},
 
         pub fn init(allocator: mem.Allocator, grid: *Grid, options: Options) !ManifestLog {
             assert(options.tree_id_min <= options.tree_id_max);
@@ -612,6 +615,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
 
             manifest_log.writes_pending += 1;
             manifest_log.grid.create_block(write_block_callback, &write.write, block);
+            manifest_log.comp_stats.manifest_blocks_created += 1;
         }
 
         fn write_block_callback(grid_write: *Grid.Write) void {
@@ -796,6 +800,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
             assert(manifest_log.blocks_closed <= manifest_log.pace.half_bar_compact_blocks_max);
 
             manifest_log.grid.release(oldest_address);
+            manifest_log.comp_stats.manifest_blocks_released += 1;
             manifest_log.reading = false;
 
             manifest_log.compact_next_block();
@@ -977,6 +982,16 @@ pub fn ManifestLogType(comptime Storage: type) type {
             const block_schema = schema.ManifestNode.from(block);
             assert(block_schema.entry_count > 0);
             assert(block_schema.entry_count <= schema.ManifestNode.entry_count_max);
+        }
+
+        pub fn accumulate_stats(manifest_log: *ManifestLog, stats_accum: *CompactionStats) void {
+            stats_accum.index_blocks_created += manifest_log.comp_stats.index_blocks_created;
+            stats_accum.index_blocks_released += manifest_log.comp_stats.index_blocks_released;
+            stats_accum.value_blocks_created += manifest_log.comp_stats.value_blocks_created;
+            stats_accum.value_blocks_released += manifest_log.comp_stats.value_blocks_released;
+            stats_accum.compactions_total += manifest_log.comp_stats.compactions_total;
+            stats_accum.compactions_move += manifest_log.comp_stats.compactions_move;
+            manifest_log.comp_stats = .{};
         }
     };
 }

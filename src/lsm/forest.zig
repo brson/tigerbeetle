@@ -23,6 +23,8 @@ const Exhausted = @import("compaction.zig").Exhausted;
 const snapshot_min_for_table_output = @import("compaction.zig").snapshot_min_for_table_output;
 const snapshot_max_for_table_input = @import("compaction.zig").snapshot_max_for_table_input;
 const compaction_op_min = @import("compaction.zig").compaction_op_min;
+const CompStrat = @import("compstrat.zig").CompStrat;
+const CompactionStats = @import("compstrat.zig").CompactionStats;
 
 const IO = @import("../io.zig").IO;
 
@@ -235,6 +237,10 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
         scan_buffer_pool: ScanBufferPool,
 
+        compaction_stats: CompactionStats = .{},
+
+        compstrat: *CompStrat,
+
         pub fn init(
             allocator: mem.Allocator,
             grid: *Grid,
@@ -261,6 +267,9 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             });
             errdefer manifest_log.deinit(allocator);
 
+            var compstrat = try CompStrat.init(allocator);
+            errdefer compstrat.deinit(allocator);
+
             var grooves: Grooves = undefined;
             var grooves_initialized: usize = 0;
 
@@ -275,7 +284,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 const Groove = @TypeOf(groove.*);
                 const groove_options: Groove.Options = @field(grooves_options, groove_field.name);
 
-                groove.* = try Groove.init(allocator, node_pool, grid, groove_options);
+                groove.* = try Groove.init(allocator, node_pool, grid, groove_options, compstrat);
                 grooves_initialized += 1;
             }
 
@@ -283,7 +292,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 try CompactionPipeline.init(allocator, grid, options.compaction_block_count);
             errdefer compaction_pipeline.deinit(allocator);
 
-            const scan_buffer_pool = try ScanBufferPool.init(allocator);
+            var scan_buffer_pool = try ScanBufferPool.init(allocator);
             errdefer scan_buffer_pool.deinit(allocator);
 
             return Forest{
@@ -295,6 +304,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .compaction_pipeline = compaction_pipeline,
 
                 .scan_buffer_pool = scan_buffer_pool,
+                .compstrat = compstrat,
             };
         }
 
@@ -309,6 +319,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
             forest.compaction_pipeline.deinit(allocator);
             forest.scan_buffer_pool.deinit(allocator);
+            forest.compstrat.deinit(allocator);
         }
 
         pub fn reset(forest: *Forest) void {
@@ -331,6 +342,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .compaction_pipeline = forest.compaction_pipeline,
 
                 .scan_buffer_pool = forest.scan_buffer_pool,
+                .compstrat = forest.compstrat,
             };
         }
 
@@ -482,9 +494,14 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
                             forest.tree_for_id(tree_id).compactions[compaction.level_b]
                                 .bar_apply_to_manifest();
+
+                            forest.tree_for_id(tree_id).compactions[compaction.level_b]
+                                .accumulate_stats(&forest.compaction_stats);
                         },
                     }
                 }
+
+                forest.manifest_log.accumulate_stats(&forest.compaction_stats);
 
                 // At the last beat or last half beat, all compactions must have returned their
                 // blocks to the block pool.
@@ -535,6 +552,10 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             forest.progress = null;
 
             callback(forest);
+        }
+
+        pub fn log_compaction_stats(forest: *const Forest) void {
+            forest.compstrat.log_final_stats(&forest.compaction_stats);
         }
 
         fn compact_manifest_log_callback(manifest_log: *ManifestLog) void {
