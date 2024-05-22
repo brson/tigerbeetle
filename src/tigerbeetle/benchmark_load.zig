@@ -91,6 +91,12 @@ pub fn main(
         },
     );
 
+    std.log.info("account batch size = {} txs\n", .{
+        cli_args.account_batch_size,
+    });
+    std.log.info("transfer batch size = {} txs\n", .{
+        cli_args.transfer_batch_size,
+    });
     var batch_accounts =
         try std.ArrayListUnmanaged(tb.Account).initCapacity(allocator, cli_args.account_batch_size);
     defer batch_accounts.deinit(allocator);

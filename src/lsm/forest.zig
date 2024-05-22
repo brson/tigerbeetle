@@ -22,6 +22,8 @@ const Exhausted = @import("compaction.zig").Exhausted;
 const snapshot_min_for_table_output = @import("compaction.zig").snapshot_min_for_table_output;
 const snapshot_max_for_table_input = @import("compaction.zig").snapshot_max_for_table_input;
 const compaction_op_min = @import("compaction.zig").compaction_op_min;
+const CompStrat = @import("compstrat.zig").CompStrat;
+const CompactionStats = @import("compstrat.zig").CompactionStats;
 
 const IO = @import("../io.zig").IO;
 
@@ -239,6 +241,10 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
         scan_buffer_pool: ScanBufferPool,
 
+        compaction_stats: CompactionStats = .{},
+
+        compstrat: *CompStrat,
+
         pub fn init(
             forest: *Forest,
             allocator: mem.Allocator,
@@ -256,6 +262,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .manifest_log = undefined,
                 .compaction_pipeline = undefined,
                 .scan_buffer_pool = undefined,
+                .compstrat = undefined,
             };
 
             // TODO: look into using lsm_table_size_max for the node_count.
@@ -271,6 +278,9 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             });
             errdefer forest.manifest_log.deinit(allocator);
 
+            forest.compstrat = try CompStrat.init(allocator);
+            errdefer forest.compstrat.deinit(allocator);
+
             var grooves_initialized: usize = 0;
             errdefer inline for (std.meta.fields(Grooves), 0..) |field, field_index| {
                 if (grooves_initialized >= field_index + 1) {
@@ -285,7 +295,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 const groove: *Groove = &@field(forest.grooves, field.name);
                 const groove_options: Groove.Options = @field(grooves_options, field.name);
 
-                try groove.init(allocator, &forest.node_pool, grid, groove_options);
+                try groove.init(allocator, &forest.node_pool, grid, groove_options, forest.compstrat);
                 grooves_initialized += 1;
             }
 
@@ -313,6 +323,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
             forest.compaction_pipeline.deinit(allocator);
             forest.scan_buffer_pool.deinit(allocator);
+            forest.compstrat.deinit(allocator);
         }
 
         pub fn reset(forest: *Forest) void {
@@ -340,6 +351,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .compaction_pipeline = forest.compaction_pipeline,
 
                 .scan_buffer_pool = forest.scan_buffer_pool,
+                .compstrat = forest.compstrat,
             };
         }
 
@@ -506,9 +518,14 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                             assert(forest.compaction_progress.?.manifest_log_done);
                             forest.tree_for_id(tree_id).compactions[compaction.level_b]
                                 .bar_apply_to_manifest();
+
+                            forest.tree_for_id(tree_id).compactions[compaction.level_b]
+                                .accumulate_stats(&forest.compaction_stats);
                         },
                     }
                 }
+
+                forest.manifest_log.accumulate_stats(&forest.compaction_stats);
 
                 // At the last beat or last half beat, all compactions must have returned their
                 // blocks to the block pool.
@@ -552,6 +569,10 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             forest.compaction_progress = null;
 
             callback(forest);
+        }
+
+        pub fn log_compaction_stats(forest: *const Forest) void {
+            forest.compstrat.log_final_stats(&forest.compaction_stats);
         }
 
         pub fn checkpoint(forest: *Forest, callback: Callback) void {
