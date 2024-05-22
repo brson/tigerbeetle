@@ -242,6 +242,13 @@ pub fn CompactionHelperType(comptime Grid: type) type {
     };
 }
 
+pub const CompactionStats = struct {
+    index_blocks_created: u64 = 0,
+    index_blocks_released: u64 = 0,
+    value_blocks_created: u64 = 0,
+    value_blocks_released: u64 = 0,
+};
+
 pub fn CompactionType(
     comptime Table: type,
     comptime Tree: type,
@@ -517,6 +524,8 @@ pub fn CompactionType(
         // Populated by {bar,beat}_setup.
         bar: ?Bar,
         beat: ?Beat,
+
+        stats: CompactionStats = .{},
 
         pub fn init(tree_config: Tree.Config, grid: *Grid, level_b: u8) !Compaction {
             assert(level_b < constants.lsm_levels);
@@ -1726,8 +1735,12 @@ pub fn CompactionType(
 
             const grid = compaction.grid;
             const index_schema = schema.TableIndex.from(index_block);
-            for (index_schema.data_addresses_used(index_block)) |address| grid.release(address);
+            for (index_schema.data_addresses_used(index_block)) |address| {
+                grid.release(address);
+                compaction.stats.value_blocks_released += 1;
+            }
             grid.release(Table.block_address(index_block));
+            compaction.stats.index_blocks_released += 1;
         }
 
         /// Perform write IO to write our target_index_blocks and target_value_blocks to disk.
@@ -1757,6 +1770,7 @@ pub fn CompactionType(
                     &target_index_block.block,
                 );
                 write.pending_writes += 1;
+                compaction.stats.index_blocks_created += 1;
             }
 
             // Write any complete value blocks.
@@ -1774,6 +1788,7 @@ pub fn CompactionType(
                     &target_value_block.block,
                 );
                 write.pending_writes += 1;
+                compaction.stats.value_blocks_created += 1;
             }
 
             const d = write.timer.read();
@@ -2185,6 +2200,14 @@ pub fn CompactionType(
             beat.source_a_values = source_a_local[source_a_index..];
             beat.source_b_values = source_b_local[source_b_index..];
             bar.table_builder.value_count = values_out_index;
+        }
+
+        pub fn accumulate_stats(compaction: *Compaction, stats_accum: *CompactionStats) void {
+            stats_accum.index_blocks_created += compaction.stats.index_blocks_created;
+            stats_accum.index_blocks_released += compaction.stats.index_blocks_released;
+            stats_accum.value_blocks_created += compaction.stats.value_blocks_created;
+            stats_accum.value_blocks_released += compaction.stats.value_blocks_released;
+            compaction.stats = .{};
         }
     };
 }
