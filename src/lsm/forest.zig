@@ -18,6 +18,7 @@ const ManifestLogType = @import("manifest_log.zig").ManifestLogType;
 const ScanBufferPool = @import("scan_buffer.zig").ScanBufferPool;
 const CompactionInfo = @import("compaction.zig").CompactionInfo;
 const CompactionHelperType = @import("compaction.zig").CompactionHelperType;
+const CompactionStats = @import("compaction.zig").CompactionStats;
 const BlipStage = @import("compaction.zig").BlipStage;
 const Exhausted = @import("compaction.zig").Exhausted;
 const snapshot_min_for_table_output = @import("compaction.zig").snapshot_min_for_table_output;
@@ -234,6 +235,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         compaction_pipeline: CompactionPipeline,
 
         scan_buffer_pool: ScanBufferPool,
+
+        compaction_stats: CompactionStats = .{},
 
         pub fn init(
             allocator: mem.Allocator,
@@ -482,6 +485,9 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
                             forest.tree_for_id(tree_id).compactions[compaction.level_b]
                                 .bar_apply_to_manifest();
+
+                            forest.tree_for_id(tree_id).compactions[compaction.level_b]
+                                .accumulate_stats(&forest.compaction_stats);
                         },
                     }
                 }
@@ -490,6 +496,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 // blocks to the block pool.
                 assert(forest.compaction_pipeline.block_pool.count ==
                     forest.compaction_pipeline.block_pool_raw.len);
+
+                //forest.log_compaction_stats();
             }
 
             // Swap the mutable and immutable tables; this must happen on the last beat, regardless
@@ -535,6 +543,34 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             forest.progress = null;
 
             callback(forest);
+        }
+
+        pub fn log_compaction_stats(forest: *const Forest) void {
+            const blocks_created = forest.compaction_stats.index_blocks_created
+                + forest.compaction_stats.value_blocks_created;
+            const blocks_released = forest.compaction_stats.index_blocks_released
+                + forest.compaction_stats.value_blocks_released;
+            const active_blocks = blocks_created -| blocks_released;
+
+            log.info(
+                "compaction stats:\n" ++
+                   "index_blocks_created: {}\n" ++
+                   "index_blocks_released: {}\n" ++
+                   "value_blocks_created: {}\n" ++
+                   "value_blocks_released: {}\n" ++
+                   "total_blocks_created: {}\n" ++
+                   "total_blocks_released: {}\n" ++
+                   "active_blocks: {}",
+                .{
+                    forest.compaction_stats.index_blocks_created,
+                    forest.compaction_stats.index_blocks_released,
+                    forest.compaction_stats.value_blocks_created,
+                    forest.compaction_stats.value_blocks_released,
+                    blocks_created,
+                    blocks_released,
+                    active_blocks,
+                },
+            );
         }
 
         fn compact_manifest_log_callback(manifest_log: *ManifestLog) void {

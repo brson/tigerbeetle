@@ -179,6 +179,8 @@ const Environment = struct {
         defer env.close();
 
         try env.apply(fuzz_ops);
+
+        env.forest.log_compaction_stats();
     }
 
     fn change_state(env: *Environment, current_state: State, next_state: State) void {
