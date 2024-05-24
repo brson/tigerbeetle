@@ -498,7 +498,7 @@ pub fn ManifestType(comptime Table: type, comptime Storage: type) type {
             // If even levels are compacted ahead of odd levels, then odd levels may burst.
             assert(manifest_level_a.table_count_visible <= table_count_visible_max + 1);
 
-            const least_overlap_table = manifest_level_a.table_with_least_overlap(
+            const least_overlap_table = manifest_level_a.best_compaction_table(
                 manifest_level_b,
                 snapshot_latest,
                 growth_factor,

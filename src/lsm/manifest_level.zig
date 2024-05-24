@@ -14,6 +14,8 @@ const Direction = @import("../direction.zig").Direction;
 const SegmentedArray = @import("segmented_array.zig").SegmentedArray;
 const SortedSegmentedArray = @import("segmented_array.zig").SortedSegmentedArray;
 
+var comp_strat_init: bool = false;
+
 pub fn ManifestLevelType(
     comptime NodePool: type,
     comptime Key: type,
@@ -84,6 +86,7 @@ pub fn ManifestLevelType(
             key_min: Key,
             /// The maximum key across both levels.
             key_max: Key,
+            value_count: u64,
             // References to tables in level B that intersect with the chosen table in level A.
             tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor),
         };
@@ -150,6 +153,24 @@ pub fn ManifestLevelType(
             }
         };
 
+        const CompStrat = enum {
+            ExactRangeWithLeastTables,
+            ExactRangeWithMostTables,
+
+            ExactRangeWithHighTableValueRatio,
+            ExactRangeWithLowTableValueRatio,
+
+            ExactRangeWithMostTablesThenMostValues,
+            ExactRangeWithMostTablesThenLeastValues,
+            ExactRangeWithLeastTablesThenMostValues,
+            ExactRangeWithLeastTablesThenLeastValues,
+
+            ExactRangeWithMostFreeTablesThenHighTableValueRatio,
+            ExactRangeWithMostFreeTablesThenLowTableValueRatio,
+            ExactRangeWithLeastFreeTablesThenHighTableValueRatio,
+            ExactRangeWithLeastFreeTablesThenLowTableValueRatio,
+        };
+
         // These two segmented arrays are parallel. That is, the absolute indexes of maximum key
         // and corresponding TableInfo are the same. However, the number of nodes, node index, and
         // relative index into the node differ as the elements per node are different.
@@ -171,6 +192,8 @@ pub fn ManifestLevelType(
         /// TableInfo references.
         generation: u32 = 0,
 
+        comp_strat: CompStrat,
+
         pub fn init(allocator: mem.Allocator) !Self {
             var keys = try Keys.init(allocator);
             errdefer keys.deinit(allocator, null);
@@ -178,9 +201,54 @@ pub fn ManifestLevelType(
             var tables = try Tables.init(allocator);
             errdefer tables.deinit(allocator, null);
 
+            var comp_strat = CompStrat.ExactRangeWithLeastTables;
+            {
+                var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+                var allocator2 = gpa.allocator();
+                var env_map = try std.process.getEnvMap(allocator2);
+                defer env_map.deinit();
+                var comp_strat_str = env_map.get("COMP_STRAT");
+                if (comp_strat_str) |comp_strat_str_| {
+                    if (mem.eql(u8, comp_strat_str_, "EX_TLEAST")) {
+                        comp_strat = CompStrat.ExactRangeWithLeastTables;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TMOST")) {
+                        comp_strat = CompStrat.ExactRangeWithMostTables;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_HIGH_TVR")) {
+                        comp_strat = CompStrat.ExactRangeWithHighTableValueRatio;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_LOW_TVR")) {
+                        comp_strat = CompStrat.ExactRangeWithLowTableValueRatio;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TMOST_VMOST")) {
+                        comp_strat = CompStrat.ExactRangeWithMostTablesThenMostValues;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TMOST_VLEAST")) {
+                        comp_strat = CompStrat.ExactRangeWithMostTablesThenLeastValues;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TLEAST_VMOST")) {
+                        comp_strat = CompStrat.ExactRangeWithLeastTablesThenMostValues;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TLEAST_VLEAST")) {
+                        comp_strat = CompStrat.ExactRangeWithLeastTablesThenLeastValues;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TMFREE_HIGH_TVR")) {
+                        comp_strat = CompStrat.ExactRangeWithMostFreeTablesThenHighTableValueRatio;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TMFREE_LOW_TVR")) {
+                        comp_strat = CompStrat.ExactRangeWithMostFreeTablesThenLowTableValueRatio;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TLFREE_HIGH_TVR")) {
+                        comp_strat = CompStrat.ExactRangeWithLeastFreeTablesThenHighTableValueRatio;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_TLFREE_LOW_TVR")) {
+                        comp_strat = CompStrat.ExactRangeWithLeastFreeTablesThenLowTableValueRatio;
+                    } else {
+                        @panic("bad comp strat");
+                    }
+                    if (!comp_strat_init) {
+                        std.log.info("COMP_STRAT = {s}", .{  
+                            comp_strat_str_,
+                        });
+                        comp_strat_init = true;
+                    }
+                }
+            }
+
             return Self{
                 .keys = keys,
                 .tables = tables,
+                .comp_strat = comp_strat,
             };
         }
 
@@ -199,6 +267,7 @@ pub fn ManifestLevelType(
                 .keys = level.keys,
                 .tables = level.tables,
                 .generation = level.generation + 1,
+                .comp_strat = level.comp_strat
             };
         }
 
@@ -541,13 +610,24 @@ pub fn ManifestLevelType(
             return false;
         }
 
+        pub fn best_compaction_table(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+        ) ?LeastOverlapTable {
+            return level_a.table_with_least_overlap(
+                level_b, snapshot, max_overlapping_tables,
+            );
+        }
+
         /// Given two levels (where A is the level on which this function
         /// is invoked and B is the other level), finds a table in Level A that
         /// overlaps with the least number of tables in Level B.
         ///
         /// * Exits early if it finds a table that doesn't overlap with any
         ///   tables in the second level.
-        pub fn table_with_least_overlap(
+        fn table_with_least_overlap(
             level_a: *const Self,
             level_b: *const Self,
             snapshot: u64,
@@ -574,23 +654,131 @@ pub fn ManifestLevelType(
                     snapshot,
                     max_overlapping_tables,
                 ) orelse continue;
-                if (optimal == null or range.tables.count() < optimal.?.range.tables.count()) {
-                    optimal = LeastOverlapTable{
-                        .table = TableInfoReference{
-                            .table_info = table,
-                            .generation = level_a.generation,
-                        },
-                        .range = range,
-                    };
-                }
+
+                var new = LeastOverlapTable{
+                    .table = TableInfoReference{
+                        .table_info = table,
+                        .generation = level_a.generation,
+                    },
+                    .range = range,
+                };
+
                 // If the table can be moved directly between levels then that is already optimal.
-                if (optimal.?.range.tables.empty()) break;
+                if (new.range.tables.empty()) {
+                    optimal = new;
+                    break;
+                }
+                if (optimal == null) {
+                    optimal = new;
+                } else {
+                    optimal = pick_table_candidate(
+                        level_a.comp_strat,
+                        &optimal.?,
+                        &new,
+                    ).*;
+                }
             }
             assert(iterations > 0);
             assert(iterations == level_a.table_count_visible or
                 optimal.?.range.tables.empty());
 
             return optimal.?;
+        }
+
+        fn pick_table_candidate(comp_strat: CompStrat, old: *LeastOverlapTable, new: *LeastOverlapTable) *LeastOverlapTable {
+            const old_table_count = old.range.tables.count() + 1;
+            const old_value_count = old.table.table_info.value_count + old.range.value_count;
+            const new_table_count = new.range.tables.count() + 1;
+            const new_value_count = new.table.table_info.value_count + new.range.value_count;
+
+            const old_ratio = @as(f32, @floatFromInt(old_table_count))
+                / @as(f32, @floatFromInt(old_value_count));
+            const new_ratio = @as(f32, @floatFromInt(new_table_count))
+                / @as(f32, @floatFromInt(new_value_count));
+
+            const old_table_max_values = old_table_count * TableInfo.value_count_max_actual;
+            const new_table_max_values = new_table_count * TableInfo.value_count_max_actual;
+            const old_free_values = old_table_max_values - old_value_count;
+            const old_free_tables = @divFloor(old_free_values, TableInfo.value_count_max_actual);
+            const new_free_values = new_table_max_values - new_value_count;
+            const new_free_tables = @divFloor(new_free_values, TableInfo.value_count_max_actual);
+
+            const new_best = switch (comp_strat) {
+                CompStrat.ExactRangeWithLeastTables => (
+                    new_table_count < old_table_count
+                ),
+                CompStrat.ExactRangeWithMostTables => (
+                    new_table_count > old_table_count
+                ),
+                CompStrat.ExactRangeWithHighTableValueRatio => (
+                    new_ratio > old_ratio
+                ),
+                CompStrat.ExactRangeWithLowTableValueRatio => (
+                    new_ratio < old_ratio
+                ),
+                CompStrat.ExactRangeWithMostTablesThenMostValues => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_table_count > old_table_count;
+                    } else {
+                        break :brk new_value_count > old_value_count;
+                    }
+                },
+                CompStrat.ExactRangeWithMostTablesThenLeastValues => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_table_count > old_table_count;
+                    } else {
+                        break :brk new_value_count < old_value_count;
+                    }
+                },
+                CompStrat.ExactRangeWithLeastTablesThenMostValues => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_table_count < old_table_count;
+                    } else {
+                        break :brk new_value_count > old_value_count;
+                    }
+                },
+                CompStrat.ExactRangeWithLeastTablesThenLeastValues => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_table_count < old_table_count;
+                    } else {
+                        break :brk new_value_count < old_value_count;
+                    }
+                },
+                CompStrat.ExactRangeWithMostFreeTablesThenHighTableValueRatio => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_free_tables > old_free_tables;
+                    } else {
+                        break :brk new_ratio > old_ratio;
+                    }
+                },
+                CompStrat.ExactRangeWithMostFreeTablesThenLowTableValueRatio => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_free_tables > old_free_tables;
+                    } else {
+                        break :brk new_ratio < old_ratio;
+                    }
+                },
+                CompStrat.ExactRangeWithLeastFreeTablesThenHighTableValueRatio => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_free_tables < old_free_tables;
+                    } else {
+                        break :brk new_ratio > old_ratio;
+                    }
+                },
+                CompStrat.ExactRangeWithLeastFreeTablesThenLowTableValueRatio => brk: {
+                    if (old_free_tables != new_free_tables) {
+                        break :brk new_free_tables < old_free_tables;
+                    } else {
+                        break :brk new_ratio < old_ratio;
+                    }
+                },
+            };
+
+            if (new_best) {
+                return new;
+            } else {
+                return old;
+            }
         }
 
         /// Returns the next table in the range, after `key_exclusive` if provided.
@@ -686,6 +874,7 @@ pub fn ManifestLevelType(
             var range = OverlapRange{
                 .key_min = key_min,
                 .key_max = key_max,
+                .value_count = 0,
                 .tables = .{},
             };
             const snapshots = [1]u64{snapshot};
@@ -716,6 +905,7 @@ pub fn ManifestLevelType(
                         .table_info = table,
                         .generation = level.generation,
                     };
+                    range.value_count += table.value_count;
                     range.tables.append_assume_capacity(table_info_reference);
                 } else {
                     return null;

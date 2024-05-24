@@ -272,6 +272,7 @@ test "tidy extensions" {
         .{"exclude-pmd.properties"}, .{"favicon.ico"},      .{"favicon.png"},
         .{"LICENSE"},                .{"module-info.test"}, .{"index.html"},
         .{"logo.svg"},               .{"logo-white.svg"},   .{"logo-with-text-white.svg"},
+        .{"compaction-gen.py"},      .{"compaction-plot.py"},
     });
 
     const allocator = std.testing.allocator;

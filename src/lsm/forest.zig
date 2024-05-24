@@ -558,6 +558,20 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                     active_blocks,
                 },
             );
+            var comp_strat: []const u8 = "EX_TLEAST";
+            var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+            var allocator = gpa.allocator();
+            var env_map = std.process.getEnvMap(allocator) catch @panic("foo");
+            defer env_map.deinit();
+            var comp_strat_str = env_map.get("COMP_STRAT");
+            if (comp_strat_str) |comp_strat_str_| {
+                comp_strat = comp_strat_str_;
+            }
+            log.info("\n~compaction-stats~\n{s}, {}, {}", .{
+                comp_strat,
+                blocks_created,
+                active_blocks,
+            });
         }
 
         fn compact_manifest_log_callback(manifest_log: *ManifestLog) void {
