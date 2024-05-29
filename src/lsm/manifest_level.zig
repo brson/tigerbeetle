@@ -730,6 +730,158 @@ pub fn ManifestLevelType(
 
             return range;
         }
+
+        /// An iterator over tables used to find coalesce window candidates.
+        ///
+        /// Each iteration returns a sub-iterator, `CoalesceWindowIterator`,
+        /// both of which cooperate to achieve several goals:
+        ///
+        /// - counting both invisible and visible tables to only iterate
+        ///   up to `max_coalesce_tables_to_search` tables.
+        /// - only visiting visible tables
+        /// - iterating invisible tables only once - a naive implementation
+        ///   that creates new iterators for each window could see each
+        ///   invisible table up to a factor of `max_coalesce_tables_to_search` times.
+        ///
+        /// It uses a pair of queues to manage the backtracking:
+        /// during iteration, tables in `buffer` are visited first before pulling
+        /// from an inner iterator; as new tables are visited that will need to be
+        /// visited again in the future they are pushed onto `double_buffer` for
+        /// use by future iterators.
+        const CoalesceTableIterator = struct {
+            inner: Tables.Iterator,
+            /// Previously-visited tables that need to be re-visited in the next window,
+            /// prior to visiting those in double_buffer, enqueued by the prepare_buffer function.
+            buffer: stdx.BoundedArray(*const TableInfo, constants.lsm_growth_factor),
+            /// Previously-visited tables that need to be re-viseted in the next window,
+            /// after visiting those in buffer, enqueued by CoalesceWindowIterator.
+            double_buffer: stdx.BoundedArray(*const TableInfo, constants.lsm_growth_factor),
+            /// A counter of total tables (invisible and visible) retrieved from the
+            /// inner iterator. After this hits `max_coalesce_tables_to_search` we will
+            /// no longer defer to the inner iterator.
+            tables_visited: u32,
+            /// This indicates that we've taken as many tables from the inner
+            /// iterator as we can (either because it is empty or we've called
+            /// it `tables_visited` times) and there are no more buffered tables
+            /// to return, so we should not return any new
+            /// `CoalesceWindowIterator`s in the `next` method.
+            end_of_iter: bool,
+
+            pub fn from_index(tables: *const Tables, start_index: u32) CoalesceTableIterator {
+                return CoalesceTableIterator{
+                    .inner = tables.iterator_from_index(start_index, .ascending),
+                    .buffer = .{},
+                    .double_buffer = .{},
+                    .tables_visited = 0,
+                    .end_of_iter = false,
+                };
+            }
+
+            pub fn next(it: *CoalesceTableIterator) ?CoalesceWindowIterator {
+                if (it.end_of_iter) {
+                    assert(it.buffer.empty() and it.double_buffer.empty());
+                    return null;
+                }
+
+                it.prepare_buffer();
+
+                return CoalesceWindowIterator{
+                    .parent = it,
+                    .window_size = 0,
+                };
+            }
+
+            /// Prepare `buffer` from the contents of `buffer` and `double_buffer`.
+            fn prepare_buffer(it: *CoalesceTableIterator) void {
+                assert(it.buffer.count() + it.double_buffer.count() <= constants.lsm_growth_factor);
+                if (!it.double_buffer.empty()) {
+                    // Anything still in `buffer` needs to be visited after `double_buffer`.
+                    // This can happen if the contents of `buffer` were not fully iterated
+                    // by a previous CoalesceWindowIterator.
+                    while (it.pop_buffer_queue()) |table| {
+                        it.push_double_buffer_queue(table);
+                    }
+                    // Promote double_buffer to buffer.
+                    std.mem.swap(
+                        stdx.BoundedArray(*const TableInfo, constants.lsm_growth_factor),
+                        &it.buffer,
+                        &it.double_buffer,
+                    );
+                }
+            }
+
+            // todo - this is a hot function and might profit from memcpy optimization
+            fn pop_buffer_queue(it: *CoalesceTableIterator) ?*const TableInfo {
+                if (it.buffer.empty()) {
+                    return null;
+                }
+
+                const retval = it.buffer.get(0);
+
+                var index: usize = 0;
+                while (index < it.buffer.count() - 1) {
+                    it.buffer.slice()[index] = it.buffer.get(index + 1);
+                    index += 1;
+                }
+
+                it.buffer.truncate(it.buffer.count() - 1);
+
+                return retval;
+            }
+
+            fn push_double_buffer_queue(it: *CoalesceTableIterator, t: *const TableInfo) void {
+                assert(it.double_buffer.count() < constants.lsm_growth_factor);
+                it.double_buffer.append_assume_capacity(t);
+            }
+        };
+
+        const CoalesceWindowIterator = struct {
+            parent: *CoalesceTableIterator,
+            window_size: u32,
+
+            pub fn next(it: *CoalesceWindowIterator) ?*const TableInfo {
+                if (it.window_size == 0) {
+                    assert(it.parent.double_buffer.empty());
+                }
+
+                assert(it.window_size <= constants.lsm_growth_factor);
+                if (it.window_size == constants.lsm_growth_factor) {
+                    assert(it.parent.buffer.empty());
+                    return null;
+                }
+
+                // Start by visiting the buffered tables
+                if (it.parent.pop_buffer_queue()) |table| {
+                    // Save every table after the first for the next window iterator
+                    if (it.window_size != 0) {
+                        it.parent.push_double_buffer_queue(table);
+                    }
+                    it.window_size += 1;
+                    return table;
+                } else {
+                    // Now go back to the inner iterator
+                    while (it.parent.inner.next()) |table| {
+                        it.parent.tables_visited += 1;
+
+                        if (table.visible(lsm.snapshot_latest)) {
+                            if (it.window_size != 0) {
+                                it.parent.push_double_buffer_queue(table);
+                            }
+                            it.window_size += 1;
+                            return table;
+                        }
+                    }
+
+                    // There are no more tables in the main iterator and no more
+                    // tables in the buffer - do not generate any more window iterators.
+                    if (it.parent.double_buffer.count() == 0) {
+                        it.parent.end_of_iter = true;
+                    }
+
+                    return null;
+                }
+            }
+        };
     };
 }
 
