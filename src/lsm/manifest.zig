@@ -28,6 +28,8 @@ pub fn TreeTableInfoType(comptime Table: type) type {
     return struct {
         const TreeTableInfo = @This();
 
+        pub const value_count_max_actual = Table.value_count_max_actual;
+
         /// Checksum of the table's index block.
         checksum: u128,
         /// Address of the table's index block.
