@@ -616,6 +616,7 @@ test "tidy extensions" {
         .{"logo-white.svg"},                    .{"logo-with-text-white.svg"},
         .{"zig/download.sh"},                   .{"src/scripts/cfo_supervisor.sh"},
         .{"src/docs_website/scripts/build.sh"}, .{".github/ci/docs_check.sh"},
+        .{"compaction-gen.py"},                 .{"compaction-plot.py"},
         .{".github/ci/test_aof.sh"},
     });
 
