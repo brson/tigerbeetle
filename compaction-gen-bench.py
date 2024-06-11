@@ -29,7 +29,7 @@ def run_once(strategy, benchmark_args):
         "build",
         "run",
         "-Drelease",
-        "-Dconfig=production",
+        "-Dconfig=test_min",
         "--",
         "benchmark",
     ]
@@ -63,21 +63,29 @@ def gen_benchmark_args(seed):
     rng = random.Random(seed)
 
     min_account_count = 2
-    min_transfer_count = 10000
+    min_transfer_count = 100000
     max_account_count = 1000000
     max_transfer_count = 1000000
+    max_account_batch_size = 8190
+    max_transfer_batch_size = 8190
+    max_account_batch_size = 30 # config=test_min
+    max_transfer_batch_size = 30
 
-    max_account_count = 10
-    max_transfer_count = 100000
+    #min_account_count = 10000
+    #min_transfer_count = 10000
+    #max_account_count = 100000
+    #max_transfer_count = 100000
+    #max_account_batch_size = 10
+    #max_transfer_batch_size = 10
 
     account_count = rng.randint(min_account_count, max_account_count)
     transfer_count = rng.randint(min_transfer_count, max_transfer_count)
-    account_batch_size = rng.randint(1, 8190)
-    transfer_batch_size = rng.randint(1, 8190)
+    account_batch_size = rng.randint(1, max_account_batch_size)
+    transfer_batch_size = rng.randint(1, max_transfer_batch_size)
     id_order = rng.choice([
-        "sequential",
+        #"sequential",
         "random",
-        "reversed",
+        #"reversed",
     ])
 
     args = []
