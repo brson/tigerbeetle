@@ -28,6 +28,8 @@ def run_once(strategy, benchmark_args):
         "zig/zig",
         "build",
         "run",
+        "-Drelease",
+        "-Dconfig=production",
         "--",
         "benchmark",
     ]
