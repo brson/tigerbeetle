@@ -63,9 +63,9 @@ def gen_benchmark_args(seed):
     rng = random.Random(seed)
 
     min_account_count = 2
-    min_transfer_count = 100000
-    max_account_count = 1000000
-    max_transfer_count = 1000000
+    min_transfer_count = 1000
+    max_account_count = 100000
+    max_transfer_count = 100000
     max_account_batch_size = 8190
     max_transfer_batch_size = 8190
     max_account_batch_size = 30 # config=test_min
@@ -73,8 +73,8 @@ def gen_benchmark_args(seed):
 
     #min_account_count = 10000
     #min_transfer_count = 10000
-    #max_account_count = 100000
-    #max_transfer_count = 100000
+    max_account_count = 10000
+    max_transfer_count = 10000
     #max_account_batch_size = 10
     #max_transfer_batch_size = 10
 
