@@ -62,13 +62,16 @@ def parse_result(stderr):
 def gen_benchmark_args(seed):
     rng = random.Random(seed)
 
+    min_account_count = 2
+    min_transfer_count = 10000
     max_account_count = 1000000
     max_transfer_count = 1000000
-    #max_account_count = 10
-    #max_transfer_count = 100
 
-    account_count = rng.randint(2, max_account_count)
-    transfer_count = rng.randint(100, max_transfer_count)
+    max_account_count = 10
+    max_transfer_count = 100000
+
+    account_count = rng.randint(min_account_count, max_account_count)
+    transfer_count = rng.randint(min_transfer_count, max_transfer_count)
     account_batch_size = rng.randint(1, 8190)
     transfer_batch_size = rng.randint(1, 8190)
     id_order = rng.choice([
