@@ -283,7 +283,8 @@ pub fn ManifestLevelType(
                 .keys = level.keys,
                 .tables = level.tables,
                 .generation = level.generation + 1,
-                .comp_strat = level.comp_strat
+                .comp_strat = level.comp_strat,
+                .comp_lookaround = level.comp_lookaround,
             };
         }
 
@@ -796,7 +797,7 @@ pub fn ManifestLevelType(
 
                 if (rev) |rev_| {
                     if (forward) |forward_| {
-                        if (rev_.range.value_count < forward_.range.value_count) {
+                        if (rev_.range.value_count <= forward_.range.value_count) {
                             std.log.info("CHOSE REVERSE LOOKAROUND", .{});
                             return rev_;
                         } else {

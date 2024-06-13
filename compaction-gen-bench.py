@@ -6,6 +6,7 @@ import sys
 import random
 
 strat_env_var = "COMP_STRAT"
+look_env_var = "COMP_LOOK"
 strategies = [
     "EX_TLEAST",
     "EX_TMOST",
@@ -25,7 +26,7 @@ strategies = [
 events_max=100000
 seeds_count=1000
 
-def run_once(strategy, benchmark_args):
+def run_once(strategy, benchmark_args, lookaround):
     command = [
         "zig/zig",
         "build",
@@ -38,6 +39,8 @@ def run_once(strategy, benchmark_args):
     command += benchmark_args
     env = os.environ.copy()
     env[strat_env_var] = strategy
+    if lookaround:
+        env[look_env_var] = "1"
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -85,9 +88,9 @@ def gen_benchmark_args(seed):
     account_batch_size = rng.randint(1, max_account_batch_size)
     transfer_batch_size = rng.randint(1, max_transfer_batch_size)
     id_order = rng.choice([
-        #"sequential",
+        "sequential",
         "random",
-        #"reversed",
+        "reversed",
     ])
 
     args = []
@@ -105,5 +108,6 @@ def gen_benchmark_args(seed):
 for seed in range(0, seeds_count):
     benchmark_args = gen_benchmark_args(seed)
     for strategy in strategies:
-        run_once(strategy, benchmark_args)
+        run_once(strategy, benchmark_args, False)
+        run_once(strategy, benchmark_args, True)
     
