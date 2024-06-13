@@ -669,6 +669,10 @@ pub fn ManifestLevelType(
                     .range = range,
                 };
 
+                new = level_a.table_lookaround(
+                    level_b,snapshot, max_overlapping_tables, new,
+                );
+
                 // If the table can be moved directly between levels then that is already optimal.
                 if (new.range.tables.empty()) {
                     optimal = new;
@@ -691,7 +695,67 @@ pub fn ManifestLevelType(
             return optimal.?;
         }
 
-        fn pick_table_candidate(comp_strat: CompStrat, old: *LeastOverlapTable, new: *LeastOverlapTable) *LeastOverlapTable {
+        fn table_lookaround(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+        ) LeastOverlapTable {
+            _ = level_a;
+            assert(old.range.tables.count() <= max_overlapping_tables);
+            if (old.range.tables.count() == max_overlapping_tables) {
+                return old;
+            }
+
+            if (old.range.tables.count() != 0) {
+                const rev_next_table = level_b.next_table(.{
+                    .snapshot = snapshot,
+                    .key_min = std.math.minInt(Key),
+                    .key_max = old.range.key_max,
+                    .key_exclusive = old.range.key_min,
+                    .direction = Direction.descending,
+                });
+                const rev: ?LeastOverlapTable = if (rev_next_table) |next_table_| brk: {
+                    assert(next_table_.key_max < old.range.key_min);
+                    var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                    {
+                        new_tables.append_assume_capacity(TableInfoReference {
+                            .table_info = @constCast(next_table_),
+                            .generation = level_b.generation,
+                        });
+                        for (old.range.tables.const_slice()) |old_table| {
+                            new_tables.append_assume_capacity(old_table);
+                        }
+                    }
+                    const new = LeastOverlapTable {
+                        .table = old.table,
+                        .range = OverlapRange {
+                            .key_min = next_table_.key_min,
+                            .key_max = old.range.key_max,
+                            .value_count = old.range.value_count + next_table_.value_count,
+                            .tables = new_tables,
+                        },
+                    };
+                    if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                        break :brk new;
+                    } else {
+                        break :brk null;
+                    }
+                } else null;
+
+                if (rev) |rev_| {
+                    std.log.info("CHOSE LOOKAROUND", .{});
+                    return rev_;
+                } else {
+                    return old;
+                }
+            } else {
+                return old;
+            }
+        }
+
+        fn pick_table_candidate(comp_strat: CompStrat, old: *const LeastOverlapTable, new: *const LeastOverlapTable) *const LeastOverlapTable {
             const old_table_count = old.range.tables.count() + 1;
             const old_value_count = old.table.table_info.value_count + old.range.value_count;
             const new_table_count = new.range.tables.count() + 1;
