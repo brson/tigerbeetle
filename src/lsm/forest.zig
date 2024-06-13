@@ -483,8 +483,6 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 // blocks to the block pool.
                 assert(forest.compaction_pipeline.block_pool.count ==
                     forest.compaction_pipeline.block_pool_raw.len);
-
-                //forest.log_compaction_stats();
             }
 
             // Swap the mutable and immutable tables; this must happen on the last beat, regardless
@@ -571,8 +569,14 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             if (comp_strat_str) |comp_strat_str_| {
                 comp_strat = comp_strat_str_;
             }
-            log.info("\n~compaction-stats~\n{s}, {}, {}, {}, {}", .{
+            var comp_lookaround: []const u8 = "";
+            var comp_lookaround_str = env_map.get("COMP_LOOK");
+            if (comp_lookaround_str != null) {
+                comp_lookaround = "_LOOK";
+            }
+            log.info("\n~compaction-stats~\n{s}{s}, {}, {}, {}, {}", .{
                 comp_strat,
+                comp_lookaround,
                 blocks_created,
                 active_blocks,
                 forest.compaction_stats.compactions_total,

@@ -195,6 +195,7 @@ pub fn ManifestLevelType(
         generation: u32 = 0,
 
         comp_strat: CompStrat,
+        comp_lookaround: bool,
 
         pub fn init(allocator: mem.Allocator) !Self {
             var keys = try Keys.init(allocator);
@@ -204,6 +205,7 @@ pub fn ManifestLevelType(
             errdefer tables.deinit(allocator, null);
 
             var comp_strat = CompStrat.ExactRangeWithLeastTables;
+            var comp_lookaround = false;
             {
                 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
                 var allocator2 = gpa.allocator();
@@ -246,15 +248,23 @@ pub fn ManifestLevelType(
                         std.log.info("COMP_STRAT = {s}", .{  
                             comp_strat_str_,
                         });
-                        comp_strat_init = true;
                     }
                 }
+                var comp_lookaround_str = env_map.get("COMP_LOOK");
+                if (comp_lookaround_str != null) {
+                    if (!comp_strat_init) {
+                        std.log.info("COMP_LOOK", .{});
+                    }
+                    comp_lookaround = true;
+                }
+                comp_strat_init = true;
             }
 
             return Self{
                 .keys = keys,
                 .tables = tables,
                 .comp_strat = comp_strat,
+                .comp_lookaround = comp_lookaround,
             };
         }
 
@@ -669,9 +679,11 @@ pub fn ManifestLevelType(
                     .range = range,
                 };
 
-                new = level_a.table_lookaround(
-                    level_b,snapshot, max_overlapping_tables, new,
-                );
+                if (level_a.comp_lookaround) {
+                    new = level_a.table_lookaround(
+                        level_b,snapshot, max_overlapping_tables, new,
+                    );
+                }
 
                 // If the table can be moved directly between levels then that is already optimal.
                 if (new.range.tables.empty()) {
@@ -709,44 +721,95 @@ pub fn ManifestLevelType(
             }
 
             if (old.range.tables.count() != 0) {
-                const rev_next_table = level_b.next_table(.{
-                    .snapshot = snapshot,
-                    .key_min = std.math.minInt(Key),
-                    .key_max = old.range.key_max,
-                    .key_exclusive = old.range.key_min,
-                    .direction = Direction.descending,
-                });
-                const rev: ?LeastOverlapTable = if (rev_next_table) |next_table_| brk: {
-                    assert(next_table_.key_max < old.range.key_min);
-                    var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
-                    {
-                        new_tables.append_assume_capacity(TableInfoReference {
-                            .table_info = @constCast(next_table_),
-                            .generation = level_b.generation,
-                        });
-                        for (old.range.tables.const_slice()) |old_table| {
-                            new_tables.append_assume_capacity(old_table);
+                const rev: ?LeastOverlapTable = revbrk: {
+                    const rev_next_table = level_b.next_table(.{
+                        .snapshot = snapshot,
+                        .key_min = std.math.minInt(Key),
+                        .key_max = old.range.key_max,
+                        .key_exclusive = old.range.key_min,
+                        .direction = Direction.descending,
+                    });
+                    break :revbrk if (rev_next_table) |next_table_| brk: {
+                        assert(next_table_.key_max < old.range.key_min);
+                        var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                        {
+                            new_tables.append_assume_capacity(TableInfoReference {
+                                .table_info = @constCast(next_table_),
+                                .generation = level_b.generation,
+                            });
+                            for (old.range.tables.const_slice()) |old_table| {
+                                new_tables.append_assume_capacity(old_table);
+                            }
                         }
-                    }
-                    const new = LeastOverlapTable {
-                        .table = old.table,
-                        .range = OverlapRange {
-                            .key_min = next_table_.key_min,
-                            .key_max = old.range.key_max,
-                            .value_count = old.range.value_count + next_table_.value_count,
-                            .tables = new_tables,
-                        },
-                    };
-                    if (next_table_.value_count < TableInfo.value_count_max_actual) {
-                        break :brk new;
-                    } else {
-                        break :brk null;
-                    }
-                } else null;
+                        const new = LeastOverlapTable {
+                            .table = old.table,
+                            .range = OverlapRange {
+                                .key_min = next_table_.key_min,
+                                .key_max = old.range.key_max,
+                                .value_count = old.range.value_count + next_table_.value_count,
+                                .tables = new_tables,
+                            },
+                        };
+                        if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                            break :brk new;
+                        } else {
+                            break :brk null;
+                        }
+                    } else null;
+                };
+                const forward: ?LeastOverlapTable = forwardbrk: {
+                    const rev_next_table = level_b.next_table(.{
+                        .snapshot = snapshot,
+                        .key_min = old.range.key_min,
+                        .key_max = std.math.maxInt(Key),
+                        .key_exclusive = old.range.key_max,
+                        .direction = Direction.ascending,
+                    });
+                    break :forwardbrk if (rev_next_table) |next_table_| brk: {
+                        assert(next_table_.key_min > old.range.key_max);
+                        var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                        {
+                            for (old.range.tables.const_slice()) |old_table| {
+                                new_tables.append_assume_capacity(old_table);
+                            }
+                            new_tables.append_assume_capacity(TableInfoReference {
+                                .table_info = @constCast(next_table_),
+                                .generation = level_b.generation,
+                            });
+                        }
+                        const new = LeastOverlapTable {
+                            .table = old.table,
+                            .range = OverlapRange {
+                                .key_min = old.range.key_min,
+                                .key_max = next_table_.key_max,
+                                .value_count = old.range.value_count + next_table_.value_count,
+                                .tables = new_tables,
+                            },
+                        };
+                        if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                            break :brk new;
+                        } else {
+                            break :brk null;
+                        }
+                    } else null;
+                };
 
                 if (rev) |rev_| {
-                    std.log.info("CHOSE LOOKAROUND", .{});
-                    return rev_;
+                    if (forward) |forward_| {
+                        if (rev_.range.value_count < forward_.range.value_count) {
+                            std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                            return rev_;
+                        } else {
+                            std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                            return forward_;
+                        }
+                    } else {
+                        std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                        return rev_;
+                    }
+                } else if (forward) |forward_| {
+                    std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                    return forward_;
                 } else {
                     return old;
                 }
