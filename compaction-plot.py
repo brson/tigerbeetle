@@ -45,6 +45,26 @@ for row in data:
     cat["blocks_created"] += [row[1]]
     cat["blocks_active"] += [row[2]]
 
+linear_regressions = []
+
+for cat in categories:
+    cat = categories[cat]
+    blocks_created = cat["blocks_created"]
+    blocks_active = cat["blocks_active"]
+    slope, intercept = np.polyfit(
+        blocks_created,
+        blocks_active,
+        1,
+    )
+
+    x_fit = np.linspace(
+        min(blocks_created),
+        max(blocks_created),
+        100,
+    )
+    y_fit = slope * x_fit + intercept
+    linear_regressions += [(x_fit, y_fit)]
+
 plt.figure(figsize=(8,6))
 
 for i, cat in enumerate(categories):
@@ -56,6 +76,14 @@ for i, cat in enumerate(categories):
         color=colors[i],
     )
 
+# for i, (x_fit, y_fit) in enumerate(linear_regressions):
+#     plt.plot(
+#         x_fit,
+#         y_fit,
+#         color=colors[i],
+#     )
+        
+    
 plt.title("Write/Space of Compaction Strategies")
 plt.xlabel("blocks_created")
 plt.ylabel("blocks_active")
