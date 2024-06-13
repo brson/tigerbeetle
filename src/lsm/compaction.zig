@@ -247,6 +247,8 @@ pub const CompactionStats = struct {
     index_blocks_released: u64 = 0,
     value_blocks_created: u64 = 0,
     value_blocks_released: u64 = 0,
+    compactions_total: u64 = 0,
+    compactions_move: u64 = 0,
 };
 
 pub fn CompactionType(
@@ -2044,6 +2046,11 @@ pub fn CompactionType(
                 );
             }
 
+            compaction.stats.compactions_total += 1;
+            if (bar.move_table) {
+                compaction.stats.compactions_move += 1;
+            }
+
             // Our bar is done!
             compaction.bar = null;
         }
@@ -2207,6 +2214,8 @@ pub fn CompactionType(
             stats_accum.index_blocks_released += compaction.stats.index_blocks_released;
             stats_accum.value_blocks_created += compaction.stats.value_blocks_created;
             stats_accum.value_blocks_released += compaction.stats.value_blocks_released;
+            stats_accum.compactions_total += compaction.stats.compactions_total;
+            stats_accum.compactions_move += compaction.stats.compactions_move;
             compaction.stats = .{};
         }
     };

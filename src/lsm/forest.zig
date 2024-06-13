@@ -541,13 +541,15 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
             log.info(
                 "compaction stats:\n" ++
-                   "index_blocks_created: {}\n" ++
-                   "index_blocks_released: {}\n" ++
-                   "value_blocks_created: {}\n" ++
-                   "value_blocks_released: {}\n" ++
-                   "total_blocks_created: {}\n" ++
-                   "total_blocks_released: {}\n" ++
-                   "active_blocks: {}",
+                    "index_blocks_created: {}\n" ++
+                    "index_blocks_released: {}\n" ++
+                    "value_blocks_created: {}\n" ++
+                    "value_blocks_released: {}\n" ++
+                    "total_blocks_created: {}\n" ++
+                    "total_blocks_released: {}\n" ++
+                    "active_blocks: {}\n" ++
+                    "compactions_total: {}\n" ++
+                    "compactions_move: {}",
                 .{
                     forest.compaction_stats.index_blocks_created,
                     forest.compaction_stats.index_blocks_released,
@@ -556,6 +558,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                     blocks_created,
                     blocks_released,
                     active_blocks,
+                    forest.compaction_stats.compactions_total,
+                    forest.compaction_stats.compactions_move,
                 },
             );
             var comp_strat: []const u8 = "EX_TLEAST";
@@ -567,10 +571,12 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             if (comp_strat_str) |comp_strat_str_| {
                 comp_strat = comp_strat_str_;
             }
-            log.info("\n~compaction-stats~\n{s}, {}, {}", .{
+            log.info("\n~compaction-stats~\n{s}, {}, {}, {}, {}", .{
                 comp_strat,
                 blocks_created,
                 active_blocks,
+                forest.compaction_stats.compactions_total,
+                forest.compaction_stats.compactions_move,
             });
         }
 
