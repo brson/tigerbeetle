@@ -9,6 +9,8 @@ strat_env_var = "COMP_STRAT"
 strategies = [
     "EX_TLEAST",
     "EX_TMOST",
+    "EX_VLEAST",
+    "EX_VMOST",
     "EX_HIGH_TVR",
     "EX_LOW_TVR",
     "EX_TMOST_VMOST",

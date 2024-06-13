@@ -156,6 +156,8 @@ pub fn ManifestLevelType(
         const CompStrat = enum {
             ExactRangeWithLeastTables,
             ExactRangeWithMostTables,
+            ExactRangeWithLeastValues,
+            ExactRangeWithMostValues,
 
             ExactRangeWithHighTableValueRatio,
             ExactRangeWithLowTableValueRatio,
@@ -213,6 +215,10 @@ pub fn ManifestLevelType(
                         comp_strat = CompStrat.ExactRangeWithLeastTables;
                     } else if (mem.eql(u8, comp_strat_str_, "EX_TMOST")) {
                         comp_strat = CompStrat.ExactRangeWithMostTables;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_VLEAST")) {
+                        comp_strat = CompStrat.ExactRangeWithLeastValues;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_VMOST")) {
+                        comp_strat = CompStrat.ExactRangeWithMostValues;
                     } else if (mem.eql(u8, comp_strat_str_, "EX_HIGH_TVR")) {
                         comp_strat = CompStrat.ExactRangeWithHighTableValueRatio;
                     } else if (mem.eql(u8, comp_strat_str_, "EX_LOW_TVR")) {
@@ -709,6 +715,12 @@ pub fn ManifestLevelType(
                 ),
                 CompStrat.ExactRangeWithMostTables => (
                     new_table_count > old_table_count
+                ),
+                CompStrat.ExactRangeWithLeastValues => (
+                    new_value_count < old_value_count
+                ),
+                CompStrat.ExactRangeWithMostValues => (
+                    new_value_count > old_value_count
                 ),
                 CompStrat.ExactRangeWithHighTableValueRatio => (
                     new_ratio > old_ratio
