@@ -721,100 +721,102 @@ pub fn ManifestLevelType(
                 return old;
             }
 
-            if (old.range.tables.count() != 0) {
-                const rev: ?LeastOverlapTable = revbrk: {
-                    const rev_next_table = level_b.next_table(.{
-                        .snapshot = snapshot,
-                        .key_min = std.math.minInt(Key),
-                        .key_max = old.range.key_max,
-                        .key_exclusive = old.range.key_min,
-                        .direction = Direction.descending,
-                    });
-                    break :revbrk if (rev_next_table) |next_table_| brk: {
-                        assert(next_table_.key_max < old.range.key_min);
-                        var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
-                        {
-                            new_tables.append_assume_capacity(TableInfoReference {
-                                .table_info = @constCast(next_table_),
-                                .generation = level_b.generation,
-                            });
-                            for (old.range.tables.const_slice()) |old_table| {
-                                new_tables.append_assume_capacity(old_table);
-                            }
-                        }
-                        const new = LeastOverlapTable {
-                            .table = old.table,
-                            .range = OverlapRange {
-                                .key_min = next_table_.key_min,
-                                .key_max = old.range.key_max,
-                                .value_count = old.range.value_count + next_table_.value_count,
-                                .tables = new_tables,
-                            },
-                        };
-                        if (next_table_.value_count < TableInfo.value_count_max_actual) {
-                            break :brk new;
-                        } else {
-                            break :brk null;
-                        }
-                    } else null;
-                };
-                const forward: ?LeastOverlapTable = forwardbrk: {
-                    const rev_next_table = level_b.next_table(.{
-                        .snapshot = snapshot,
-                        .key_min = old.range.key_min,
-                        .key_max = std.math.maxInt(Key),
-                        .key_exclusive = old.range.key_max,
-                        .direction = Direction.ascending,
-                    });
-                    break :forwardbrk if (rev_next_table) |next_table_| brk: {
-                        assert(next_table_.key_min > old.range.key_max);
-                        var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
-                        {
-                            for (old.range.tables.const_slice()) |old_table| {
-                                new_tables.append_assume_capacity(old_table);
-                            }
-                            new_tables.append_assume_capacity(TableInfoReference {
-                                .table_info = @constCast(next_table_),
-                                .generation = level_b.generation,
-                            });
-                        }
-                        const new = LeastOverlapTable {
-                            .table = old.table,
-                            .range = OverlapRange {
-                                .key_min = old.range.key_min,
-                                .key_max = next_table_.key_max,
-                                .value_count = old.range.value_count + next_table_.value_count,
-                                .tables = new_tables,
-                            },
-                        };
-                        if (next_table_.value_count < TableInfo.value_count_max_actual) {
-                            break :brk new;
-                        } else {
-                            break :brk null;
-                        }
-                    } else null;
-                };
+            if (old.range.tables.count() == 0) {
+                assert(old.table.table_info.key_min == old.range.key_min);
+                assert(old.table.table_info.key_max == old.range.key_max);
+            }
 
-                if (rev) |rev_| {
-                    if (forward) |forward_| {
-                        if (rev_.range.value_count <= forward_.range.value_count) {
-                            std.log.info("CHOSE REVERSE LOOKAROUND", .{});
-                            return rev_;
-                        } else {
-                            std.log.info("CHOSE FORWARD LOOKAROUND", .{});
-                            return forward_;
+            const rev: ?LeastOverlapTable = revbrk: {
+                const rev_next_table = level_b.next_table(.{
+                    .snapshot = snapshot,
+                    .key_min = std.math.minInt(Key),
+                    .key_max = old.range.key_max,
+                    .key_exclusive = old.range.key_min,
+                    .direction = Direction.descending,
+                });
+                break :revbrk if (rev_next_table) |next_table_| brk: {
+                    assert(next_table_.key_max < old.range.key_min);
+                    var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                    {
+                        new_tables.append_assume_capacity(TableInfoReference {
+                            .table_info = @constCast(next_table_),
+                            .generation = level_b.generation,
+                        });
+                        for (old.range.tables.const_slice()) |old_table| {
+                            new_tables.append_assume_capacity(old_table);
                         }
+                    }
+                    const new = LeastOverlapTable {
+                        .table = old.table,
+                        .range = OverlapRange {
+                            .key_min = next_table_.key_min,
+                            .key_max = old.range.key_max,
+                            .value_count = old.range.value_count + next_table_.value_count,
+                            .tables = new_tables,
+                        },
+                    };
+                    if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                        break :brk new;
                     } else {
+                        break :brk null;
+                    }
+                } else null;
+            };
+            const forward: ?LeastOverlapTable = forwardbrk: {
+                const rev_next_table = level_b.next_table(.{
+                    .snapshot = snapshot,
+                    .key_min = old.range.key_min,
+                    .key_max = std.math.maxInt(Key),
+                    .key_exclusive = old.range.key_max,
+                    .direction = Direction.ascending,
+                });
+                break :forwardbrk if (rev_next_table) |next_table_| brk: {
+                    assert(next_table_.key_min > old.range.key_max);
+                    var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                    {
+                        for (old.range.tables.const_slice()) |old_table| {
+                            new_tables.append_assume_capacity(old_table);
+                        }
+                        new_tables.append_assume_capacity(TableInfoReference {
+                            .table_info = @constCast(next_table_),
+                            .generation = level_b.generation,
+                        });
+                    }
+                    const new = LeastOverlapTable {
+                        .table = old.table,
+                        .range = OverlapRange {
+                            .key_min = old.range.key_min,
+                            .key_max = next_table_.key_max,
+                            .value_count = old.range.value_count + next_table_.value_count,
+                            .tables = new_tables,
+                        },
+                    };
+                    if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                        break :brk new;
+                    } else {
+                        break :brk null;
+                    }
+                } else null;
+            };
+
+            if (rev) |rev_| {
+                if (forward) |forward_| {
+                    if (rev_.range.value_count <= forward_.range.value_count) {
                         std.log.info("CHOSE REVERSE LOOKAROUND", .{});
                         return rev_;
+                    } else {
+                        std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                        return forward_;
                     }
-                } else if (forward) |forward_| {
-                    std.log.info("CHOSE FORWARD LOOKAROUND", .{});
-                    return forward_;
                 } else {
-                    return old;
+                    std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                    return rev_;
                 }
+            } else if (forward) |forward_| {
+                std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                return forward_;
             } else {
+                std.log.info("CHOSE NO LOOKAROUND", .{});
                 return old;
             }
         }
