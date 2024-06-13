@@ -158,6 +158,7 @@ pub fn ManifestLevelType(
             ExactRangeWithMostTables,
             ExactRangeWithLeastValues,
             ExactRangeWithMostValues,
+            ExactRangeWithMidValues,
 
             ExactRangeWithHighTableValueRatio,
             ExactRangeWithLowTableValueRatio,
@@ -221,6 +222,8 @@ pub fn ManifestLevelType(
                         comp_strat = CompStrat.ExactRangeWithLeastValues;
                     } else if (mem.eql(u8, comp_strat_str_, "EX_VMOST")) {
                         comp_strat = CompStrat.ExactRangeWithMostValues;
+                    } else if (mem.eql(u8, comp_strat_str_, "EX_VMID")) {
+                        comp_strat = CompStrat.ExactRangeWithMidValues;
                     } else if (mem.eql(u8, comp_strat_str_, "EX_HIGH_TVR")) {
                         comp_strat = CompStrat.ExactRangeWithHighTableValueRatio;
                     } else if (mem.eql(u8, comp_strat_str_, "EX_LOW_TVR")) {
@@ -680,12 +683,6 @@ pub fn ManifestLevelType(
                     .range = range,
                 };
 
-                if (level_a.comp_lookaround) {
-                    new = level_a.table_lookaround(
-                        level_b,snapshot, max_overlapping_tables, new,
-                    );
-                }
-
                 // If the table can be moved directly between levels then that is already optimal.
                 if (new.range.tables.empty()) {
                     optimal = new;
@@ -701,9 +698,16 @@ pub fn ManifestLevelType(
                     ).*;
                 }
             }
+
             assert(iterations > 0);
             assert(iterations == level_a.table_count_visible or
                 optimal.?.range.tables.empty());
+
+            if (level_a.comp_lookaround) {
+                optimal = level_a.table_lookaround(
+                    level_b, snapshot, max_overlapping_tables, optimal.?,
+                );
+            }
 
             return optimal.?;
         }
@@ -839,6 +843,17 @@ pub fn ManifestLevelType(
             const new_free_values = new_table_max_values - new_value_count;
             const new_free_tables = @divFloor(new_free_values, TableInfo.value_count_max_actual);
 
+            const old_table_mid_values = @divFloor(old_table_max_values, 2);
+            const new_table_mid_values = @divFloor(new_table_max_values, 2);
+            const old_mid_value_vicinity = std.math.absCast(
+                @as(i64, @intCast(old_value_count)) -
+                @as(i64, @intCast(old_table_mid_values))
+            );
+            const new_mid_value_vicinity = std.math.absCast(
+                @as(i64, @intCast(new_value_count)) -
+                @as(i64, @intCast(new_table_mid_values))
+            );
+
             const new_best = switch (comp_strat) {
                 CompStrat.ExactRangeWithLeastTables => (
                     new_table_count < old_table_count
@@ -851,6 +866,9 @@ pub fn ManifestLevelType(
                 ),
                 CompStrat.ExactRangeWithMostValues => (
                     new_value_count > old_value_count
+                ),
+                CompStrat.ExactRangeWithMidValues => (
+                    new_mid_value_vicinity < old_mid_value_vicinity
                 ),
                 CompStrat.ExactRangeWithHighTableValueRatio => (
                     new_ratio > old_ratio
