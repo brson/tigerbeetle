@@ -1,5 +1,11 @@
 #!/bin/python3
 
+# todo
+#
+# track manifest log create_blocks
+# add move/look tunables
+# add "full window look"
+
 import subprocess
 import os
 import sys
