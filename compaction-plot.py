@@ -6,19 +6,103 @@ import numpy as np
 
 statsfile = "compaction-stats.csv"
 
-colors = [
-    "#2f4f4f",
-    "#228b22",
-    "#7f0000",
-    "#4b0082",
-    "#ff8c00",
-    "#00ff00",
-    "#00ffff",
-    "#ff00ff",
-    "#ffff54",
-    "#6495ed",
-    "#ff69b4",
-    "#ffe4c4",
+colors_12 = [
+    "#db4240",
+    "#6bbd3d",
+    "#a247e0",
+    "#5fa45d",
+    "#d04fb2",
+    "#cba83e",
+    "#7d6ac8",
+    "#897f3c",
+    "#6e90cb",
+    "#c67048",
+    "#49b0a1",
+    "#c26388"
+]
+
+colors_60 = [
+    "#7286e8",
+    "#51d431",
+    "#962fec",
+    "#4ec54b",
+    "#d038f0",
+    "#5da72b",
+    "#7147e7",
+    "#a5c030",
+    "#e734db",
+    "#6bc36b",
+    "#9a36c6",
+    "#409f55",
+    "#c94dcf",
+    "#48cd94",
+    "#df36ad",
+    "#3e7a2f",
+    "#4c5ee3",
+    "#db9b2c",
+    "#a069e4",
+    "#7c9b36",
+    "#525ec5",
+    "#c2ab3a",
+    "#824ead",
+    "#a2c160",
+    "#df74d2",
+    "#7b8125",
+    "#e93280",
+    "#4fab90",
+    "#e74728",
+    "#4ac1c2",
+    "#cd3446",
+    "#53b3de",
+    "#e17d1e",
+    "#4a62ad",
+    "#e47c4b",
+    "#3772a4",
+    "#b2451e",
+    "#769dde",
+    "#9f6e26",
+    "#ba93e1",
+    "#596624",
+    "#ad3b8b",
+    "#86b075",
+    "#d65484",
+    "#327750",
+    "#ab6cad",
+    "#d69b54",
+    "#844b8c",
+    "#c9b578",
+    "#6f679d",
+    "#775f1f",
+    "#d893c5",
+    "#9b8e52",
+    "#985275",
+    "#de967a",
+    "#a04359",
+    "#95623e",
+    "#dd8698",
+    "#a6513b",
+    "#e16e68"
+]
+
+markers = [
+    'o',  # Circle
+    '^',  # Triangle Up
+    'v',  # Triangle Down
+    '<',  # Triangle Left
+    '>',  # Triangle Right
+    's',  # Square
+    'p',  # Pentagon
+    '*',  # Star
+    '+',  # Plus
+    'x',  # Cross
+    'D',  # Diamond
+    'd',  # Thin Diamond
+    '|',  # Vertical Line
+    '_',  # Horizontal Line
+    'H',  # Hexagon 1
+    'h',  # Hexagon 2
+    'P',  # Plus (filled)
+    'X'   # Cross (filled)
 ]
 
 data = []
@@ -59,7 +143,19 @@ for seed in seeds.values():
             row[3] - blocks_active_mean,
         ]]
 
+
+
 scatter_data = normalized
+
+
+
+
+colors = colors_12
+
+if len(scatter_data) > 12:
+    colors = colors_60
+
+
 
 categories = {}
 
@@ -99,7 +195,8 @@ for cat in categories:
 
 
 
-plt.figure(figsize=(8,6))
+plt.figure(figsize=(16,9))
+
 
 for i, cat in enumerate(categories):
     cat = categories[cat]
@@ -108,6 +205,7 @@ for i, cat in enumerate(categories):
         cat["blocks_active"],
         label=cat["name"],
         color=colors[i],
+        marker=markers[i % len(markers)],
     )
 
 if False:
@@ -122,7 +220,9 @@ if False:
 plt.title("Write/Space of Compaction Strategies")
 plt.xlabel("blocks_created")
 plt.ylabel("blocks_active")
-plt.legend()
+plt.subplots_adjust(right=0.75)
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+#plt.legend()
 plt.grid(True)
 
 plt.savefig("compaction-plot.png")
