@@ -27,23 +27,54 @@ with open(statsfile) as csvfile:
     csvreader = csv.reader(csvfile)
 
     for row in csvreader:
+        seed = row[0]
         kind = row[1].strip()
         blocks_created = int(row[2])
         blocks_active = int(row[3])
-        data += [[kind, blocks_created, blocks_active]]
+        data += [[seed, kind, blocks_created, blocks_active]]
+
+seeds = {}
+
+for row in data:
+    if not row[0] in seeds:
+        seeds[row[0]] = []
+    seed = seeds[row[0]]
+    seed += [row]
+
+normalized = []
+    
+for seed in seeds.values():
+    blocks_created_total = 0
+    blocks_active_total = 0
+    for row in seed:
+        blocks_created_total += row[2]
+        blocks_active_total += row[3]
+    blocks_created_mean = blocks_created_total / len(seed)
+    blocks_active_mean = blocks_active_total / len(seed)
+    for row in seed:
+        normalized += [[
+            row[0],
+            row[1],
+            row[2] - blocks_created_mean,
+            row[3] - blocks_active_mean,
+        ]]
+
+scatter_data = normalized
 
 categories = {}
 
-for row in data:
-    if not row[0] in categories:
-        categories[row[0]] = {
-            "name": row[0],
+for row in scatter_data:
+    if not row[1] in categories:
+        categories[row[1]] = {
+            "name": row[1],
             "blocks_created": [],
             "blocks_active": []
         }
-    cat = categories[row[0]]
-    cat["blocks_created"] += [row[1]]
-    cat["blocks_active"] += [row[2]]
+    cat = categories[row[1]]
+    cat["blocks_created"] += [row[2]]
+    cat["blocks_active"] += [row[3]]
+
+
 
 linear_regressions = []
 
@@ -65,6 +96,9 @@ for cat in categories:
     y_fit = slope * x_fit + intercept
     linear_regressions += [(x_fit, y_fit)]
 
+
+
+
 plt.figure(figsize=(8,6))
 
 for i, cat in enumerate(categories):
@@ -76,12 +110,13 @@ for i, cat in enumerate(categories):
         color=colors[i],
     )
 
-# for i, (x_fit, y_fit) in enumerate(linear_regressions):
-#     plt.plot(
-#         x_fit,
-#         y_fit,
-#         color=colors[i],
-#     )
+if False:
+    for i, (x_fit, y_fit) in enumerate(linear_regressions):
+        plt.plot(
+            x_fit,
+            y_fit,
+            color=colors[i],
+        )
         
     
 plt.title("Write/Space of Compaction Strategies")
