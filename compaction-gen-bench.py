@@ -25,7 +25,7 @@ strategies = [
     # "EX_TLEAST_VMOST",
     # "EX_TLEAST_VLEAST",
     # "EX_TMFREE_HIGH_TVR",
-    # "EX_TMFREE_LOW_TVR",
+    "EX_TMFREE_LOW_TVR",
     # "EX_TLFREE_HIGH_TVR",
     # "EX_TLFREE_LOW_TVR",
 ]
