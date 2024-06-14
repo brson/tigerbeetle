@@ -388,7 +388,8 @@ const Command = struct {
             mutex.lock();
             defer mutex.unlock();
             replica.tick();
-            try command.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
+            //try command.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
+            try command.io.run_for_ns(100000); // fixme this doesn't seem to be nanoseconds!
         }
     }
 

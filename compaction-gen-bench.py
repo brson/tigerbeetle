@@ -5,6 +5,9 @@ import os
 import sys
 import random
 
+workdir = "workdir"
+build_dir = os.getcwd()
+
 strat_env_var = "COMP_STRAT"
 look_env_var = "COMP_LOOK"
 strategies = [
@@ -27,14 +30,22 @@ strategies = [
 events_max=100000
 seeds_count=1000
 
-def run_once(strategy, benchmark_args, lookaround):
+def build_tigerbeetle():
     command = [
         "zig/zig",
         "build",
-        "run",
         "-Drelease",
         "-Dconfig=test_min",
-        "--",
+    ]
+    result = subprocess.run(
+        command,
+        text=True,
+        check=True,
+    )
+
+def run_once(strategy, benchmark_args, lookaround):
+    command = [
+        f"{build_dir}/tigerbeetle",
         "benchmark",
     ]
     command += benchmark_args
@@ -105,6 +116,9 @@ def gen_benchmark_args(seed):
     ]
 
     return args
+
+build_tigerbeetle()
+os.chdir(workdir)
 
 for seed in range(0, seeds_count):
     benchmark_args = gen_benchmark_args(seed)
