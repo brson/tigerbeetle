@@ -12,9 +12,9 @@ strat_env_var = "COMP_STRAT"
 move_env_var = "COMP_MOVE"
 look_env_var = "COMP_LOOK"
 strategies = [
-    "EX_TLEAST",
+    # "EX_TLEAST",
     # "EX_TMOST",
-    "EX_VLEAST",
+    # "EX_VLEAST",
     "EX_VMOST",
     # "EX_VMID",
     # "EX_HIGH_TVR",
