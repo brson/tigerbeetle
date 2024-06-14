@@ -569,13 +569,19 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             if (comp_strat_str) |comp_strat_str_| {
                 comp_strat = comp_strat_str_;
             }
+            var comp_move: []const u8 = "";
+            var comp_move_str = env_map.get("COMP_MOVE");
+            if (comp_move_str != null) {
+                comp_move = "_MOVE";
+            }
             var comp_lookaround: []const u8 = "";
             var comp_lookaround_str = env_map.get("COMP_LOOK");
             if (comp_lookaround_str != null) {
                 comp_lookaround = "_LOOK";
             }
-            log.info("\n~compaction-stats~\n{s}{s}, {}, {}, {}, {}", .{
+            log.info("\n~compaction-stats~\n{s}{s}{s}, {}, {}, {}, {}", .{
                 comp_strat,
+                comp_move,
                 comp_lookaround,
                 blocks_created,
                 active_blocks,

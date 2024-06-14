@@ -196,6 +196,7 @@ pub fn ManifestLevelType(
         generation: u32 = 0,
 
         comp_strat: CompStrat,
+        comp_move: bool,
         comp_lookaround: bool,
 
         pub fn init(allocator: mem.Allocator) !Self {
@@ -207,6 +208,7 @@ pub fn ManifestLevelType(
 
             var comp_strat = CompStrat.ExactRangeWithLeastTables;
             var comp_lookaround = false;
+            var comp_move = false;
             {
                 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
                 var allocator2 = gpa.allocator();
@@ -253,6 +255,13 @@ pub fn ManifestLevelType(
                         });
                     }
                 }
+                var comp_move_str = env_map.get("COMP_MOVE");
+                if (comp_move_str != null) {
+                    if (!comp_strat_init) {
+                        std.log.info("COMP_MOVE", .{});
+                    }
+                    comp_move = true;
+                }
                 var comp_lookaround_str = env_map.get("COMP_LOOK");
                 if (comp_lookaround_str != null) {
                     if (!comp_strat_init) {
@@ -267,6 +276,7 @@ pub fn ManifestLevelType(
                 .keys = keys,
                 .tables = tables,
                 .comp_strat = comp_strat,
+                .comp_move = comp_move,
                 .comp_lookaround = comp_lookaround,
             };
         }
@@ -287,6 +297,7 @@ pub fn ManifestLevelType(
                 .tables = level.tables,
                 .generation = level.generation + 1,
                 .comp_strat = level.comp_strat,
+                .comp_move = level.comp_move,
                 .comp_lookaround = level.comp_lookaround,
             };
         }
@@ -684,7 +695,7 @@ pub fn ManifestLevelType(
                 };
 
                 // If the table can be moved directly between levels then that is already optimal.
-                if (new.range.tables.empty()) {
+                if (level_a.comp_move and new.range.tables.empty()) {
                     optimal = new;
                     break;
                 }

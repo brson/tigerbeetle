@@ -9,13 +9,14 @@ workdir = "workdir"
 build_dir = os.getcwd()
 
 strat_env_var = "COMP_STRAT"
+move_env_var = "COMP_MOVE"
 look_env_var = "COMP_LOOK"
 strategies = [
-    # "EX_TLEAST",
+    "EX_TLEAST",
     # "EX_TMOST",
     "EX_VLEAST",
     "EX_VMOST",
-    "EX_VMID",
+    # "EX_VMID",
     # "EX_HIGH_TVR",
     # "EX_LOW_TVR",
     # "EX_TMOST_VMOST",
@@ -43,7 +44,7 @@ def build_tigerbeetle():
         check=True,
     )
 
-def run_once(strategy, benchmark_args, lookaround):
+def run_once(strategy, benchmark_args, move=False, look=False):
     command = [
         f"{build_dir}/tigerbeetle",
         "benchmark",
@@ -51,7 +52,9 @@ def run_once(strategy, benchmark_args, lookaround):
     command += benchmark_args
     env = os.environ.copy()
     env[strat_env_var] = strategy
-    if lookaround:
+    if move:
+        env[move_env_var] = "1"
+    if look:
         env[look_env_var] = "1"
     result = subprocess.run(
         command,
@@ -123,6 +126,8 @@ os.chdir(workdir)
 for seed in range(0, seeds_count):
     benchmark_args = gen_benchmark_args(seed)
     for strategy in strategies:
-        run_once(strategy, benchmark_args, False)
-        run_once(strategy, benchmark_args, True)
+        run_once(strategy, benchmark_args, move=False, look=False)
+        run_once(strategy, benchmark_args, move=False, look=True)
+        run_once(strategy, benchmark_args, move=True, look=False)
+        run_once(strategy, benchmark_args, move=True, look=True)
     
