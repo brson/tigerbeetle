@@ -196,8 +196,8 @@ pub fn ManifestLevelType(
         generation: u32 = 0,
 
         comp_strat: CompStrat,
-        comp_move: bool,
         comp_lookaround: bool,
+        comp_move: bool,
 
         pub fn init(allocator: mem.Allocator) !Self {
             var keys = try Keys.init(allocator);
@@ -207,8 +207,8 @@ pub fn ManifestLevelType(
             errdefer tables.deinit(allocator, null);
 
             var comp_strat = CompStrat.ExactRangeWithLeastTables;
-            var comp_lookaround = false;
             var comp_move = false;
+            var comp_lookaround = false;
             {
                 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
                 var allocator2 = gpa.allocator();
@@ -255,19 +255,19 @@ pub fn ManifestLevelType(
                         });
                     }
                 }
-                var comp_move_str = env_map.get("COMP_MOVE");
-                if (comp_move_str != null) {
-                    if (!comp_strat_init) {
-                        std.log.info("COMP_MOVE", .{});
-                    }
-                    comp_move = true;
-                }
                 var comp_lookaround_str = env_map.get("COMP_LOOK");
                 if (comp_lookaround_str != null) {
                     if (!comp_strat_init) {
                         std.log.info("COMP_LOOK", .{});
                     }
                     comp_lookaround = true;
+                }
+                var comp_move_str = env_map.get("COMP_MOVE");
+                if (comp_move_str != null) {
+                    if (!comp_strat_init) {
+                        std.log.info("COMP_MOVE", .{});
+                    }
+                    comp_move = true;
                 }
                 comp_strat_init = true;
             }
@@ -276,8 +276,8 @@ pub fn ManifestLevelType(
                 .keys = keys,
                 .tables = tables,
                 .comp_strat = comp_strat,
-                .comp_move = comp_move,
                 .comp_lookaround = comp_lookaround,
+                .comp_move = comp_move,
             };
         }
 
@@ -297,8 +297,8 @@ pub fn ManifestLevelType(
                 .tables = level.tables,
                 .generation = level.generation + 1,
                 .comp_strat = level.comp_strat,
-                .comp_move = level.comp_move,
                 .comp_lookaround = level.comp_lookaround,
+                .comp_move = level.comp_move,
             };
         }
 

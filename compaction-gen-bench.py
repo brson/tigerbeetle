@@ -11,23 +11,31 @@ build_dir = os.getcwd()
 strat_env_var = "COMP_STRAT"
 move_env_var = "COMP_MOVE"
 look_env_var = "COMP_LOOK"
+
 strategies = [
     "EX_TLEAST",
-    "EX_TMOST",
+    # "EX_TMOST",
     "EX_VLEAST",
     "EX_VMOST",
-    "EX_VMID",
+    #"EX_VMID",
     "EX_HIGH_TVR",
     "EX_LOW_TVR",
-    "EX_TMOST_VMOST",
-    "EX_TMOST_VLEAST",
-    "EX_TLEAST_VMOST",
-    "EX_TLEAST_VLEAST",
-    "EX_TMFREE_HIGH_TVR",
-    "EX_TMFREE_LOW_TVR",
-    "EX_TLFREE_HIGH_TVR",
-    "EX_TLFREE_LOW_TVR",
+    # "EX_TMOST_VMOST",
+    # "EX_TMOST_VLEAST",
+    # "EX_TLEAST_VMOST",
+    # "EX_TLEAST_VLEAST",
+    # "EX_TMFREE_HIGH_TVR",
+    # "EX_TMFREE_LOW_TVR",
+    # "EX_TLFREE_HIGH_TVR",
+    # "EX_TLFREE_LOW_TVR",
 ]
+
+# favorites
+# EX_VMOST
+# EX_VMOST_LOOK
+# EX_LOW_TVR
+# EX_LOW_TVR_LOOK
+
 events_max=100000
 seeds_count=1000
 
