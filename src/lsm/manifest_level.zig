@@ -9,6 +9,9 @@ const stdx = @import("../stdx.zig");
 const constants = @import("../constants.zig");
 const lsm = @import("tree.zig");
 const binary_search = @import("binary_search.zig");
+const CompStrat = @import("compstrat.zig").CompStrat;
+const LookaroundPolicy = @import("compstrat.zig").LookaroundPolicy;
+const EagerMove = @import("compstrat.zig").EagerMove;
 
 const Direction = @import("../direction.zig").Direction;
 const SegmentedArray = @import("segmented_array.zig").SegmentedArray;
@@ -84,6 +87,7 @@ pub fn ManifestLevelType(
             key_min: Key,
             /// The maximum key across both levels.
             key_max: Key,
+            value_count: u64,
             // References to tables in level B that intersect with the chosen table in level A.
             tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor),
         };
@@ -171,7 +175,12 @@ pub fn ManifestLevelType(
         /// TableInfo references.
         generation: u32 = 0,
 
-        pub fn init(allocator: mem.Allocator) !Self {
+        compstrat: *const CompStrat,
+
+        pub fn init(
+            allocator: mem.Allocator,
+            compstrat: *const CompStrat
+        ) !Self {
             var keys = try Keys.init(allocator);
             errdefer keys.deinit(allocator, null);
 
@@ -181,6 +190,7 @@ pub fn ManifestLevelType(
             return Self{
                 .keys = keys,
                 .tables = tables,
+                .compstrat = compstrat,
             };
         }
 
@@ -199,6 +209,7 @@ pub fn ManifestLevelType(
                 .keys = level.keys,
                 .tables = level.tables,
                 .generation = level.generation + 1,
+                .compstrat = level.compstrat,
             };
         }
 
@@ -541,13 +552,24 @@ pub fn ManifestLevelType(
             return false;
         }
 
+        pub fn best_compaction_table(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+        ) ?LeastOverlapTable {
+            return level_a.table_with_least_overlap(
+                level_b, snapshot, max_overlapping_tables,
+            );
+        }
+
         /// Given two levels (where A is the level on which this function
         /// is invoked and B is the other level), finds a table in Level A that
         /// overlaps with the least number of tables in Level B.
         ///
         /// * Exits early if it finds a table that doesn't overlap with any
         ///   tables in the second level.
-        pub fn table_with_least_overlap(
+        fn table_with_least_overlap(
             level_a: *const Self,
             level_b: *const Self,
             snapshot: u64,
@@ -576,23 +598,244 @@ pub fn ManifestLevelType(
                 ) orelse continue;
                 assert(range.tables.count() <= max_overlapping_tables);
 
-                if (optimal == null or range.tables.count() < optimal.?.range.tables.count()) {
-                    optimal = LeastOverlapTable{
-                        .table = TableInfoReference{
-                            .table_info = table,
-                            .generation = level_a.generation,
-                        },
-                        .range = range,
-                    };
-                }
+                var new = LeastOverlapTable{
+                    .table = TableInfoReference{
+                        .table_info = table,
+                        .generation = level_a.generation,
+                    },
+                    .range = range,
+                };
+
                 // If the table can be moved directly between levels then that is already optimal.
-                if (optimal.?.range.tables.empty()) break;
+                if (level_a.should_do_eager_move(&new)) {
+                    optimal = new;
+                    break;
+                }
+                if (optimal == null) {
+                    optimal = new;
+                } else {
+                    const new_optimal = pick_table_candidate(
+                        level_a,
+                        &optimal.?,
+                        &new,
+                    );
+
+                    if (new_optimal == &optimal.?) {
+                        optimal = new_optimal.*;
+                    } else {
+                        optimal = level_a.with_lookaround(
+                            level_b, snapshot, max_overlapping_tables, new_optimal.*,
+                            optimal.?,
+                        );
+                    }
+                }
             }
+
             assert(iterations > 0);
             assert(iterations == level_a.table_count_visible or
                 optimal.?.range.tables.empty());
 
+            optimal = level_a.post_lookaround(
+                level_b, snapshot, max_overlapping_tables, optimal.?,
+            );
+
             return optimal.?;
+        }
+
+        fn should_do_eager_move(
+            level_a: *const Self,
+            new: *const LeastOverlapTable,
+        ) bool {
+            if (!new.range.tables.empty()) {
+                return false;
+            }
+            return switch (level_a.compstrat.move) {
+                EagerMove.None => false,
+                EagerMove.AnyTable => true,
+                EagerMove.FullTable =>
+                    new.table.table_info.value_count == TableInfo.value_count_max_actual,
+                EagerMove.GtMedFullTable =>
+                    new.table.table_info.value_count >= @divFloor(TableInfo.value_count_max_actual, 2),
+            };
+        }
+
+        fn with_lookaround(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+            optimal: LeastOverlapTable,
+        ) LeastOverlapTable {
+            if (level_a.compstrat.with_lookaround_policy()) |policy| {
+                const new = level_a.table_lookaround(
+                    level_b, snapshot, max_overlapping_tables, old, policy,
+                );
+                // todo should this be an optional strategy
+                return pick_table_candidate(
+                    level_a,
+                    &optimal,
+                    &new,
+                ).*;
+            } else {
+                return old;
+            }            
+        }
+
+        fn post_lookaround(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+        ) LeastOverlapTable {
+            if (level_a.compstrat.post_lookaround_policy()) |policy| {
+                return level_a.table_lookaround(
+                    level_b, snapshot, max_overlapping_tables, old, policy,
+                );
+            } else {
+                return old;
+            }            
+        }
+
+        fn table_lookaround(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+            policy: LookaroundPolicy,
+        ) LeastOverlapTable {
+            _ = level_a;
+            assert(old.range.tables.count() <= max_overlapping_tables);
+            if (old.range.tables.count() == max_overlapping_tables) {
+                return old;
+            }
+
+            if (old.range.tables.count() == 0) {
+                assert(old.table.table_info.key_min == old.range.key_min);
+                assert(old.table.table_info.key_max == old.range.key_max);
+            }
+
+            const rev: ?LeastOverlapTable = revbrk: {
+                const rev_next_table = level_b.next_table(.{
+                    .snapshot = snapshot,
+                    .key_min = std.math.minInt(Key),
+                    .key_max = old.range.key_max,
+                    .key_exclusive = old.range.key_min,
+                    .direction = Direction.descending,
+                });
+                break :revbrk if (rev_next_table) |next_table_| brk: {
+                    assert(next_table_.key_max < old.range.key_min);
+                    var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                    {
+                        new_tables.append_assume_capacity(TableInfoReference {
+                            .table_info = @constCast(next_table_),
+                            .generation = level_b.generation,
+                        });
+                        for (old.range.tables.const_slice()) |old_table| {
+                            new_tables.append_assume_capacity(old_table);
+                        }
+                    }
+                    const new = LeastOverlapTable {
+                        .table = old.table,
+                        .range = OverlapRange {
+                            .key_min = next_table_.key_min,
+                            .key_max = old.range.key_max,
+                            .value_count = old.range.value_count + next_table_.value_count,
+                            .tables = new_tables,
+                        },
+                    };
+                    switch (policy) {
+                        LookaroundPolicy.NonFull => {
+                            if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                                break :brk new;
+                            } else {
+                                break :brk null;
+                            }
+                        },
+                        LookaroundPolicy.LtHalfFull => {
+                            if (next_table_.value_count <= @divFloor(TableInfo.value_count_max_actual, 2)) {
+                                break :brk new;
+                            } else {
+                                break :brk null;
+                            }
+                        },
+                    }
+                } else null;
+            };
+            const forward: ?LeastOverlapTable = forwardbrk: {
+                const rev_next_table = level_b.next_table(.{
+                    .snapshot = snapshot,
+                    .key_min = old.range.key_min,
+                    .key_max = std.math.maxInt(Key),
+                    .key_exclusive = old.range.key_max,
+                    .direction = Direction.ascending,
+                });
+                break :forwardbrk if (rev_next_table) |next_table_| brk: {
+                    assert(next_table_.key_min > old.range.key_max);
+                    var new_tables: stdx.BoundedArray(TableInfoReference, constants.lsm_growth_factor) = .{};
+                    {
+                        for (old.range.tables.const_slice()) |old_table| {
+                            new_tables.append_assume_capacity(old_table);
+                        }
+                        new_tables.append_assume_capacity(TableInfoReference {
+                            .table_info = @constCast(next_table_),
+                            .generation = level_b.generation,
+                        });
+                    }
+                    const new = LeastOverlapTable {
+                        .table = old.table,
+                        .range = OverlapRange {
+                            .key_min = old.range.key_min,
+                            .key_max = next_table_.key_max,
+                            .value_count = old.range.value_count + next_table_.value_count,
+                            .tables = new_tables,
+                        },
+                    };
+                    switch (policy) {
+                        LookaroundPolicy.NonFull => {
+                            if (next_table_.value_count < TableInfo.value_count_max_actual) {
+                                break :brk new;
+                            } else {
+                                break :brk null;
+                            }
+                        },
+                        LookaroundPolicy.LtHalfFull => {
+                            if (next_table_.value_count <= @divFloor(TableInfo.value_count_max_actual, 2)) {
+                                break :brk new;
+                            } else {
+                                break :brk null;
+                            }
+                        },
+                    }
+                } else null;
+            };
+
+            if (rev) |rev_| {
+                if (forward) |forward_| {
+                    if (rev_.range.value_count <= forward_.range.value_count) {
+                        std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                        return rev_;
+                    } else {
+                        std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                        return forward_;
+                    }
+                } else {
+                    std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                    return rev_;
+                }
+            } else if (forward) |forward_| {
+                std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                return forward_;
+            } else {
+                std.log.info("CHOSE NO LOOKAROUND", .{});
+                return old;
+            }
+        }
+
+        fn pick_table_candidate(self: *const Self, old: *const LeastOverlapTable, new: *const LeastOverlapTable) *const LeastOverlapTable {
+            return self.compstrat.pick_table_candidate(LeastOverlapTable, old, new, TableInfo);
         }
 
         /// Returns the next table in the range, after `key_exclusive` if provided.
@@ -688,6 +931,7 @@ pub fn ManifestLevelType(
             var range = OverlapRange{
                 .key_min = key_min,
                 .key_max = key_max,
+                .value_count = 0,
                 .tables = .{},
             };
             const snapshots = [1]u64{snapshot};
@@ -718,6 +962,7 @@ pub fn ManifestLevelType(
                         .table_info = table,
                         .generation = level.generation,
                     };
+                    range.value_count += table.value_count;
                     range.tables.append_assume_capacity(table_info_reference);
                 } else {
                     return null;

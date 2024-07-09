@@ -18,12 +18,13 @@ const ManifestLogType = @import("manifest_log.zig").ManifestLogType;
 const ScanBufferPool = @import("scan_buffer.zig").ScanBufferPool;
 const CompactionInfo = @import("compaction.zig").CompactionInfo;
 const CompactionHelperType = @import("compaction.zig").CompactionHelperType;
-const CompactionStats = @import("compaction.zig").CompactionStats;
 const BlipStage = @import("compaction.zig").BlipStage;
 const Exhausted = @import("compaction.zig").Exhausted;
 const snapshot_min_for_table_output = @import("compaction.zig").snapshot_min_for_table_output;
 const snapshot_max_for_table_input = @import("compaction.zig").snapshot_max_for_table_input;
 const compaction_op_min = @import("compaction.zig").compaction_op_min;
+const CompStrat = @import("compstrat.zig").CompStrat;
+const CompactionStats = @import("compstrat.zig").CompactionStats;
 
 const IO = @import("../io.zig").IO;
 
@@ -238,6 +239,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
         compaction_stats: CompactionStats = .{},
 
+        compstrat: *CompStrat,
+
         pub fn init(
             allocator: mem.Allocator,
             grid: *Grid,
@@ -264,6 +267,9 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             });
             errdefer manifest_log.deinit(allocator);
 
+            var compstrat = try CompStrat.init(allocator);
+            errdefer compstrat.deinit(allocator);
+
             var grooves: Grooves = undefined;
             var grooves_initialized: usize = 0;
 
@@ -278,7 +284,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 const Groove = @TypeOf(groove.*);
                 const groove_options: Groove.Options = @field(grooves_options, groove_field.name);
 
-                groove.* = try Groove.init(allocator, node_pool, grid, groove_options);
+                groove.* = try Groove.init(allocator, node_pool, grid, groove_options, compstrat);
                 grooves_initialized += 1;
             }
 
@@ -286,7 +292,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 try CompactionPipeline.init(allocator, grid, options.compaction_block_count);
             errdefer compaction_pipeline.deinit(allocator);
 
-            const scan_buffer_pool = try ScanBufferPool.init(allocator);
+            var scan_buffer_pool = try ScanBufferPool.init(allocator);
             errdefer scan_buffer_pool.deinit(allocator);
 
             return Forest{
@@ -298,6 +304,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .compaction_pipeline = compaction_pipeline,
 
                 .scan_buffer_pool = scan_buffer_pool,
+                .compstrat = compstrat,
             };
         }
 
@@ -312,6 +319,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
             forest.compaction_pipeline.deinit(allocator);
             forest.scan_buffer_pool.deinit(allocator);
+            forest.compstrat.deinit(allocator);
         }
 
         pub fn reset(forest: *Forest) void {
@@ -334,6 +342,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .compaction_pipeline = forest.compaction_pipeline,
 
                 .scan_buffer_pool = forest.scan_buffer_pool,
+                .compstrat = forest.compstrat,
             };
         }
 
@@ -492,12 +501,12 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                     }
                 }
 
+                forest.manifest_log.accumulate_stats(&forest.compaction_stats);
+
                 // At the last beat or last half beat, all compactions must have returned their
                 // blocks to the block pool.
                 assert(forest.compaction_pipeline.block_pool.count ==
                     forest.compaction_pipeline.block_pool_raw.len);
-
-                //forest.log_compaction_stats();
             }
 
             // Swap the mutable and immutable tables; this must happen on the last beat, regardless
@@ -546,31 +555,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         }
 
         pub fn log_compaction_stats(forest: *const Forest) void {
-            const blocks_created = forest.compaction_stats.index_blocks_created
-                + forest.compaction_stats.value_blocks_created;
-            const blocks_released = forest.compaction_stats.index_blocks_released
-                + forest.compaction_stats.value_blocks_released;
-            const active_blocks = blocks_created -| blocks_released;
-
-            log.info(
-                "compaction stats:\n" ++
-                   "index_blocks_created: {}\n" ++
-                   "index_blocks_released: {}\n" ++
-                   "value_blocks_created: {}\n" ++
-                   "value_blocks_released: {}\n" ++
-                   "total_blocks_created: {}\n" ++
-                   "total_blocks_released: {}\n" ++
-                   "active_blocks: {}",
-                .{
-                    forest.compaction_stats.index_blocks_created,
-                    forest.compaction_stats.index_blocks_released,
-                    forest.compaction_stats.value_blocks_created,
-                    forest.compaction_stats.value_blocks_released,
-                    blocks_created,
-                    blocks_released,
-                    active_blocks,
-                },
-            );
+            forest.compstrat.log_final_stats(&forest.compaction_stats);
         }
 
         fn compact_manifest_log_callback(manifest_log: *ManifestLog) void {

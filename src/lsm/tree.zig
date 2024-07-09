@@ -21,6 +21,7 @@ const NodePool = @import("node_pool.zig").NodePool(constants.lsm_manifest_node_s
 const RingBuffer = @import("../ring_buffer.zig").RingBuffer;
 const GridType = @import("../vsr/grid.zig").GridType;
 const BlockPtrConst = @import("../vsr/grid.zig").BlockPtrConst;
+const CompStrat = @import("compstrat.zig").CompStrat;
 
 pub const ScopeCloseMode = enum { persist, discard };
 const snapshot_min_for_table_output = @import("compaction.zig").snapshot_min_for_table_output;
@@ -133,6 +134,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             grid: *Grid,
             config: Config,
             options: Options,
+            compstrat: *const CompStrat,
         ) !Tree {
             assert(grid.superblock.opened);
             assert(config.id != 0); // id=0 is reserved.
@@ -156,7 +158,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             );
             errdefer table_immutable.deinit(allocator);
 
-            var manifest = try Manifest.init(allocator, node_pool, config);
+            var manifest = try Manifest.init(allocator, node_pool, config, compstrat);
             errdefer manifest.deinit(allocator);
 
             var compactions: [constants.lsm_levels]Compaction = undefined;

@@ -350,6 +350,8 @@ const Command = struct {
                 "Recompile with -Dconfig=production if unexpected.", .{replica.replica});
         }
 
+        var mutex = std.Thread.Mutex {};
+
         // It is possible to start tigerbeetle passing `0` as an address:
         //     $ tigerbeetle start --addresses=0 0_0.tigerbeetle
         // This enables a couple of special behaviors, useful in tests:
@@ -367,19 +369,25 @@ const Command = struct {
             // thread is simpler, and gives us _un_graceful shutdown, which is exactly what we want
             // to keep behavior close to the normal case.
             const watchdog = try std.Thread.spawn(.{}, struct {
-                fn thread_main() void {
+                fn thread_main(replica2: *Replica, mutex2: *std.Thread.Mutex) void {
                     var buf: [1]u8 = .{0};
                     _ = std.io.getStdIn().read(&buf) catch {};
                     log_main.info("stdin closed, exiting", .{});
+                    mutex2.lock();
+                    defer mutex2.unlock();
+                    replica2.state_machine.forest.log_compaction_stats();
                     std.process.exit(0);
                 }
-            }.thread_main, .{});
+            }.thread_main, .{ &replica, &mutex, });
             watchdog.detach();
         }
 
         while (true) {
+            mutex.lock();
+            defer mutex.unlock();
             replica.tick();
-            try command.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
+            //try command.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
+            try command.io.run_for_ns(100000); // fixme this doesn't seem to be nanoseconds!
         }
     }
 
