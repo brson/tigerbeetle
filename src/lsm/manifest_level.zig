@@ -654,7 +654,9 @@ pub fn ManifestLevelType(
                 EagerMove.AnyTable => true,
                 EagerMove.FullTable =>
                     new.table.table_info.value_count == TableInfo.value_count_max_actual,
-                EagerMove.GtMedFullTable =>
+                EagerMove.LtHalfFullTable =>
+                    new.table.table_info.value_count <= @divFloor(TableInfo.value_count_max_actual, 2),
+                EagerMove.GtHalfFullTable =>
                     new.table.table_info.value_count >= @divFloor(TableInfo.value_count_max_actual, 2),
             };
         }
@@ -761,6 +763,13 @@ pub fn ManifestLevelType(
                                 break :brk null;
                             }
                         },
+                        LookaroundPolicy.GtHalfFull => {
+                            if (next_table_.value_count >= @divFloor(TableInfo.value_count_max_actual, 2)) {
+                                break :brk new;
+                            } else {
+                                break :brk null;
+                            }
+                        },
                     }
                 } else null;
             };
@@ -803,6 +812,13 @@ pub fn ManifestLevelType(
                         },
                         LookaroundPolicy.LtHalfFull => {
                             if (next_table_.value_count <= @divFloor(TableInfo.value_count_max_actual, 2)) {
+                                break :brk new;
+                            } else {
+                                break :brk null;
+                            }
+                        },
+                        LookaroundPolicy.GtHalfFull => {
+                            if (next_table_.value_count >= @divFloor(TableInfo.value_count_max_actual, 2)) {
                                 break :brk new;
                             } else {
                                 break :brk null;

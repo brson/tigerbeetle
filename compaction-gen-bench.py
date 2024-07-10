@@ -39,15 +39,18 @@ looks = [
     "NONE",
     "POST_SINGLE_NONFULL",
     "POST_SINGLE_LTHALF",
+    "POST_SINGLE_GTHALF",
     "WITH_SINGLE_NONFULL",
     "WITH_SINGLE_LTHALF",
+    "WITH_SINGLE_GTHALF",
 ]
 
 moves = [
     "NONE",
     "ANY",
     "FULL",
-    "GTMED",
+    "LTHALF",
+    "GTHALF",
 ]
 
 # favorites

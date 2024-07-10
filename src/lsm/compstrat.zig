@@ -28,20 +28,24 @@ pub const Lookaround = enum {
     None,
     PostSelectionSingleTableNonFull,
     PostSelectionSingleTableLtHalfFull,
+    PostSelectionSingleTableGtHalfFull,
     WithSelectionSingleTableNonFull,
     WithSelectionSingleTableLtHalfFull,
+    WithSelectionSingleTableGtHalfFull,
 };
 
 pub const LookaroundPolicy = enum {
     NonFull,
     LtHalfFull,
+    GtHalfFull,
 };
 
 pub const EagerMove = enum {
     None,
     AnyTable,
     FullTable,
-    GtMedFullTable,
+    LtHalfFullTable,
+    GtHalfFullTable,
 };
 
 pub const CompactionStats = struct {
@@ -130,10 +134,14 @@ pub const CompStrat = struct {
             comp_look = Lookaround.PostSelectionSingleTableNonFull;
         } else if (mem.eql(u8, comp_look_str, "POST_SINGLE_LTHALF")) {
             comp_look = Lookaround.PostSelectionSingleTableLtHalfFull;
+        } else if (mem.eql(u8, comp_look_str, "POST_SINGLE_GTTHALF")) {
+            comp_look = Lookaround.PostSelectionSingleTableGtHalfFull;
         } else if (mem.eql(u8, comp_look_str, "WITH_SINGLE_NONFULL")) {
             comp_look = Lookaround.WithSelectionSingleTableNonFull;
         } else if (mem.eql(u8, comp_look_str, "WITH_SINGLE_LTHALF")) {
             comp_look = Lookaround.WithSelectionSingleTableLtHalfFull;
+        } else if (mem.eql(u8, comp_look_str, "WITH_SINGLE_GTHALF")) {
+            comp_look = Lookaround.WithSelectionSingleTableGtHalfFull;
         } else {
             @panic("bad COMP_LOOK");
         }
@@ -145,8 +153,10 @@ pub const CompStrat = struct {
             comp_move = EagerMove.AnyTable;
         } else if (mem.eql(u8, comp_move_str, "FULL")) {
             comp_move = EagerMove.FullTable;
-        } else if (mem.eql(u8, comp_move_str, "GTMED")) {
-            comp_move = EagerMove.GtMedFullTable;
+        } else if (mem.eql(u8, comp_move_str, "LTHALF")) {
+            comp_move = EagerMove.GtHalfFullTable;
+        } else if (mem.eql(u8, comp_move_str, "GTHALF")) {
+            comp_move = EagerMove.GtHalfFullTable;
         } else {
             @panic("bad COMP_MOVE");
         }
@@ -360,8 +370,10 @@ pub const CompStrat = struct {
             Lookaround.None => null,
             Lookaround.PostSelectionSingleTableNonFull => null,
             Lookaround.PostSelectionSingleTableLtHalfFull => null,
+            Lookaround.PostSelectionSingleTableGtHalfFull => null,
             Lookaround.WithSelectionSingleTableNonFull => LookaroundPolicy.NonFull,
             Lookaround.WithSelectionSingleTableLtHalfFull => LookaroundPolicy.LtHalfFull,
+            Lookaround.WithSelectionSingleTableGtHalfFull => LookaroundPolicy.GtHalfFull,
         };
     }
 
@@ -370,8 +382,10 @@ pub const CompStrat = struct {
             Lookaround.None => null,
             Lookaround.PostSelectionSingleTableNonFull => LookaroundPolicy.NonFull,
             Lookaround.PostSelectionSingleTableLtHalfFull => LookaroundPolicy.LtHalfFull,
+            Lookaround.PostSelectionSingleTableGtHalfFull => LookaroundPolicy.GtHalfFull,
             Lookaround.WithSelectionSingleTableNonFull => null,
             Lookaround.WithSelectionSingleTableLtHalfFull => null,
+            Lookaround.WithSelectionSingleTableGtHalfFull => null,
         };
     }
 };
