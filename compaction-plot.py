@@ -158,15 +158,17 @@ for seed in seeds.values():
         blocks_active_max = max(blocks_active_max, row[3])
     blocks_created_mean = blocks_created_total / len(seed)
     blocks_active_mean = blocks_active_total / len(seed)
-    blocks_created_scale = 1 / blocks_created_max * 2
-    blocks_active_scale = 1 / blocks_active_max * 2
-    #blocks_created_scale = 1
-    #blocks_active_scale = 1
+    #blocks_created_scale = 1 / blocks_created_max * 2
+    #blocks_active_scale = 1 / blocks_active_max * 2
+    blocks_created_scale = 1
+    blocks_active_scale = 1
+    #blocks_created_scale = 1 / blocks_created_max_all * 2
+    #blocks_active_scale = 1 / blocks_active_max_all * 2
     for row in seed:
-        #blocks_created_norm = (row[2] - blocks_created_mean) * blocks_created_scale
-        #blocks_active_norm = (row[3] - blocks_active_mean) * blocks_active_scale
-        blocks_created_norm = (row[2] - blocks_created_mean_all) * blocks_created_scale_all
-        blocks_active_norm = (row[3] - blocks_active_mean_all) * blocks_active_scale_all
+        blocks_created_norm = (row[2] - blocks_created_mean) * blocks_created_scale
+        blocks_active_norm = (row[3] - blocks_active_mean) * blocks_active_scale
+        #blocks_created_norm = (row[2] - blocks_created_mean_all) * blocks_created_scale_all
+        #blocks_active_norm = (row[3] - blocks_active_mean_all) * blocks_active_scale_all
         normalized += [[
             row[0],
             row[1],
