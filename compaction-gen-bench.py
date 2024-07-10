@@ -2,8 +2,8 @@
 
 # todo
 #
-# add move/look tunables
 # add "full window look"
+# add level depth counter
 
 import subprocess
 import os
