@@ -17,21 +17,21 @@ look_env_var = "COMP_LOOK"
 move_env_var = "COMP_MOVE"
 
 selects = [
-    #"TLEAST",
-    # "TMOST",
+    "TLEAST",
+    "TMOST",
     "VLEAST",
     "VMOST",
-    #"VMID",
-    ##"HIGH_TVR",
+    "VMID",
+    "HIGH_TVR",
     "LOW_TVR",
-    # "TMOST_VMOST",
-    # "TMOST_VLEAST",
-    # "TLEAST_VMOST",
-    # "TLEAST_VLEAST",
-    # "TMFREE_HIGH_TVR",
-    ##"TMFREE_LOW_TVR",
-    # "TLFREE_HIGH_TVR",
-    # "TLFREE_LOW_TVR",
+    "TMOST_VMOST",
+    "TMOST_VLEAST",
+    "TLEAST_VMOST",
+    "TLEAST_VLEAST",
+    "TMFREE_HIGH_TVR",
+    "TMFREE_LOW_TVR",
+    "TLFREE_HIGH_TVR",
+    "TLFREE_LOW_TVR",
 ]
 
 looks = [

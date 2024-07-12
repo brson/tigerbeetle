@@ -135,7 +135,7 @@ pub const CompStrat = struct {
             comp_look = Lookaround.PostSelectionSingleTableNonFull;
         } else if (mem.eql(u8, comp_look_str, "POST_SINGLE_LTHALF")) {
             comp_look = Lookaround.PostSelectionSingleTableLtHalfFull;
-        } else if (mem.eql(u8, comp_look_str, "POST_SINGLE_GTTHALF")) {
+        } else if (mem.eql(u8, comp_look_str, "POST_SINGLE_GTHALF")) {
             comp_look = Lookaround.PostSelectionSingleTableGtHalfFull;
         } else if (mem.eql(u8, comp_look_str, "WITH_SINGLE_NONFULL")) {
             comp_look = Lookaround.WithSelectionSingleTableNonFull;
