@@ -32,6 +32,12 @@ pub const Lookaround = enum {
     WithSelectionSingleTableNonFull,
     WithSelectionSingleTableLtHalfFull,
     WithSelectionSingleTableGtHalfFull,
+    PostSelectionMultiTableNonFull,
+    PostSelectionMultiTableLtHalfFull,
+    PostSelectionMultiTableGtHalfFull,
+    WithSelectionMultiTableNonFull,
+    WithSelectionMultiTableLtHalfFull,
+    WithSelectionMultiTableGtHalfFull,
 };
 
 pub const LookaroundPolicy = enum {
@@ -143,6 +149,18 @@ pub const CompStrat = struct {
             comp_look = Lookaround.WithSelectionSingleTableLtHalfFull;
         } else if (mem.eql(u8, comp_look_str, "WITH_SINGLE_GTHALF")) {
             comp_look = Lookaround.WithSelectionSingleTableGtHalfFull;
+        } else if (mem.eql(u8, comp_look_str, "POST_MULTI_NONFULL")) {
+            comp_look = Lookaround.PostSelectionMultiTableNonFull;
+        } else if (mem.eql(u8, comp_look_str, "POST_MULTI_LTHALF")) {
+            comp_look = Lookaround.PostSelectionMultiTableLtHalfFull;
+        } else if (mem.eql(u8, comp_look_str, "POST_MULTI_GTHALF")) {
+            comp_look = Lookaround.PostSelectionMultiTableGtHalfFull;
+        } else if (mem.eql(u8, comp_look_str, "WITH_MULTI_NONFULL")) {
+            comp_look = Lookaround.WithSelectionMultiTableNonFull;
+        } else if (mem.eql(u8, comp_look_str, "WITH_MULTI_LTHALF")) {
+            comp_look = Lookaround.WithSelectionMultiTableLtHalfFull;
+        } else if (mem.eql(u8, comp_look_str, "WITH_MULTI_GTHALF")) {
+            comp_look = Lookaround.WithSelectionMultiTableGtHalfFull;
         } else {
             @panic("bad COMP_LOOK");
         }
@@ -378,6 +396,12 @@ pub const CompStrat = struct {
             Lookaround.WithSelectionSingleTableNonFull => LookaroundPolicy.NonFull,
             Lookaround.WithSelectionSingleTableLtHalfFull => LookaroundPolicy.LtHalfFull,
             Lookaround.WithSelectionSingleTableGtHalfFull => LookaroundPolicy.GtHalfFull,
+            Lookaround.PostSelectionMultiTableNonFull => null,
+            Lookaround.PostSelectionMultiTableLtHalfFull => null,
+            Lookaround.PostSelectionMultiTableGtHalfFull => null,
+            Lookaround.WithSelectionMultiTableNonFull => LookaroundPolicy.NonFull,
+            Lookaround.WithSelectionMultiTableLtHalfFull => LookaroundPolicy.LtHalfFull,
+            Lookaround.WithSelectionMultiTableGtHalfFull => LookaroundPolicy.GtHalfFull,
         };
     }
 
@@ -390,6 +414,30 @@ pub const CompStrat = struct {
             Lookaround.WithSelectionSingleTableNonFull => null,
             Lookaround.WithSelectionSingleTableLtHalfFull => null,
             Lookaround.WithSelectionSingleTableGtHalfFull => null,
+            Lookaround.PostSelectionMultiTableNonFull => LookaroundPolicy.NonFull,
+            Lookaround.PostSelectionMultiTableLtHalfFull => LookaroundPolicy.LtHalfFull,
+            Lookaround.PostSelectionMultiTableGtHalfFull => LookaroundPolicy.GtHalfFull,
+            Lookaround.WithSelectionMultiTableNonFull => null,
+            Lookaround.WithSelectionMultiTableLtHalfFull => null,
+            Lookaround.WithSelectionMultiTableGtHalfFull => null,
+        };
+    }
+
+    pub fn lookaround_multi(self: *const Self) bool {
+        return switch (self.look) {
+            Lookaround.None => false,
+            Lookaround.PostSelectionSingleTableNonFull => false,
+            Lookaround.PostSelectionSingleTableLtHalfFull => false,
+            Lookaround.PostSelectionSingleTableGtHalfFull => false,
+            Lookaround.WithSelectionSingleTableNonFull => false,
+            Lookaround.WithSelectionSingleTableLtHalfFull => false,
+            Lookaround.WithSelectionSingleTableGtHalfFull => false,
+            Lookaround.PostSelectionMultiTableNonFull => true,
+            Lookaround.PostSelectionMultiTableLtHalfFull => true,
+            Lookaround.PostSelectionMultiTableGtHalfFull => true,
+            Lookaround.WithSelectionMultiTableNonFull => true,
+            Lookaround.WithSelectionMultiTableLtHalfFull => true,
+            Lookaround.WithSelectionMultiTableGtHalfFull => true,
         };
     }
 };

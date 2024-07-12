@@ -670,18 +670,81 @@ pub fn ManifestLevelType(
             optimal: LeastOverlapTable,
         ) LeastOverlapTable {
             if (level_a.compstrat.with_lookaround_policy()) |policy| {
-                const new = level_a.table_lookaround(
-                    level_b, snapshot, max_overlapping_tables, old, policy,
-                );
-                // todo should this be an optional strategy
-                return pick_table_candidate(
-                    level_a,
-                    &optimal,
-                    &new,
-                ).*;
+                if (level_a.compstrat.lookaround_multi()) {
+                    return with_lookaround_multi(
+                        level_a,
+                        level_b,
+                        snapshot,
+                        max_overlapping_tables,
+                        old,
+                        optimal,
+                        policy,
+                    );
+                } else {
+                    return with_lookaround_single(
+                        level_a,
+                        level_b,
+                        snapshot,
+                        max_overlapping_tables,
+                        old,
+                        optimal,
+                        policy,
+                    );
+                }
             } else {
                 return old;
-            }            
+            }
+        }
+
+        fn with_lookaround_multi(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+            optimal: LeastOverlapTable,
+            policy: LookaroundPolicy,
+        ) LeastOverlapTable {
+            var tables = old;
+            while (!tables.range.tables.full()) {
+                const new_tables = with_lookaround_single(
+                    level_a,
+                    level_b,
+                    snapshot,
+                    max_overlapping_tables,
+                    tables,
+                    optimal,
+                    policy
+                );
+
+                if (tables.range.tables.count() == new_tables.range.tables.count()) {
+                    break;
+                } else {
+                    tables = new_tables;
+                }
+            }
+
+            return tables;
+        }
+        
+        fn with_lookaround_single(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+            optimal: LeastOverlapTable,
+            policy: LookaroundPolicy,
+        ) LeastOverlapTable {
+            const new = level_a.table_lookaround(
+                level_b, snapshot, max_overlapping_tables, old, policy,
+            );
+            // todo should this be an optional strategy
+            return pick_table_candidate(
+                level_a,
+                &optimal,
+                &new,
+            ).*;
         }
 
         fn post_lookaround(
@@ -692,12 +755,70 @@ pub fn ManifestLevelType(
             old: LeastOverlapTable,
         ) LeastOverlapTable {
             if (level_a.compstrat.post_lookaround_policy()) |policy| {
-                return level_a.table_lookaround(
-                    level_b, snapshot, max_overlapping_tables, old, policy,
-                );
+                if (level_a.compstrat.lookaround_multi()) {
+                    return post_lookaround_multi(
+                        level_a,
+                        level_b,
+                        snapshot,
+                        max_overlapping_tables,
+                        old,
+                        policy,
+                    );
+                } else {
+                    return post_lookaround_single(
+                        level_a,
+                        level_b,
+                        snapshot,
+                        max_overlapping_tables,
+                        old,
+                        policy,
+                    );
+                }
             } else {
                 return old;
             }            
+        }
+
+        fn post_lookaround_multi(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+            policy: LookaroundPolicy,
+        ) LeastOverlapTable {
+            var tables = old;
+            while (!tables.range.tables.full()) {
+                const new_tables = post_lookaround_single(
+                    level_a,
+                    level_b,
+                    snapshot,
+                    max_overlapping_tables,
+                    tables,
+                    policy
+                );
+
+                if (tables.range.tables.count() == new_tables.range.tables.count()) {
+                    break;
+                } else {
+                    tables = new_tables;
+                }
+            }
+
+            return tables;
+        }
+
+        fn post_lookaround_single(
+            level_a: *const Self,
+            level_b: *const Self,
+            snapshot: u64,
+            max_overlapping_tables: usize,
+            old: LeastOverlapTable,
+            policy: LookaroundPolicy,
+        ) LeastOverlapTable {
+            return level_a.table_lookaround(
+                level_b, snapshot, max_overlapping_tables, old, policy,
+            );
         }
 
         fn table_lookaround(
