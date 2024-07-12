@@ -2213,6 +2213,8 @@ pub fn CompactionType(
             stats_accum.compactions_total += compaction.stats.compactions_total;
             stats_accum.compactions_move += compaction.stats.compactions_move;
             compaction.stats = .{};
+
+            stats_accum.level_depth_max = @max(stats_accum.level_depth_max, compaction.level_b);
         }
     };
 }

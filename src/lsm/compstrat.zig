@@ -57,6 +57,7 @@ pub const CompactionStats = struct {
     manifest_blocks_released: u64 = 0,
     compactions_total: u64 = 0,
     compactions_move: u64 = 0,
+    level_depth_max: u64 = 0,
 };
 
 const comp_select_var = "COMP_SELECT";
@@ -216,7 +217,8 @@ pub const CompStrat = struct {
                 "total_blocks_released: {}\n" ++
                 "active_blocks: {}\n" ++
                 "compactions_total: {}\n" ++
-                "compactions_move: {}",
+                "compactions_move: {}" ++
+                "level_depth_max: {}",
             .{
                 compaction_stats.index_blocks_created,
                 compaction_stats.index_blocks_released,
@@ -229,10 +231,11 @@ pub const CompStrat = struct {
                 active_blocks,
                 compaction_stats.compactions_total,
                 compaction_stats.compactions_move,
+                compaction_stats.level_depth_max,
             },
         );
 
-        log.info("\n~compaction-stats~\nC_{s}_L_{s}_M_{s}, {}, {}, {}, {}", .{
+        log.info("\n~compaction-stats~\nC_{s}_L_{s}_M_{s}, {}, {}, {}, {}, {}", .{
             self.select_str,
             self.look_str,
             self.move_str,
@@ -240,6 +243,7 @@ pub const CompStrat = struct {
             active_blocks,
             compaction_stats.compactions_total,
             compaction_stats.compactions_move,
+            compaction_stats.level_depth_max,
         });
     }
 

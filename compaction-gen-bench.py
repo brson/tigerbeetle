@@ -3,7 +3,6 @@
 # todo
 #
 # add "full window look"
-# add level depth counter
 
 import subprocess
 import os
