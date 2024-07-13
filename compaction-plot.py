@@ -105,17 +105,20 @@ markers = [
     'X'   # Cross (filled)
 ]
 
-data = []
+def load_data(statsfile):
+    data = []
 
-with open(statsfile) as csvfile:
-    csvreader = csv.reader(csvfile)
+    with open(statsfile) as csvfile:
+        csvreader = csv.reader(csvfile)
 
-    for row in csvreader:
-        seed = int(row[0])
-        config = row[1].strip()
-        blocks_created = int(row[2])
-        blocks_active = int(row[3])
-        data += [[seed, config, blocks_created, blocks_active]]
+        for row in csvreader:
+            seed = int(row[0])
+            config = row[1].strip()
+            blocks_created = int(row[2])
+            blocks_active = int(row[3])
+            data += [[seed, config, blocks_created, blocks_active]]
+
+    return data
 
 def trim_data(data):
     configs_per_seed = 0;
@@ -126,8 +129,6 @@ def trim_data(data):
     new_row_count = math.floor(len(data) % configs_per_seed)
 
     return data[:new_row_count]
-
-data = trim_data(data)
 
 def build_views(data):
     seeds = {}
@@ -146,7 +147,13 @@ def build_views(data):
 
     return seeds, configs
 
+data = load_data(statsfile)
+data = trim_data(data)
 seeds, configs = build_views(data)
+
+
+
+
 
 blocks_created_total_all = 0
 blocks_active_total_all = 0
