@@ -705,7 +705,6 @@ pub fn ManifestLevelType(
             optimal: LeastOverlapTable,
             policy: LookaroundPolicy,
         ) LeastOverlapTable {
-            std.log.info("WITH", .{});
             var tables = old;
             while (!tables.range.tables.full()) {
                 const new_tables = with_lookaround_single(
@@ -725,7 +724,6 @@ pub fn ManifestLevelType(
                 } else {
                     tables = new_tables;
                 }
-                std.log.info("-", .{});
             }
 
             return tables;
