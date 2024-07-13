@@ -126,7 +126,7 @@ def trim_data(data):
         if row[0] == 0:
             configs_per_seed += 1
 
-    new_row_count = math.floor(len(data) % configs_per_seed)
+    new_row_count = math.floor(len(data) / configs_per_seed) * configs_per_seed
 
     return data[:new_row_count]
 
@@ -147,11 +147,11 @@ def build_views(data):
 
     return seeds, configs
 
+
+
 data = load_data(statsfile)
 data = trim_data(data)
 seeds, configs = build_views(data)
-
-
 
 
 
