@@ -2,7 +2,7 @@
 
 import csv
 import matplotlib.pyplot as plt
-import numpy as np
+import math
 
 statsfile = "compaction-stats.csv"
 
@@ -111,21 +111,42 @@ with open(statsfile) as csvfile:
     csvreader = csv.reader(csvfile)
 
     for row in csvreader:
-        seed = row[0]
-        kind = row[1].strip()
+        seed = int(row[0])
+        config = row[1].strip()
         blocks_created = int(row[2])
         blocks_active = int(row[3])
-        data += [[seed, kind, blocks_created, blocks_active]]
+        data += [[seed, config, blocks_created, blocks_active]]
 
-seeds = {}
+def trim_data(data):
+    configs_per_seed = 0;
+    for row in data:
+        if row[0] == 0:
+            configs_per_seed += 1
 
-for row in data:
-    if not row[0] in seeds:
-        seeds[row[0]] = []
-    seed = seeds[row[0]]
-    seed += [row]
+    new_row_count = math.floor(len(data) % configs_per_seed)
 
+    return data[:new_row_count]
 
+data = trim_data(data)
+
+def build_views(data):
+    seeds = {}
+    for row in data:
+        if not row[0] in seeds:
+            seeds[row[0]] = []
+        seed = seeds[row[0]]
+        seed += [row]
+
+        configs = {}
+    for row in data:
+        if not row[1] in configs:
+            configs[row[1]] = []
+        config = configs[row[1]]
+        config += [row]
+
+    return seeds, configs
+
+seeds, configs = build_views(data)
 
 blocks_created_total_all = 0
 blocks_active_total_all = 0
@@ -205,29 +226,6 @@ for row in scatter_data:
 
 
 
-# linear_regressions = []
-
-# for cat in categories:
-#     cat = categories[cat]
-#     blocks_created = cat["blocks_created"]
-#     blocks_active = cat["blocks_active"]
-#     slope, intercept = np.polyfit(
-#         blocks_created,
-#         blocks_active,
-#         1,
-#     )
-
-#     x_fit = np.linspace(
-#         min(blocks_created),
-#         max(blocks_created),
-#         100,
-#     )
-#     y_fit = slope * x_fit + intercept
-#     linear_regressions += [(x_fit, y_fit)]
-
-
-
-
 plt.figure(figsize=(16,9))
 
 
@@ -237,18 +235,10 @@ for i, cat in enumerate(categories):
         cat["blocks_created"],
         cat["blocks_active"],
         label=cat["name"],
-        color=colors[i],
+        color=colors[i % len(colors)],
         marker=markers[i % len(markers)],
     )
 
-# for i, (x_fit, y_fit) in enumerate(linear_regressions):
-#     plt.plot(
-#         x_fit,
-#         y_fit,
-#         color=colors[i],
-#     )
-        
-    
 plt.title("Write/Space of Compaction Strategies")
 plt.xlabel("blocks_created")
 plt.ylabel("blocks_active")
