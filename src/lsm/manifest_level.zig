@@ -705,6 +705,7 @@ pub fn ManifestLevelType(
             optimal: LeastOverlapTable,
             policy: LookaroundPolicy,
         ) LeastOverlapTable {
+            std.log.info("WITH", .{});
             var tables = old;
             while (!tables.range.tables.full()) {
                 const new_tables = with_lookaround_single(
@@ -718,10 +719,13 @@ pub fn ManifestLevelType(
                 );
 
                 if (tables.range.tables.count() == new_tables.range.tables.count()) {
-                    break;
+                    return tables;
+                } else if (tables.range.tables.count() > new_tables.range.tables.count()) {
+                    return new_tables;
                 } else {
                     tables = new_tables;
                 }
+                std.log.info("-", .{});
             }
 
             return tables;
@@ -952,21 +956,21 @@ pub fn ManifestLevelType(
             if (rev) |rev_| {
                 if (forward) |forward_| {
                     if (rev_.range.value_count <= forward_.range.value_count) {
-                        std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                        std.log.debug("CHOSE REVERSE LOOKAROUND", .{});
                         return rev_;
                     } else {
-                        std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                        std.log.debug("CHOSE FORWARD LOOKAROUND", .{});
                         return forward_;
                     }
                 } else {
-                    std.log.info("CHOSE REVERSE LOOKAROUND", .{});
+                    std.log.debug("CHOSE REVERSE LOOKAROUND", .{});
                     return rev_;
                 }
             } else if (forward) |forward_| {
-                std.log.info("CHOSE FORWARD LOOKAROUND", .{});
+                std.log.debug("CHOSE FORWARD LOOKAROUND", .{});
                 return forward_;
             } else {
-                std.log.info("CHOSE NO LOOKAROUND", .{});
+                std.log.debug("CHOSE NO LOOKAROUND", .{});
                 return old;
             }
         }

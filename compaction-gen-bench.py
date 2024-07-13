@@ -17,34 +17,34 @@ look_env_var = "COMP_LOOK"
 move_env_var = "COMP_MOVE"
 
 selects = [
-    "TLEAST",
-    "TMOST",
-    "VLEAST",
-    "VMOST",
+    # "TLEAST",
+    # "TMOST",
+    # "VLEAST",
+    # "VMOST",
     "VMID",
-    "HIGH_TVR",
-    "LOW_TVR",
-    "TMOST_VMOST",
-    "TMOST_VLEAST",
-    "TLEAST_VMOST",
-    "TLEAST_VLEAST",
-    "TMFREE_HIGH_TVR",
-    "TMFREE_LOW_TVR",
-    "TLFREE_HIGH_TVR",
-    "TLFREE_LOW_TVR",
+    # "HIGH_TVR",
+    # "LOW_TVR",
+    # "TMOST_VMOST",
+    # "TMOST_VLEAST",
+    # "TLEAST_VMOST",
+    # "TLEAST_VLEAST",
+    # "TMFREE_HIGH_TVR",
+    # "TMFREE_LOW_TVR",
+    # "TLFREE_HIGH_TVR",
+    # "TLFREE_LOW_TVR",
 ]
 
 looks = [
-    "NONE",
-    "POST_SINGLE_NONFULL",
-    "POST_SINGLE_LTHALF",
-    "POST_SINGLE_GTHALF",
-    "WITH_SINGLE_NONFULL",
-    "WITH_SINGLE_LTHALF",
-    "WITH_SINGLE_GTHALF",
-    "POST_MULTI_NONFULL",
-    "POST_MULTI_LTHALF",
-    "POST_MULTI_GTHALF",
+    # "NONE",
+    # "POST_SINGLE_NONFULL",
+    # "POST_SINGLE_LTHALF",
+    # "POST_SINGLE_GTHALF",
+    # "WITH_SINGLE_NONFULL",
+    # "WITH_SINGLE_LTHALF",
+    # "WITH_SINGLE_GTHALF",
+    #"POST_MULTI_NONFULL",
+    #"POST_MULTI_LTHALF",
+    #"POST_MULTI_GTHALF",
     "WITH_MULTI_NONFULL",
     "WITH_MULTI_LTHALF",
     "WITH_MULTI_GTHALF",
@@ -52,9 +52,9 @@ looks = [
 
 moves = [
     "NONE",
-    "ANY",
-    "FULL",
-    "LTHALF",
+    # "ANY",
+    # "FULL",
+    # "LTHALF",
     "GTHALF",
 ]
 
@@ -159,8 +159,11 @@ os.chdir(workdir)
 
 for seed in range(0, seeds_count):
     benchmark_args = gen_benchmark_args(seed)
+    print(f"{benchmark_args}")
+    sys.stdout.flush()
     for select in selects:
         for look in looks:
             for move in moves:
                 run_once(select, look, move, benchmark_args)
+                #print(f"{select} {look} {move}")
     
