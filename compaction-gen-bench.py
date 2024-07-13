@@ -159,8 +159,6 @@ os.chdir(workdir)
 
 for seed in range(0, seeds_count):
     benchmark_args = gen_benchmark_args(seed)
-    print(f"{benchmark_args}")
-    sys.stdout.flush()
     for select in selects:
         for look in looks:
             for move in moves:
