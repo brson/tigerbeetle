@@ -3,6 +3,7 @@
 import csv
 import matplotlib.pyplot as plt
 import math
+import numpy as np
 
 statsfile = "compaction-stats.csv"
 
@@ -138,7 +139,7 @@ def build_views(data):
         seed = seeds[row[0]]
         seed += [row]
 
-        configs = {}
+    configs = {}
     for row in data:
         if not row[1] in configs:
             configs[row[1]] = []
@@ -180,43 +181,107 @@ def normalize(data):
 
     return normalized
 
+def drop_high_writes(data):
+    seeds, configs = build_views(data)
+    blocks_created_summed = []
+
+    for config in configs.values():
+        blocks_created_total = 0
+        for row in config:
+            blocks_created_total += row[2]
+        blocks_created_summed += [(blocks_created_total, config)]
+
+    blocks_created_summed.sort(
+        key = lambda x: x[0],
+    )
+
+    blocks_created_summed = blocks_created_summed[:math.floor(len(blocks_created_summed)/2)]
+
+    new = []
+    for _, row in blocks_created_summed:
+        new += row
+
+    return new
+        
+
+def linear_regression(data):
+    blocks_created = []
+    blocks_active = []
+    for row in data:
+        blocks_created += [row[2]]
+        blocks_active += [row[3]]
+
+    slope, intercept = np.polyfit(
+        blocks_created,
+        blocks_active,
+        1,
+    )
+
+    x_fit = np.linspace(
+        min(blocks_created),
+        max(blocks_created),
+        100,
+    )
+    y_fit = slope * x_fit + intercept
+    return (x_fit, y_fit, slope, intercept)
+
+
+def build_plot_data(data):
+    categories = {}
+
+    for row in data:
+        if not row[1] in categories:
+            categories[row[1]] = {
+                "name": row[1],
+                "blocks_created": [],
+                "blocks_active": []
+            }
+        cat = categories[row[1]]
+        cat["blocks_created"] += [row[2]]
+        cat["blocks_active"] += [row[3]]
+
+    return categories
+
+
 data = load_data(statsfile)
 data = trim_incomplete_data(data)
-normalized = normalize(data)
+normalized_data = normalize(data)
+normalized_plot_data = build_plot_data(normalized_data)
+xfit1, yfit1, _, _ = linear_regression(normalized_data)
+reduced_data = drop_high_writes(normalized_data)
+reduced_plot_data = build_plot_data(reduced_data)
+xfit2, yfit2, slope, intercept = linear_regression(reduced_data)
 
 
-scatter_data = normalized
-
-
-
+final_plot_data = reduced_plot_data
 
 colors = colors_12
 
-if len(scatter_data) > 12:
+if len(final_plot_data) > 12:
     colors = colors_60
-
-
-
-categories = {}
-
-for row in scatter_data:
-    if not row[1] in categories:
-        categories[row[1]] = {
-            "name": row[1],
-            "blocks_created": [],
-            "blocks_active": []
-        }
-    cat = categories[row[1]]
-    cat["blocks_created"] += [row[2]]
-    cat["blocks_active"] += [row[3]]
-
 
 
 plt.figure(figsize=(16,9))
 
+xlim_min = 0
+xlim_max = 0
+ylim_min = 0
+ylim_max = 0
 
-for i, cat in enumerate(categories):
-    cat = categories[cat]
+for i, cat in enumerate(normalized_plot_data):
+    cat = normalized_plot_data[cat]
+    xlim_min = min(xlim_min, min(cat["blocks_created"]))
+    xlim_max = max(xlim_max, max(cat["blocks_created"]))
+    ylim_min = min(ylim_min, min(cat["blocks_active"]))
+    ylim_max = max(ylim_max, max(cat["blocks_active"]))
+
+xlim_min -= 1000
+xlim_max += 1000
+ylim_min -= 1000
+ylim_max += 1000
+
+for i, cat in enumerate(final_plot_data):
+    cat = final_plot_data[cat]
     plt.scatter(
         cat["blocks_created"],
         cat["blocks_active"],
@@ -224,6 +289,12 @@ for i, cat in enumerate(categories):
         color=colors[i % len(colors)],
         marker=markers[i % len(markers)],
     )
+
+plt.plot(xfit1, yfit1, color="red", label="Regression 1")
+plt.plot(xfit2, yfit2, color="blue", label="Regression 2")
+
+plt.xlim(xlim_min, xlim_max)
+plt.ylim(ylim_min, ylim_max)
 
 plt.title("Write/Space of Compaction Strategies")
 plt.xlabel("blocks_created")
