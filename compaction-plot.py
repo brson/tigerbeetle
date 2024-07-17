@@ -181,6 +181,15 @@ def normalize(data):
 
     return normalized
 
+def add_category(reduced_data, all_data, category):
+    seeds, configs = build_views(all_data)
+
+    for config in configs.values():
+        if config[0][1] == category:
+            reduced_data += config
+
+    return reduced_data
+
 def drop_high_writes(data):
     seeds, configs = build_views(data)
     blocks_created_summed = []
@@ -274,8 +283,10 @@ def build_plot_data(data):
 
 data = load_data(statsfile)
 data = trim_incomplete_data(data)
+
 normalized_data = normalize(data)
 normalized_plot_data = build_plot_data(normalized_data)
+
 xfit1, yfit1, _, _ = linear_regression(normalized_data)
 reduced_data = drop_high_writes(normalized_data)
 reduced_plot_data = build_plot_data(reduced_data)
@@ -286,12 +297,25 @@ reduced_plot_data2 = build_plot_data(reduced_data2)
 
 reduced_data3 = drop_high_writes(reduced_data2)
 reduced_data3 = drop_high_writes(reduced_data3)
+#reduced_data3 = add_category(
+#    reduced_data3,
+#    data,
+#    "C_TLEAST_L_NONE_M_NONE",
+#)
 reduced_plot_data3 = build_plot_data(reduced_data3)
+
+
 
 seeds, configs = build_views(reduced_data3)
 print(len(configs))
 
 final_plot_data = reduced_plot_data3
+
+
+
+
+
+
 
 colors = colors_12
 
