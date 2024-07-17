@@ -297,11 +297,11 @@ reduced_plot_data2 = build_plot_data(reduced_data2)
 
 reduced_data3 = drop_high_writes(reduced_data2)
 reduced_data3 = drop_high_writes(reduced_data3)
-#reduced_data3 = add_category(
-#    reduced_data3,
-#    data,
-#    "C_TLEAST_L_NONE_M_NONE",
-#)
+reduced_data3 = add_category(
+    reduced_data3,
+    normalized_data,
+    "C_TLEAST_L_NONE_M_NONE",
+)
 reduced_plot_data3 = build_plot_data(reduced_data3)
 
 
