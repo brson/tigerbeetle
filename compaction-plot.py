@@ -204,6 +204,35 @@ def drop_high_writes(data):
     return new
         
 
+def drop_right(data, slope, intercept):
+    seeds, configs = build_views(data)
+
+    new = []
+
+    for config in configs.values():
+        right_total = 0
+        for row in config:
+            blocks_created = row[2]
+            blocks_active = row[3]
+            if is_point_right_of_line(slope, intercept, blocks_created, blocks_active):
+                right_total += 1
+
+        if right_total < len(config) / 2:
+            for row in config:
+                new += [row]
+
+    return new
+
+def is_point_right_of_line(slope, intercept, x_point, y_point):
+    # Calculate the x value on the line for the given y value of the point
+    x_line = (y_point - intercept) / slope
+    
+    # Determine if the point is to the right of the line
+    if x_point > x_line:
+        return True
+    else:
+        return False        
+
 def linear_regression(data):
     blocks_created = []
     blocks_active = []
@@ -250,10 +279,19 @@ normalized_plot_data = build_plot_data(normalized_data)
 xfit1, yfit1, _, _ = linear_regression(normalized_data)
 reduced_data = drop_high_writes(normalized_data)
 reduced_plot_data = build_plot_data(reduced_data)
+
 xfit2, yfit2, slope, intercept = linear_regression(reduced_data)
+reduced_data2 = drop_right(reduced_data, slope, intercept)
+reduced_plot_data2 = build_plot_data(reduced_data2)
 
+reduced_data3 = drop_high_writes(reduced_data2)
+reduced_data3 = drop_high_writes(reduced_data3)
+reduced_plot_data3 = build_plot_data(reduced_data3)
 
-final_plot_data = reduced_plot_data
+seeds, configs = build_views(reduced_data3)
+print(len(configs))
+
+final_plot_data = reduced_plot_data3
 
 colors = colors_12
 
@@ -290,11 +328,11 @@ for i, cat in enumerate(final_plot_data):
         marker=markers[i % len(markers)],
     )
 
-plt.plot(xfit1, yfit1, color="red", label="Regression 1")
-plt.plot(xfit2, yfit2, color="blue", label="Regression 2")
+#plt.plot(xfit1, yfit1, color="red", label="Regression 1")
+#plt.plot(xfit2, yfit2, color="blue", label="Regression 2")
 
-plt.xlim(xlim_min, xlim_max)
-plt.ylim(ylim_min, ylim_max)
+#plt.xlim(xlim_min, xlim_max)
+#plt.ylim(ylim_min, ylim_max)
 
 plt.title("Write/Space of Compaction Strategies")
 plt.xlabel("blocks_created")
