@@ -163,6 +163,8 @@ pub fn ManifestLevelType(
         keys: Keys,
         tables: Tables,
 
+        value_count: u64 = 0,
+
         /// The range of keys in this level covered by tables visible to snapshot_latest.
         key_range_latest: LevelKeyRange = .{ .key_range = null },
 
@@ -235,6 +237,8 @@ pub fn ManifestLevelType(
                 .key_min = table.key_min,
                 .key_max = table.key_max,
             });
+
+            level.value_count += table.value_count;
 
             if (constants.verify) {
                 assert(level.contains(table));
@@ -312,6 +316,8 @@ pub fn ManifestLevelType(
             level.keys.remove_elements(node_pool, table_index_absolute, 1);
             level.tables.remove_elements(node_pool, table_index_absolute, 1);
             assert(level.keys.len() == level.tables.len());
+
+            level.value_count -= table.value_count;
 
             if (table.visible(lsm.snapshot_latest)) {
                 level.table_count_visible -= 1;
