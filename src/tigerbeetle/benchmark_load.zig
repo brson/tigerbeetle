@@ -28,6 +28,7 @@ const Client = vsr.Client(StateMachine, MessageBus);
 const tb = vsr.tigerbeetle;
 const StatsD = vsr.statsd.StatsD;
 const IdPermutation = vsr.testing.IdPermutation;
+const ZipfianGenerator = stdx.ZipfianGenerator;
 
 const cli = @import("./cli.zig");
 
