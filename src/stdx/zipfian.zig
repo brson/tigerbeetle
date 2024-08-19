@@ -1,186 +1,117 @@
+// Zipfian random number generation.
+//
+// Based on https://github.com/jonhoo/rust-zipf
+//
+// Other references:
+//
+// - Apache commons-rng's RejectionInversionZipfSampler.java,
+//   which rust-zipf is based on
+// - "Rejection-Inversion to Generate Variates from Monotone Discrete Distributions",
+//   which Apache commons is based on
+// - YCSB's ZipfianGenerator and ScrambledZipfianGenerator
+// - "Quickly Generating Billion-Record Synthetic Databases",
+//   which YCSB is based on
+//
+// The YCSB method may be faster, but it requires either a heavy
+// startup computation; or a static precomputation but fixed item length.
+// The YCSB code is also not particularly clean.
+//
+// "exponent" is also commonly called "alpha", or seemingly
+// "theta" in the YCSB distribution, which sets it to 0.99.
+
 const std = @import("std");
-const assert = @import("std").assert;
+const assert = std.debug.assert;
 
-const default_zipfian_constant: f64 = 0.99;
-
-pub const ZipfianGenerator = struct {
-
-    const Self = @This();
-    
-    items: u64,
-    base: u64,
-    zipfian_constant: f64,
-
-    alpha: f64,
-    zetan: f64,
-    eta: f64,
-    theta: f64,
-    zeta2theta: f64,
-
-    count_for_zeta: u64,
-
-    rng: std.rand.DefaultPrng,
-
-    pub fn init(seed: u64, min: u64, max: u64) ZipfianGenerator {
-        return ZipfianGenerator.init_with_zipfian_constant(
-            seed, min, max, default_zipfian_constant,
-        );
-    }
-
-    fn init_with_zipfian_constant(
-        seed: u64,
-        min: u64,
-        max: u64,
-        zipfian_constant: f64,
-    ) ZipfianGenerator {
-        const zetan = zetastatic(max - min + 1, zipfian_constant);
-        return ZipfianGenerator.init_with_zetan(
-            seed, min, max, zipfian_constant, zetan,
-        );
-    }
-
-    fn init_with_zetan(
-        seed: u64,
-        min: u64,
-        max: u64,
-        zipfian_constant: f64,
-        zetan: f64,
-    ) ZipfianGenerator {
-        const items = max - min + 1;
-        const base = min;
-
-        const theta = zipfian_constant;
-        const zeta2theta = zetastatic(2, theta);
-
-        const alpha = 1.0 / (1.0 - theta);
-        const count_for_zeta = items;
-
-        const eta = (1 - std.math.pow(f64, 2.0 / @as(f64, @floatFromInt(items)), 1.0 - theta)) / (1.0 - zeta2theta / zetan);
-
-        const rng = std.rand.DefaultPrng.init(seed);
-
-        var zipfian = ZipfianGenerator {
-            .items = items,
-            .base = base,
-            .zipfian_constant = zipfian_constant,
-            .alpha = alpha,
-            .zetan = zetan,
-            .eta = eta,
-            .theta = theta,
-            .zeta2theta = zeta2theta,
-            .count_for_zeta = count_for_zeta,
-            .rng = rng,
-        };
-
-        _ = zipfian.next_value();
-
-        return zipfian;
-    }
-
-    pub fn next_value(self: *Self) u64 {
-        return self.next_value_(self.items);
-    }
-
-    fn next_value_(self: *Self, itemcount: u64) u64 {
-        if (itemcount != self.count_for_zeta) {
-            if (itemcount > self.count_for_zeta) {
-                self.zetan = self.zeta(
-                    self.count_for_zeta,
-                    itemcount,
-                    self.theta,
-                    self.zetan,
-                );
-                self.eta = (1 - std.math.pow(f64, 2.0 / @as(f64, @floatFromInt(self.items)), 1.0 - self.theta)) / (1.0 - self.zeta2theta / self.zetan);
-            } else {
-                @panic("item count decrease not allowed");
-            }
-        }
-
-        const u = self.rng.random().float(f64);
-        const uz = u * self.zetan;
-
-        if (uz < 1.0) {
-            return self.base;
-        }
-
-        if (uz < 1.0 + std.math.pow(f64, 0.5, self.theta)) {
-            return self.base + 1;
-        }
-
-        const ret = self.base + @as(u64, @intFromFloat(@as(f64, @floatFromInt(itemcount)) * std.math.pow(f64, self.eta * u - self.eta + 1.0, self.alpha)));
-        return ret;
-    }
-
-    fn zeta(self: *Self, st: u64, n: u64, thetaval: f64, initialsum: f64) f64 {
-        self.count_for_zeta = n;
-        return zetastatic_(st, n, thetaval, initialsum);
-    }
-};
-
-fn zetastatic(n: u64, theta: f64) f64 {
-    return zetastatic_(0, n, theta, 0);
-}
-
-fn zetastatic_(
-    st: u64, n: u64, theta: f64, initialsum: f64,
-) f64 {
-    var sum = initialsum;
-    var i = st;
-    while (i < n) : (i += 1) {
-        sum += 1 / std.math.pow(f64, @floatFromInt(i + 1), theta);
-    }
-    return sum;
-}
-
-// Precomputed for default_zipfian_constant and item_count, per ycsb
-const default_zetan: f64 = 26.46902820178302;
-const item_count: u64 = 10000000000;
-
-pub const ScrambledZipfianGenerator = struct {
-
+pub const ZipfDistribution = struct {
     const Self = @This();
 
-    gen: ZipfianGenerator,
-    min: u64,
-    itemcount: u64,
+    num_elements: f64,
+    exponent: f64,
+    h_integral_x1: f64,
+    h_integral_num_elements: f64,
+    s: f64,
 
     pub fn init(
-        seed: u64,
-        min: u64,
-        max: u64,
-    ) ScrambledZipfianGenerator {
-        assert(min <= max);
-        assert(max < std.math.maxInt(u64));
+        num_elements: u64,
+        exponent: f64,
+    ) ZipfDistribution {
+        assert(num_elements > 0);
+        assert(exponent > 0.0);
 
-        return ScrambledZipfianGenerator {
-            .gen = ZipfianGenerator.init_with_zetan(
-                seed,
-                min,
-                max,
-                default_zipfian_constant,
-                default_zetan,
+        return ZipfDistribution {
+            .num_elements = @floatFromInt(num_elements),
+            .exponent = exponent,
+            .h_integral_x1 = h_integral(
+                1.5,
+                exponent,
+            ) - 1.0,
+            .h_integral_num_elements = h_integral(
+                @as(f64, @floatFromInt(num_elements)) + 0.5,
+                exponent,
             ),
-            .min = min,
-            .itemcount = max - min + 1,
+            .s = 2.0 - h_integral_inv(
+                h_integral(2.5, exponent)
+                    - h(2.0, exponent),
+                exponent,
+            ),
         };
     }
 
-    pub fn next_value(self: *Self) u64 {
-        const v = self.gen.next_value();
-        var hasher = std.hash.Wyhash.init(0);
-        std.hash.autoHash(&hasher, v);
-        const hashed = hasher.final();
-        const scrambled = self.min + hashed % self.itemcount;
-        return scrambled;
+    pub fn next(self: *const Self, rng: *std.Random) u64 {
+        const hnum = self.h_integral_num_elements;
+
+        while (true) {
+            const u = hnum + rng.float(f64) * (self.h_integral_x1 - hnum);
+            const x = h_integral_inv(u, self.exponent);
+            const k64 = @min(@max(x, 1.0), self.num_elements);
+            const k = @max(1, @as(u64, @intFromFloat((k64 + 0.5))));
+            if (
+                (k64 - x <= self.s)
+                    or (u >= h_integral(k64 + 0.5, self.exponent)
+                            - h(k64, self.exponent))
+            ) {
+                return k;
+            }
+        }
     }
 };
 
-test "zipfian" {
-    var rng = ZipfianGenerator.init(0, 0, 1000);
+fn h_integral(x: f64, exponent: f64) f64 {
+    const log_x = @log(x);
+    return helper2((1.0 - exponent) * log_x) * log_x;
+}
 
-    var i: u64 = 0;
-    while (i < 100) : (i += 1) {
-        const v = rng.next_value();
-        std.debug.print("{}\n", .{ v });
+fn h(x: f64, exponent: f64) f64 {
+    return @exp(-exponent * @log(x));
+}
+
+fn h_integral_inv(x: f64, exponent: f64) f64 {
+    var t = x * (1.0 - exponent);
+    if (t < -1.0) {
+        t = -1.0;
     }
+    return @exp(helper1(t) * x);
+}
+
+fn helper1(x: f64) f64 {
+    if (@abs(x) > 1e-8) {
+        return std.math.log1p(x) / x;
+    } else {
+        return 1.0 - x * (0.5 - x * (1.0 / 3.0 - 0.25 * x));
+    }
+}
+
+fn helper2(x: f64) f64 {
+    if (@abs(x) > 1e-8) {
+        return std.math.expm1(x) / x;
+    } else {
+        return 1.0 + x * 0.5 * (1.0 + x * 1.0 / 3.0 * (1.0 + 0.25 * x));
+    }
+}
+
+test "zipfian" {
+    var rng = std.Random.Pcg.init(0);
+    var rng2 = rng.random();
+    var zipf = ZipfDistribution.init(100, 0.99);
+    _ = zipf.next(&rng2);
 }
