@@ -1,186 +1,125 @@
-const std = @import("std");
-const assert = @import("std").assert;
+//! The algorithm here is based on
+//! "Quickly Generating Billion-Record Synthetic Databases", Jim Gray et al, SIGMOD 1994,
+//! and its implementation in YCSB's ZipfianGenerator.java.
+//! Note that the code listing in the paper
+//! has multiple critical typos that the YCSB implementation
+//! corrects for.
+//! The paper is derived from Knuth volume 3, which I have not read.
+//! Note that the random numbers returned by this generator start from 0,
+//! while the ones in the paper start at 1, and in the YCSB generator from
+//! an arbitrary range start.
 
-const default_zipfian_constant: f64 = 0.99;
+const std = @import("std");
+const assert = @import("std").debug.assert;
+const Random = @import("std").Random;
+const math = @import("std").math;
 
 pub const ZipfianGenerator = struct {
-
     const Self = @This();
-    
-    items: u64,
-    base: u64,
-    zipfian_constant: f64,
 
-    alpha: f64,
-    zetan: f64,
-    eta: f64,
     theta: f64,
-    zeta2theta: f64,
 
-    count_for_zeta: u64,
+    n: u64,
+    zetan: f64,
 
-    rng: std.rand.DefaultPrng,
-
-    pub fn init(seed: u64, min: u64, max: u64) ZipfianGenerator {
-        return ZipfianGenerator.init_with_zipfian_constant(
-            seed, min, max, default_zipfian_constant,
-        );
+    pub fn init(items: u64) ZipfianGenerator {
+        const theta_default = 0.99; // per YCSB
+        return ZipfianGenerator.init(items, theta_default);
     }
 
-    fn init_with_zipfian_constant(
-        seed: u64,
-        min: u64,
-        max: u64,
-        zipfian_constant: f64,
-    ) ZipfianGenerator {
-        const zetan = zetastatic(max - min + 1, zipfian_constant);
-        return ZipfianGenerator.init_with_zetan(
-            seed, min, max, zipfian_constant, zetan,
-        );
-    }
-
-    fn init_with_zetan(
-        seed: u64,
-        min: u64,
-        max: u64,
-        zipfian_constant: f64,
-        zetan: f64,
-    ) ZipfianGenerator {
-        const items = max - min + 1;
-        const base = min;
-
-        const theta = zipfian_constant;
-        const zeta2theta = zetastatic(2, theta);
-
-        const alpha = 1.0 / (1.0 - theta);
-        const count_for_zeta = items;
-
-        const eta = (1 - std.math.pow(f64, 2.0 / @as(f64, @floatFromInt(items)), 1.0 - theta)) / (1.0 - zeta2theta / zetan);
-
-        const rng = std.rand.DefaultPrng.init(seed);
-
-        var zipfian = ZipfianGenerator {
-            .items = items,
-            .base = base,
-            .zipfian_constant = zipfian_constant,
-            .alpha = alpha,
-            .zetan = zetan,
-            .eta = eta,
+    /// `theta` is the "skew" and is greater than 0 and less than 1;
+    /// YCSB uses 0.99; values greater than 1 seem to work but it's not clear
+    /// if they are valid.
+    pub fn init_theta(items: u64, theta: f64) ZipfianGenerator {
+        return ZipfianGenerator {
             .theta = theta,
-            .zeta2theta = zeta2theta,
-            .count_for_zeta = count_for_zeta,
-            .rng = rng,
+            .n = items,
+            .zetan = zeta(items, theta),
         };
-
-        _ = zipfian.next_value();
-
-        return zipfian;
     }
 
-    pub fn next_value(self: *Self) u64 {
-        return self.next_value_(self.items);
-    }
+    pub fn next(self: *const Self, rng: *Random) u64 {
+        const nf: f64 = @floatFromInt(self.n);
+        const alpha = 1.0 / (1.0 - self.theta);
+        const eta = (1.0 - math.pow(f64, 2.0 / nf, 1.0 - self.theta))
+            / (1.0 - zeta(2.0, self.theta) / self.zetan);
 
-    fn next_value_(self: *Self, itemcount: u64) u64 {
-        if (itemcount != self.count_for_zeta) {
-            if (itemcount > self.count_for_zeta) {
-                self.zetan = self.zeta(
-                    self.count_for_zeta,
-                    itemcount,
-                    self.theta,
-                    self.zetan,
-                );
-                self.eta = (1 - std.math.pow(f64, 2.0 / @as(f64, @floatFromInt(self.items)), 1.0 - self.theta)) / (1.0 - self.zeta2theta / self.zetan);
-            } else {
-                @panic("item count decrease not allowed");
-            }
-        }
-
-        const u = self.rng.random().float(f64);
+        const u = rng.float(f64);
         const uz = u * self.zetan;
 
         if (uz < 1.0) {
-            return self.base;
+            return 0;
         }
 
-        if (uz < 1.0 + std.math.pow(f64, 0.5, self.theta)) {
-            return self.base + 1;
+        if (uz < 1.0 + math.pow(f64, 0.5, self.theta)) {
+            return 1;
         }
 
-        const ret = self.base + @as(u64, @intFromFloat(@as(f64, @floatFromInt(itemcount)) * std.math.pow(f64, self.eta * u - self.eta + 1.0, self.alpha)));
-        return ret;
+        return @as(u64, @intFromFloat(
+            nf * math.pow(f64, eta * u - eta + 1.0, alpha)
+        ));
     }
 
-    fn zeta(self: *Self, st: u64, n: u64, thetaval: f64, initialsum: f64) f64 {
-        self.count_for_zeta = n;
-        return zetastatic_(st, n, thetaval, initialsum);
-    }
-};
-
-fn zetastatic(n: u64, theta: f64) f64 {
-    return zetastatic_(0, n, theta, 0);
-}
-
-fn zetastatic_(
-    st: u64, n: u64, theta: f64, initialsum: f64,
-) f64 {
-    var sum = initialsum;
-    var i = st;
-    while (i < n) : (i += 1) {
-        sum += 1 / std.math.pow(f64, @floatFromInt(i + 1), theta);
-    }
-    return sum;
-}
-
-// Precomputed for default_zipfian_constant and item_count, per ycsb
-const default_zetan: f64 = 26.46902820178302;
-const item_count: u64 = 10000000000;
-
-pub const ScrambledZipfianGenerator = struct {
-
-    const Self = @This();
-
-    gen: ZipfianGenerator,
-    min: u64,
-    itemcount: u64,
-
-    pub fn init(
-        seed: u64,
-        min: u64,
-        max: u64,
-    ) ScrambledZipfianGenerator {
-        assert(min <= max);
-        assert(max < std.math.maxInt(u64));
-
-        return ScrambledZipfianGenerator {
-            .gen = ZipfianGenerator.init_with_zetan(
-                seed,
-                min,
-                max,
-                default_zipfian_constant,
-                default_zetan,
-            ),
-            .min = min,
-            .itemcount = max - min + 1,
+    pub fn add_items(self: *Self, new_items: u64) void {
+        const items = self.n + new_items;
+        self.* = .{
+            .theta = self.theta,
+            .n = items,
+            .zetan = zeta(items, self.theta),
         };
     }
 
-    pub fn next_value(self: *Self) u64 {
-        const v = self.gen.next_value();
-        var hasher = std.hash.Wyhash.init(0);
-        std.hash.autoHash(&hasher, v);
-        const hashed = hasher.final();
-        const scrambled = self.min + hashed % self.itemcount;
-        return scrambled;
+    pub fn probability(self: *const Self, item: u64) f64 {
+        assert(item < self.n);
+        const itemf: f64 = @floatFromInt(item);
+        return (1.0 / self.zetan) * (1.0 / math.pow(f64, itemf + 1, self.theta));
     }
 };
 
+fn zeta(n: u64, theta: f64) f64 {
+    var i: u64 = 1;
+    var ans: f64 = 0.0;
+    while (i <= n) : (i += 1) {
+        const ifl: f64 = @floatFromInt(i);
+        ans += math.pow(f64, 1.0 / ifl, theta);
+    }
+    return ans;
+}
+
+fn zeta_incr(prev_n: u64, addtl_n: u64, prev_zetan: f64, theta: f64) f64 {
+    const new_n = prev_n + addtl_n;
+    var i = prev_n + 1;
+    var ans = prev_zetan;
+    while (i <= new_n) : (i += 1) {
+        const ifl: f64 = @floatFromInt(i);
+        ans += math.pow(f64, 1.0 / ifl, theta);
+    }
+    return ans;
+}
+
+pub const ShuffledZipfian = struct {
+};
+
 test "zipfian" {
-    var rng = ZipfianGenerator.init(0, 0, 1000);
+    var rng = std.Random.Pcg.init(0);
+    const items = 10000;
+    var zipf = ZipfianGenerator.init_theta(items, 1.1);
 
     var i: u64 = 0;
-    while (i < 100) : (i += 1) {
-        const v = rng.next_value();
+    var pcum: f64 = 0.0;
+    while (i < items) : (i += 1) {
+        const prob = zipf.probability(i);
+        pcum += prob;
+        std.debug.print("{} {d:.4} {d:.4}\n", .{ i, pcum, prob });
+        if (pcum > 0.8 or prob < 0.001) {
+            break;
+        }
+    }
+
+    i = 0;
+    while (i < 0) : (i += 1) {
+        var rand = rng.random();
+        const v = zipf.next(&rand);
         std.debug.print("{}\n", .{ v });
     }
 }
