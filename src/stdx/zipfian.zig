@@ -13,6 +13,9 @@ const std = @import("std");
 const assert = @import("std").debug.assert;
 const Random = @import("std").Random;
 const math = @import("std").math;
+const BoundedArray = @import("./bounded_array.zig").BoundedArray;
+
+const theta_default = 0.99; // per YCSB
 
 pub const ZipfianGenerator = struct {
     const Self = @This();
@@ -23,7 +26,6 @@ pub const ZipfianGenerator = struct {
     zetan: f64,
 
     pub fn init(items: u64) ZipfianGenerator {
-        const theta_default = 0.99; // per YCSB
         return ZipfianGenerator.init(items, theta_default);
     }
 
@@ -60,7 +62,7 @@ pub const ZipfianGenerator = struct {
         ));
     }
 
-    pub fn add_items(self: *Self, new_items: u64) void {
+    pub fn grow(self: *Self, new_items: u64) void {
         const items = self.n + new_items;
         self.* = .{
             .theta = self.theta,
@@ -73,6 +75,25 @@ pub const ZipfianGenerator = struct {
         assert(item < self.n);
         const itemf: f64 = @floatFromInt(item);
         return (1.0 / self.zetan) * (1.0 / math.pow(f64, itemf + 1, self.theta));
+    }
+
+    /// Returns the numbef of items which the cumulative distribution function (CDF - the
+    /// probability of some value less than x being generated) is greater or equal to `prob`.
+    ///
+    /// If there is no such value, returns `n`.
+    pub fn cumulative_distribution_items(self: *const Self, prob: f64) u64 {
+        assert(prob >= 0.0 and prob <= 1.0);
+
+        var idx: u64 = 0;
+        var prob_cum: f64 = 0.0;
+        while (idx < self.n) : (idx += 1) {
+            prob_cum += self.probability(idx);
+            if (prob_cum >= prob) {
+                return idx + 1;
+            }
+        }
+
+        return n;
     }
 };
 
@@ -97,7 +118,82 @@ fn zeta_incr(prev_n: u64, addtl_n: u64, prev_zetan: f64, theta: f64) f64 {
     return ans;
 }
 
+/// We want to store enough hot items to fill the cumulative probablity here.
+/// Other items have uniform probability.
+const hot_items_cumulative_distribution_function = 0.8;
+/// The cutoff probability for hot items.
+/// Any index with a probability less than this has uniform probability.
+/// This is used to short circuit the CDF above for data sets / thetas with a particularly
+/// large hot item set.
+const hot_items_min_probability_limit = 0.001;
+const hot_items_max = 1024;
+
 pub const ShuffledZipfian = struct {
+    const Self = @This();
+
+    const HotArray = BoundedArray(u64, hot_items_max);
+
+    gen: ZipfianGenerator,
+    hot_items: HotArray,
+
+    pub fn init() ShuffledZipfian {
+        return ShuffledZipfian.init(theta_default);
+    }
+
+    pub fn init_theta(theta: f64) ShuffledZipfian {
+        return ShuffledZipfian {
+            .gen = ZipfianGenerator.init_theta(0, theta),
+            .hot_items = HotArray {},
+        };
+    }
+
+    pub fn grow(self: *Self, new_items: u64, rng: *Random) {
+        self.gen.grow(new_items);
+
+        const hot_items_count_start = self.hot_items.count();
+        const hot_items_count_max = self.hot_items_max();
+
+        const start_idx = self.gen.n;
+        const end_idx = start_idx + new_items;
+        var idx = start_idx;
+        while (idx < end_idx) : (idx += 1) {
+        }
+    }
+
+    fn hot_items_max(self: *Self) u64 {
+        // If the probability of selecting indexes greater that hot_items.count is low,
+        // then we don't need any more hot_items. This short-circuits calculating the
+        // expensive cumulative distribution function.
+        if (self.hot_items.count() > 0) {
+            const cur_hot_min_probability = self.gen.probability(self.hot_items.count() - 1);
+            if (cur_hot_min_probability < hot_items_min_probability_limit) {
+                return self.hot_items.count();
+            }
+        }
+
+        const cdf_items_max = self.gen.cumulative_distribution_items(
+            hot_items_cumulative_distribution_function,
+        );
+
+        // Hopefully we've sized this array to fulfill any workload
+        assert(cdf_items_max <= hot_items_max);
+
+        // Not sure if this is possible
+        if (cdf_items_max < self.hot_items.count()) {
+            return self.hot_items.count();
+        }
+
+        var hot_idx = self.hot_items.count();
+        while (hot_idx < cdf_items_max) : (hot_idx += 1) {
+            const prob = self.gen.probability(hot_idx);
+            if (prob < hot_items_min_probability_limit) {
+                assert(hot_idx > 0);
+                return hot_idx;
+            }
+        }
+
+        return cdf_items_max;
+    }
 };
 
 test "zipfian" {
@@ -122,4 +218,7 @@ test "zipfian" {
         const v = zipf.next(&rand);
         std.debug.print("{}\n", .{ v });
     }
+
+    const szipf = ShuffledZipfian.init_theta(1.0);
+    _ = szipf;
 }
