@@ -33,6 +33,8 @@ pub const ZipfianGenerator = struct {
     /// YCSB uses 0.99; values greater than 1 seem to work but it's not clear
     /// if they are valid.
     pub fn init_theta(items: u64, theta: f64) ZipfianGenerator {
+        assert(theta > 0.0);
+        assert(theta != 1.0); // 1.0 seems to behave incorrectly
         return ZipfianGenerator {
             .theta = theta,
             .n = items,
@@ -41,6 +43,8 @@ pub const ZipfianGenerator = struct {
     }
 
     pub fn next(self: *const Self, rng: *Random) u64 {
+        assert(self.n > 0);
+
         const nf: f64 = @floatFromInt(self.n);
         const alpha = 1.0 / (1.0 - self.theta);
         const eta = (1.0 - math.pow(f64, 2.0 / nf, 1.0 - self.theta))
@@ -71,7 +75,7 @@ pub const ZipfianGenerator = struct {
         };
     }
 
-    pub fn probability(self: *const Self, item: u64) f64 {
+    fn probability(self: *const Self, item: u64) f64 {
         assert(item < self.n);
         const itemf: f64 = @floatFromInt(item);
         return (1.0 / self.zetan) * (1.0 / math.pow(f64, itemf + 1, self.theta));
@@ -81,7 +85,7 @@ pub const ZipfianGenerator = struct {
     /// probability of some value less than x being generated) is greater or equal to `prob`.
     ///
     /// If there is no such value, returns `n`.
-    pub fn cumulative_distribution_items(self: *const Self, prob: f64) u64 {
+    fn cumulative_distribution_items(self: *const Self, prob: f64) u64 {
         assert(prob >= 0.0 and prob <= 1.0);
 
         var idx: u64 = 0;
@@ -147,6 +151,21 @@ pub const ShuffledZipfian = struct {
         };
     }
 
+    pub fn next(self: *const Self, rng: *Random) u64 {
+        // First try to pick from a zipfian distribution
+        // of hot items.
+        const zipf_idx = self.gen.next(rng);
+        if (zipf_idx < self.hot_items.count()) {
+            const item = self.hot_items.get(zipf_idx);
+            assert(item < self.gen.n);
+            return item;
+        }
+
+        // Next pick from uniform distribution of all items.
+        const uni_idx = rng.intRangeLessThan(u64, 0, self.gen.n);
+        return uni_idx;
+    }
+
     pub fn grow(self: *Self, new_items: u64, rng: *Random) void {
         const old_n = self.gen.n;
         const new_n = old_n + new_items;
@@ -197,50 +216,55 @@ pub const ShuffledZipfian = struct {
             hot_items_cumulative_distribution_function,
         );
 
-        // Hopefully we've sized this array to fulfill any workload
-        assert(cdf_items_max <= hot_items_limit);
-
         // Not sure if this is possible
         if (cdf_items_max < self.hot_items.count()) {
             return self.hot_items.count();
         }
 
+        var max = cdf_items_max;
         var hot_idx = self.hot_items.count();
         while (hot_idx < cdf_items_max) : (hot_idx += 1) {
             const prob = self.gen.probability(hot_idx);
             if (prob < hot_items_min_probability_limit) {
                 assert(hot_idx > 0);
-                return hot_idx;
+                max = hot_idx;
+                break;
             }
         }
 
-        return cdf_items_max;
+        // Hopefully hot items fit our array.
+        assert(max <= hot_items_limit);
+
+        return max;
     }
 };
 
 test "zipfian" {
     var rng = std.Random.Pcg.init(0);
     var rand = rng.random();
-    const items = 10000;
-    var zipf = ZipfianGenerator.init_theta(items, 1.1);
+    //const items = 10000;
+    var zipf = ZipfianGenerator.init_theta(0, 1.1);
 
     var i: u64 = 0;
-    var pcum: f64 = 0.0;
-    while (i < items) : (i += 1) {
-        const prob = zipf.probability(i);
-        pcum += prob;
+    //var pcum: f64 = 0.0;
+    while (i < 100) : (i += 1) {
+        zipf.grow(1);
+        //const n = zipf.next(&rand);
+        //std.debug.print("{}\n", .{n});
+        //const prob = zipf.probability(i);
+        //pcum += prob;
         //std.debug.print("{} {d:.4} {d:.4}\n", .{ i, pcum, prob });
-        if (pcum > 0.8 or prob < 0.001) {
-            break;
-        }
+        //if (pcum > 0.8 or prob < 0.001) {
+        //    break;
+        //}
     }
 
-    i = 0;
-    while (i < 0) : (i += 1) {
-        const v = zipf.next(&rand);
-        std.debug.print("{}\n", .{ v });
-    }
+    var szipf = ShuffledZipfian.init_theta(1.1);
 
-    var szipf = ShuffledZipfian.init_theta(1.0);
-    szipf.grow(1000, &rand);
+    var i_2: u64 = 0;
+    while (i_2 < 100) : (i_2 += 1) {
+        szipf.grow(1, &rand);
+        _ = szipf.next(&rand);
+        //std.debug.print("{} ", .{n});
+    }
 }
