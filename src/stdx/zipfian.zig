@@ -93,7 +93,7 @@ pub const ZipfianGenerator = struct {
             }
         }
 
-        return n;
+        return self.n;
     }
 };
 
@@ -126,12 +126,12 @@ const hot_items_cumulative_distribution_function = 0.8;
 /// This is used to short circuit the CDF above for data sets / thetas with a particularly
 /// large hot item set.
 const hot_items_min_probability_limit = 0.001;
-const hot_items_max = 1024;
+const hot_items_limit = 1024;
 
 pub const ShuffledZipfian = struct {
     const Self = @This();
 
-    const HotArray = BoundedArray(u64, hot_items_max);
+    const HotArray = BoundedArray(u64, hot_items_limit);
 
     gen: ZipfianGenerator,
     hot_items: HotArray,
@@ -147,17 +147,34 @@ pub const ShuffledZipfian = struct {
         };
     }
 
-    pub fn grow(self: *Self, new_items: u64, rng: *Random) {
+    pub fn grow(self: *Self, new_items: u64, rng: *Random) void {
         self.gen.grow(new_items);
 
-        const hot_items_count_start = self.hot_items.count();
         const hot_items_count_max = self.hot_items_max();
 
+        assert(hot_items_count_max > 0);
+
+        const new_n = self.gen.n + new_items;
+
+        // Shuffle each new item into deck of items.
+        // If it's a hot item we'll track it, if not discard it.
         const start_idx = self.gen.n;
-        const end_idx = start_idx + new_items;
+        const end_idx = new_n;
         var idx = start_idx;
         while (idx < end_idx) : (idx += 1) {
+            if (self.hot_items.count() < hot_items_count_max) {
+                const pos_actual = rng.intRangeAtMost(u64, 0, self.hot_items.count());
+                self.hot_items.insert_assume_capacity(pos_actual, idx);
+            } else {
+                const pos_init = rng.intRangeLessThan(u64, 0, new_n);
+                if (pos_init < new_n) {
+                    const pos_actual = rng.intRangeAtMost(u64, 0, self.hot_items.count());
+                    self.hot_items.insert_assume_capacity(pos_actual, idx);
+                }
+            }
         }
+
+        assert(self.hot_items.count() == hot_items_count_max);
     }
 
     fn hot_items_max(self: *Self) u64 {
@@ -176,7 +193,7 @@ pub const ShuffledZipfian = struct {
         );
 
         // Hopefully we've sized this array to fulfill any workload
-        assert(cdf_items_max <= hot_items_max);
+        assert(cdf_items_max <= hot_items_limit);
 
         // Not sure if this is possible
         if (cdf_items_max < self.hot_items.count()) {
