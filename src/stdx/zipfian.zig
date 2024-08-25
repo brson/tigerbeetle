@@ -148,17 +148,21 @@ pub const ShuffledZipfian = struct {
     }
 
     pub fn grow(self: *Self, new_items: u64, rng: *Random) void {
+        const old_n = self.gen.n;
+        const new_n = old_n + new_items;
+
         self.gen.grow(new_items);
+
+        assert(self.gen.n == new_n);
 
         const hot_items_count_max = self.hot_items_max();
 
         assert(hot_items_count_max > 0);
-
-        const new_n = self.gen.n + new_items;
+        assert(hot_items_count_max <= new_n);
 
         // Shuffle each new item into deck of items.
         // If it's a hot item we'll track it, if not discard it.
-        const start_idx = self.gen.n;
+        const start_idx = old_n;
         const end_idx = new_n;
         var idx = start_idx;
         while (idx < end_idx) : (idx += 1) {
@@ -167,7 +171,8 @@ pub const ShuffledZipfian = struct {
                 self.hot_items.insert_assume_capacity(pos_actual, idx);
             } else {
                 const pos_init = rng.intRangeLessThan(u64, 0, new_n);
-                if (pos_init < new_n) {
+                if (pos_init < hot_items_count_max) {
+                    self.hot_items.truncate(hot_items_count_max - 1);
                     const pos_actual = rng.intRangeAtMost(u64, 0, self.hot_items.count());
                     self.hot_items.insert_assume_capacity(pos_actual, idx);
                 }
@@ -215,6 +220,7 @@ pub const ShuffledZipfian = struct {
 
 test "zipfian" {
     var rng = std.Random.Pcg.init(0);
+    var rand = rng.random();
     const items = 10000;
     var zipf = ZipfianGenerator.init_theta(items, 1.1);
 
@@ -223,7 +229,7 @@ test "zipfian" {
     while (i < items) : (i += 1) {
         const prob = zipf.probability(i);
         pcum += prob;
-        std.debug.print("{} {d:.4} {d:.4}\n", .{ i, pcum, prob });
+        //std.debug.print("{} {d:.4} {d:.4}\n", .{ i, pcum, prob });
         if (pcum > 0.8 or prob < 0.001) {
             break;
         }
@@ -231,11 +237,10 @@ test "zipfian" {
 
     i = 0;
     while (i < 0) : (i += 1) {
-        var rand = rng.random();
         const v = zipf.next(&rand);
         std.debug.print("{}\n", .{ v });
     }
 
-    const szipf = ShuffledZipfian.init_theta(1.0);
-    _ = szipf;
+    var szipf = ShuffledZipfian.init_theta(1.0);
+    szipf.grow(1000, &rand);
 }
