@@ -66,4 +66,6 @@ comptime {
 
     _ = @import("scripts/release.zig");
     _ = @import("scripts/cfo.zig");
+
+    _ = @import("stdx/zipfian.zig");
 }

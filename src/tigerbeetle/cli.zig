@@ -95,7 +95,7 @@ const CliArgs = union(enum) {
         cache_account_balances: ?[]const u8 = null,
         cache_grid: ?[]const u8 = null,
         account_count: usize = 10_000,
-        account_count_hot: usize = 0,
+        account_distribution: Command.Benchmark.Distribution = .zipfian,
         flag_history: bool = false,
         flag_imported: bool = false,
         account_batch_size: usize = @divExact(
@@ -103,7 +103,6 @@ const CliArgs = union(enum) {
             @sizeOf(tigerbeetle.Account),
         ),
         transfer_count: usize = 10_000_000,
-        transfer_hot_percent: usize = 100,
         transfer_pending: bool = false,
         transfer_batch_size: usize = @divExact(
             constants.message_size_max - @sizeOf(vsr.Header),
@@ -418,18 +417,19 @@ pub const Command = union(enum) {
         /// optimizations such as avoiding negative prefetch) while random/reversed can't.
         pub const IdOrder = enum { sequential, random, reversed };
 
+        pub const Distribution = enum { zipfian, latest, uniform };
+
         cache_accounts: ?[]const u8,
         cache_transfers: ?[]const u8,
         cache_transfers_pending: ?[]const u8,
         cache_account_balances: ?[]const u8,
         cache_grid: ?[]const u8,
         account_count: usize,
-        account_count_hot: usize,
+        account_distribution: Distribution,
         flag_history: bool,
         flag_imported: bool,
         account_batch_size: usize,
         transfer_count: usize,
-        transfer_hot_percent: usize,
         transfer_pending: bool,
         transfer_batch_size: usize,
         transfer_batch_delay_us: usize,
@@ -806,12 +806,11 @@ fn parse_args_benchmark(benchmark: CliArgs.Benchmark) Command.Benchmark {
         .cache_account_balances = benchmark.cache_account_balances,
         .cache_grid = benchmark.cache_grid,
         .account_count = benchmark.account_count,
-        .account_count_hot = benchmark.account_count_hot,
+        .account_distribution = benchmark.account_distribution,
         .flag_history = benchmark.flag_history,
         .flag_imported = benchmark.flag_imported,
         .account_batch_size = benchmark.account_batch_size,
         .transfer_count = benchmark.transfer_count,
-        .transfer_hot_percent = benchmark.transfer_hot_percent,
         .transfer_pending = benchmark.transfer_pending,
         .transfer_batch_size = benchmark.transfer_batch_size,
         .transfer_batch_delay_us = benchmark.transfer_batch_delay_us,
