@@ -1,3 +1,5 @@
+pub const tigerbeetle_config = @import("../config.zig").configs.test_min;
+
 const builtin = @import("builtin");
 const std = @import("std");
 const assert = std.debug.assert;
