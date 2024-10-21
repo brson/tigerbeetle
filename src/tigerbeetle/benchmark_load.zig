@@ -233,10 +233,10 @@ pub fn main(
             .create_accounts_batch_size = cli_args.account_batch_size,
             .create_transfers_batch_size = cli_args.transfer_batch_size,
 
-            .account_distribution_debit = Distribution.uniform,
-            .account_distribution_credit = Distribution.uniform,
-            .account_distribution_query = Distribution.uniform,
+            .account_distribution = Distribution.uniform,
 
+            .account_count_hot = cli_args.account_count_hot,
+            .transfer_hot_percent = cli_args.transfer_hot_percent,
             .flag_history = cli_args.flag_history,
             .flag_imported = cli_args.flag_imported,
             .transfer_pending = cli_args.transfer_pending,
@@ -257,10 +257,10 @@ pub fn main(
             .create_accounts_batch_size = cli_args.account_batch_size,
             .create_transfers_batch_size = cli_args.transfer_batch_size,
 
-            .account_distribution_debit = cli_args.account_distribution,
-            .account_distribution_credit = cli_args.account_distribution,
-            .account_distribution_query = cli_args.account_distribution,
+            .account_distribution = cli_args.account_distribution,
 
+            .account_count_hot = cli_args.account_count_hot,
+            .transfer_hot_percent = cli_args.transfer_hot_percent,
             .flag_history = cli_args.flag_history,
             .flag_imported = cli_args.flag_imported,
             .transfer_pending = cli_args.transfer_pending,
@@ -281,10 +281,10 @@ pub fn main(
             .create_accounts_batch_size = cli_args.account_batch_size,
             .create_transfers_batch_size = cli_args.transfer_batch_size,
 
-            .account_distribution_debit = cli_args.account_distribution,
-            .account_distribution_credit = cli_args.account_distribution,
-            .account_distribution_query = cli_args.account_distribution,
+            .account_distribution = cli_args.account_distribution,
 
+            .account_count_hot = cli_args.account_count_hot,
+            .transfer_hot_percent = cli_args.transfer_hot_percent,
             .flag_history = cli_args.flag_history,
             .flag_imported = cli_args.flag_imported,
             .transfer_pending = cli_args.transfer_pending,
@@ -1002,10 +1002,10 @@ const Workload = struct {
     create_accounts_batch_size: u64,
     create_transfers_batch_size: u64,
 
-    account_distribution_debit: Distribution,
-    account_distribution_credit: Distribution,
-    account_distribution_query: Distribution,
+    account_distribution: Distribution,
 
+    account_count_hot: u64,
+    transfer_hot_percent: u64,
     flag_history: bool,
     flag_imported: bool,
     transfer_pending: bool,
@@ -1539,9 +1539,8 @@ const WorkloadGenerator = struct {
     transfer_index_uncommitted: usize,
     transfer_index_committed: usize,
 
-    account_generator_debit: Generator,
-    account_generator_credit: Generator,
-    account_generator_query: Generator,
+    account_generator: Generator,
+    account_generator_hot: Generator,
 
     fn init(options: struct {
         workload: *const Workload,
@@ -1550,19 +1549,15 @@ const WorkloadGenerator = struct {
         transfer_index_committed: u64,
         random: std.Random,
     }) WorkloadGenerator {
-        const account_generator_debit = Generator.from_distribution(
-            options.workload.account_distribution_debit,
-            options.account_index_committed,
+        const account_generator = Generator.from_distribution(
+            options.workload.account_distribution,
+            options.account_index_committed - options.workload.account_count_hot,
             options.random,
         );
-        const account_generator_credit = Generator.from_distribution(
-            options.workload.account_distribution_credit,
-            options.account_index_committed,
-            options.random,
-        );
-        const account_generator_query = Generator.from_distribution(
-            options.workload.account_distribution_query,
-            options.account_index_committed,
+
+        const account_generator_hot = Generator.from_distribution(
+            options.workload.account_distribution,
+            options.workload.account_count_hot,
             options.random,
         );
 
@@ -1576,9 +1571,8 @@ const WorkloadGenerator = struct {
             .transfer_index_uncommitted = options.transfer_index_committed,
             .transfer_index_committed = options.transfer_index_committed,
 
-            .account_generator_debit = account_generator_debit,
-            .account_generator_credit = account_generator_credit,
-            .account_generator_query = account_generator_query,
+            .account_generator = account_generator,
+            .account_generator_hot = account_generator_hot,
         };
     }
 
@@ -1639,8 +1633,8 @@ const WorkloadGenerator = struct {
         var debit_account_index: u64 = 0;
         var credit_account_index: u64 = 0;
         while (debit_account_index == credit_account_index) {
-            debit_account_index = self.gen_account_index(&self.account_generator_debit, random);
-            credit_account_index = self.gen_account_index(&self.account_generator_credit, random);
+            debit_account_index = self.gen_account_index(&self.account_generator, random);
+            credit_account_index = self.gen_account_index(&self.account_generator, random);
         }
 
         const debit_account_id = self.id_permutation.encode(debit_account_index + 1);
@@ -1680,7 +1674,7 @@ const WorkloadGenerator = struct {
             return null;
         }
 
-        const account_index = self.gen_account_index(&self.account_generator_query, random);
+        const account_index = self.gen_account_index(&self.account_generator, random);
         const filter = tb.AccountFilter{
             .account_id = self.id_permutation.encode(account_index + 1),
             .user_data_128 = 0,
@@ -1914,9 +1908,7 @@ const WorkloadOperations = struct {
 
                 self.generator.account_index_committed += request.count;
 
-                self.generator.account_generator_debit.grow(request.count, random);
-                self.generator.account_generator_credit.grow(request.count, random);
-                self.generator.account_generator_query.grow(request.count, random);
+                self.generator.account_generator.grow(request.count, random);
             },
             .create_transfers => |request| {
                 assert(self.create_transfers_operations == null);
