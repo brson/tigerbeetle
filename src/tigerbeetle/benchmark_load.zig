@@ -1549,6 +1549,7 @@ const WorkloadGenerator = struct {
         transfer_index_committed: u64,
         random: std.Random,
     }) WorkloadGenerator {
+        @panic("fixme - account_count_hot can't be greater than account_index_committed");
         const account_generator = Generator.from_distribution(
             options.workload.account_distribution,
             options.account_index_committed - options.workload.account_count_hot,
@@ -1630,12 +1631,25 @@ const WorkloadGenerator = struct {
             return null;
         }
 
-        var debit_account_index: u64 = 0;
-        var credit_account_index: u64 = 0;
-        while (debit_account_index == credit_account_index) {
-            debit_account_index = self.gen_account_index(&self.account_generator, random);
-            credit_account_index = self.gen_account_index(&self.account_generator, random);
-        }
+        // The set of accounts is divided into two different "worlds" by
+        // `account_count_hot`. Sometimes the debit account will be selected
+        // from the first `account_count_hot` accounts; otherwise both
+        // debit and credit will be selected from an account >= `account_count_hot`.
+
+        const debit_account_hot = self.workload.account_count_hot > 0 and
+            random.uintLessThan(u64, 100) < self.workload.transfer_hot_percent;
+
+        const debit_account_index = if (debit_account_hot)
+            self.gen_account_index(&self.account_generator_hot, random)
+        else
+            self.gen_account_index(&self.account_generator, random) + self.workload.account_count_hot;
+        const credit_account_index = index: {
+            var index = self.gen_account_index(&self.account_generator, random) + self.workload.account_count_hot;
+            if (index == debit_account_index) {
+                index = (index + 1) % self.account_index_uncommitted + self.workload.account_count_hot;
+            }
+            break :index index;
+        };
 
         const debit_account_id = self.id_permutation.encode(debit_account_index + 1);
         const credit_account_id = self.id_permutation.encode(credit_account_index + 1);
