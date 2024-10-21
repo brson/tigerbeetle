@@ -211,53 +211,6 @@ pub fn main(
         .batch_transfer_ids = batch_transfer_ids,
     };
 
-    benchmark.client.register(Benchmark.register_callback, @intCast(@intFromPtr(&benchmark)));
-    while (!benchmark.done) {
-        benchmark.client.tick();
-        try benchmark.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
-    }
-    benchmark.done = false;
-
-    // benchmark.create_accounts();
-
-    // while (!benchmark.done) {
-    //     benchmark.client.tick();
-    //     try benchmark.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
-    // }
-    // benchmark.done = false;
-
-    // if (cli_args.checksum_performance) {
-    //     const stdout = std.io.getStdOut().writer();
-    //     stdout.print("\nmessage size max = {} bytes\n", .{
-    //         constants.message_size_max,
-    //     }) catch unreachable;
-
-    //     const buffer = try allocator.alloc(u8, constants.message_size_max);
-    //     defer allocator.free(buffer);
-    //     benchmark.rng.fill(buffer);
-
-    //     benchmark.timer.reset();
-    //     _ = vsr.checksum(buffer);
-    //     const checksum_duration_ns = benchmark.timer.read();
-
-    //     stdout.print("checksum message size max = {} us\n", .{
-    //         @divTrunc(checksum_duration_ns, std.time.ns_per_us),
-    //     }) catch unreachable;
-    // }
-
-    // if (!benchmark.validate) return;
-
-    // // Reset our state so we can check our work.
-    // benchmark.rng = rng;
-    // benchmark.account_index = 0;
-    // benchmark.transfer_index = 0;
-    // benchmark.validate_accounts();
-
-    // while (!benchmark.done) {
-    //     benchmark.client.tick();
-    //     try benchmark.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
-    // }
-
     var workloads =
         try std.ArrayListUnmanaged(Workload).initCapacity(allocator, 0);
     defer workloads.deinit(allocator);
@@ -336,31 +289,15 @@ pub fn main(
             .flag_imported = cli_args.flag_imported,
             .transfer_pending = cli_args.transfer_pending,
         },
-        // An example workload of multiple interleaved operations.
-        Workload {
-            .operation_count = cli_args.account_count + cli_args.transfer_count + cli_args.query_count,
-
-            .create_accounts_weight = 33,
-            .create_transfers_weight = 33,
-            .get_account_balances_weight = 0,
-            .get_account_transfers_weight = 33,
-            .lookup_accounts_weight = 0,
-            .lookup_transfers_weight = 0,
-            .query_accounts_weight = 0,
-            .query_transfers_weight = 0,
-
-            .create_accounts_batch_size = cli_args.account_batch_size,
-            .create_transfers_batch_size = cli_args.transfer_batch_size,
-
-            .account_distribution_debit = cli_args.account_distribution,
-            .account_distribution_credit = cli_args.account_distribution,
-            .account_distribution_query = cli_args.account_distribution,
-
-            .flag_history = cli_args.flag_history,
-            .flag_imported = cli_args.flag_imported,
-            .transfer_pending = cli_args.transfer_pending,
-        }
     });
+
+    // First just register the client.
+    benchmark.client.register(Benchmark.register_callback, @intCast(@intFromPtr(&benchmark)));
+    while (!benchmark.done) {
+        benchmark.client.tick();
+        try benchmark.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
+    }
+    benchmark.done = false;
 
     try run_workloads(
         allocator,
@@ -373,6 +310,26 @@ pub fn main(
             .validate = cli_args.validate,
         },
     );
+
+    // Finally, non-workload tests
+    if (cli_args.checksum_performance) {
+        const stdout = std.io.getStdOut().writer();
+        stdout.print("\nmessage size max = {} bytes\n", .{
+            constants.message_size_max,
+        }) catch unreachable;
+
+        const buffer = try allocator.alloc(u8, constants.message_size_max);
+        defer allocator.free(buffer);
+        benchmark.rng.fill(buffer);
+
+        benchmark.timer.reset();
+        _ = vsr.checksum(buffer);
+        const checksum_duration_ns = benchmark.timer.read();
+
+        stdout.print("checksum message size max = {} us\n", .{
+            @divTrunc(checksum_duration_ns, std.time.ns_per_us),
+        }) catch unreachable;
+    }
 }
 
 const Generator = union(enum) {
