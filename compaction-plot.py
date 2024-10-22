@@ -341,7 +341,7 @@ print(len(configs))
 
 final_plot_data = reduced_plot_data3
 final_plot_data = normalized_plot_data
-#final_plot_data = reduced_plot_data2
+final_plot_data = reduced_plot_data2
 
 
 

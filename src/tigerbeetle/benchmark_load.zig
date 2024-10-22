@@ -1549,7 +1549,7 @@ const WorkloadGenerator = struct {
         transfer_index_committed: u64,
         random: std.Random,
     }) WorkloadGenerator {
-        @panic("fixme - account_count_hot can't be greater than account_index_committed");
+        //@panic("fixme - account_count_hot can't be greater than account_index_committed");
         const account_generator = Generator.from_distribution(
             options.workload.account_distribution,
             options.account_index_committed - options.workload.account_count_hot,
