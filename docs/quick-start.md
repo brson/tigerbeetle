@@ -118,10 +118,6 @@ In the REPL, create two accounts on the same ledger using the command:
 create_accounts id=1 code=10 ledger=700, id=2 code=10 ledger=700
 ```
 
-```console
-info(message_bus): connected to replica 0
-```
-
 ## 6. Create a Transfer
 
 Now create a transfer of `10` (of some amount/currency) between the two accounts.
@@ -143,25 +139,31 @@ lookup_accounts id=1, id=2
 ```json
 {
   "id": "1",
-  "user_data": "0",
-  "ledger": "700",
-  "code": "10",
-  "flags": [],
   "debits_pending": "0",
   "debits_posted": "10",
   "credits_pending": "0",
-  "credits_posted": "0"
+  "credits_posted": "0",
+  "user_data_128": "0",
+  "user_data_64": "0",
+  "user_data_32": "0",
+  "ledger": "700",
+  "code": "10",
+  "flags": [],
+  "timestamp": "1739309210662583677"
 }
 {
   "id": "2",
-  "user_data": "0",
-  "ledger": "700",
-  "code": "10",
-  "flags": "",
   "debits_pending": "0",
   "debits_posted": "0",
   "credits_pending": "0",
-  "credits_posted": "10"
+  "credits_posted": "10",
+  "user_data_128": "0",
+  "user_data_64": "0",
+  "user_data_32": "0",
+  "ledger": "700",
+  "code": "10",
+  "flags": [],
+  "timestamp": "1739309210662583678"
 }
 ```
 
