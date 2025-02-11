@@ -98,14 +98,17 @@ transfers!
 ```
 
 ```console
-TigerBeetle Client
+TigerBeetle CLI Client 0.0.1
   Hit enter after a semicolon to run a command.
+  Ctrl+D to exit.
 
 Examples:
-  create_accounts id=1 code=10 ledger=700 flags=linked | history, id=2 code=10 ledger=700;
+  create_accounts id=1 code=10 ledger=700 flags=linked|history, id=2 code=10 ledger=700;
   create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;
   lookup_accounts id=1;
   lookup_accounts id=1, id=2;
+  get_account_transfers account_id=1 flags=debits|credits;
+  get_account_balances account_id=1 flags=debits|credits;
 ```
 
 ## 5. Create Accounts
