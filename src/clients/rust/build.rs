@@ -111,8 +111,9 @@ fn build_tigerbeetle(manifest_dir: &str) -> anyhow::Result<()> {
     }
 
     let build_targets = [
-        "clients:c", // Build the tb_client library
-        "install",   // Build tigerbeetle binary for testing
+        "clients:c",    // Build the tb_client library and tb_client.h
+        "clients:rust", // Build the tb_client library and tb_client.rs
+        "install",      // Build tigerbeetle binary for testing
     ];
 
     for build_target in build_targets {
