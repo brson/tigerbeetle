@@ -3,6 +3,49 @@ const vsr = @import("vsr");
 const tb = vsr.tigerbeetle;
 const tb_client = vsr.tb_client;
 
+const type_mappings = .{
+    .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
+    .{ tb.Account, "tb_account_t" },
+    .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
+    .{ tb.Transfer, "tb_transfer_t" },
+    .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
+    .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
+    .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
+    .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
+    .{ tb.AccountFilter, "tb_account_filter_t" },
+    .{ tb.AccountFilterFlags, "TB_ACCOUNT_FILTER_FLAGS" },
+    .{ tb.AccountBalance, "tb_account_balance_t" },
+    .{ tb.QueryFilter, "tb_query_filter_t" },
+    .{ tb.QueryFilterFlags, "TB_QUERY_FILTER_FLAGS" },
+
+    .{ tb_client.tb_operation_t, "TB_OPERATION" },
+    .{ tb_client.tb_packet_status_t, "TB_PACKET_STATUS" },
+    .{ tb_client.tb_packet_t, "tb_packet_t" },
+    .{ tb_client.tb_client_t, "tb_client_t" },
+    .{ tb_client.tb_status_t, "TB_STATUS" },
+};
+
+fn resolve_rust_type(comptime Type: type) []const u8 {
+    switch (@typeInfo(Type)) {
+        .Pointer => |info| {
+            std.debug.assert(info.size != .Slice);
+            std.debug.assert(!info.is_allowzero);
+
+            inline for (type_mappings) |type_mapping| {
+                const ZigType = type_mapping[0];
+                const c_name = type_mapping[1];
+
+                if (info.child == ZigType) {
+                    return "*mut " ++ c_name;
+                }
+            }
+
+            return comptime "*mut " ++ resolve_rust_type(info.child);
+        },
+        .Void, .Opaque => return "::libc::c_void",
+        else => @compileError("Unhandled type: " ++ @typeName(Type)),
+    }
+}
 
 
 
@@ -21,6 +64,24 @@ pub fn main() !void {
         \\
         \\
     , .{});
+
+    inline for (type_mappings) |type_mapping| {
+        const ZigType = type_mapping[0];
+        const c_name = type_mapping[1]; 
+
+        switch (@typeInfo(ZigType)) {
+            .Struct => |info| {
+                //@panic("todo");
+            },
+            .Enum => |info| {
+                //@panic("todo");
+            },
+            else => try buffer.writer().print("type {s} = {s};\n\n", .{
+                c_name,
+                resolve_rust_type(ZigType),
+            }),
+        }
+    }
 
     try std.io.getStdOut().writeAll(buffer.items);
 }
