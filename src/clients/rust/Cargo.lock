@@ -498,7 +498,6 @@ dependencies = [
  "bitflags",
  "futures",
  "ignore",
- "libc",
  "tempfile",
 ]
 
