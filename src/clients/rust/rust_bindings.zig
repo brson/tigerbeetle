@@ -8,11 +8,11 @@ const type_mappings = .{
     // .{ tb.Account, "tb_account_t" },
     // .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
     // .{ tb.Transfer, "tb_transfer_t" },
-    .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
+    // .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
     // .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
     // .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
     // .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
-    .{ tb.AccountFilter, "tb_account_filter_t" },
+    // .{ tb.AccountFilter, "tb_account_filter_t" },
     // .{ tb.AccountFilterFlags, "TB_ACCOUNT_FILTER_FLAGS" },
     // .{ tb.AccountBalance, "tb_account_balance_t" },
     // .{ tb.QueryFilter, "tb_query_filter_t" },
@@ -20,7 +20,7 @@ const type_mappings = .{
 
     // .{ tb_client.tb_operation_t, "TB_OPERATION" },
     // .{ tb_client.tb_packet_status_t, "TB_PACKET_STATUS" },
-    // .{ tb_client.tb_packet_t, "tb_packet_t" },
+    .{ tb_client.tb_packet_t, "tb_packet_t" },
     // .{ tb_client.tb_client_t, "tb_client_t" },
     // .{ tb_client.tb_status_t, "TB_STATUS" },
 };
@@ -28,7 +28,9 @@ const type_mappings = .{
 fn resolve_rust_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
         .Array => |info| return resolve_rust_type(info.child),
+        .Enum => |info| return resolve_rust_type(info.tag_type),
         .Struct => return resolve_rust_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .Bool => return "u8", // todo "bool"
         .Int => |info | {
             std.debug.assert(info.signedness == .unsigned);
             return switch (info.bits) {
@@ -39,6 +41,10 @@ fn resolve_rust_type(comptime Type: type) []const u8 {
                 128 => "u128",
                 else => @compileError("invalid int type"),
             };
+        },
+        .Optional => |info| switch (@typeInfo(info.child)) {
+            .Pointer => return resolve_rust_type(info.child),
+            else => @compileError("Unsupported optional type: " ++ @typeName(Type)),
         },
         .Pointer => |info| {
             std.debug.assert(info.size != .Slice);
@@ -175,7 +181,7 @@ pub fn main() !void {
 
                 try emit_enum(&buffer, ZigType, info, rust_name, skip);
             },
-            else => try buffer.writer().print("type {s} = {s};\n\n", .{.
+            else => try buffer.writer().print("type {s} = {s};\n\n", .{
                 rust_name,
                 resolve_rust_type(ZigType),
             }),
