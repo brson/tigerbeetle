@@ -4,11 +4,11 @@ const tb = vsr.tigerbeetle;
 const tb_client = vsr.tb_client;
 
 const type_mappings = .{
-    // .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
+    .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
     // .{ tb.Account, "tb_account_t" },
     // .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
     // .{ tb.Transfer, "tb_transfer_t" },
-    .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
+    // .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
     // .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
     // .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
     // .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
@@ -69,14 +69,30 @@ fn emit_enum(
     try buffer.writer().print("type {s} = ::std::os::raw::c_uint\n", .{rust_name});
 
     inline for (type_info.fields, 0..) |field, i| {
-        const field_name = to_uppercase(field.name);
+        comptime var skip = false;
+        inline for (skip_fields) |sf| {
+            skip = skip or comptime std.mem.eql(u8, sf, field.name);
+        }
 
-        try buffer.writer().print("const {s}_{s}: {s} = {};\n", .{
-            rust_name[0..suffix_pos],
-            @as([]const u8, &field_name),
-            rust_name,
-            @intFromEnum(@field(Type, field.name)),
-        });
+        if (!skip) {
+            const field_name = to_uppercase(field.name);
+            if (@typeInfo(Type) == .Enum) {
+                try buffer.writer().print("const {s}_{s}: {s} = {};\n", .{
+                    rust_name[0..suffix_pos],
+                    @as([]const u8, &field_name),
+                    rust_name,
+                    @intFromEnum(@field(Type, field.name)),
+                });
+            } else {
+                // Packed structs.
+                try buffer.writer().print("const {s}_{s}: {s} = 1 << {};\n", .{
+                    rust_name[0..suffix_pos],
+                    @as([]const u8, &field_name),
+                    rust_name,
+                    i,
+                });
+            }
+        }
     }
 
     try buffer.writer().print("\n", .{});
@@ -104,8 +120,10 @@ pub fn main() !void {
         const rust_name = type_mapping[1]; 
 
         switch (@typeInfo(ZigType)) {
-            .Struct => |info| {
-                @panic("todo");
+            .Struct => |info| switch (info.layout) {
+                .auto => @compileError("Invalid C struct type: " ++ @typeName(ZigType)),
+                .@"packed" => try emit_enum(&buffer, ZigType, info, rust_name, &.{"padding"}),
+                else => @panic("todo"),
             },
             .Enum => |info| {
                 comptime var skip: []const []const u8 = &.{};
