@@ -5,14 +5,14 @@ const tb_client = vsr.tb_client;
 
 const type_mappings = .{
     // .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
-    .{ tb.Account, "tb_account_t" },
+    // .{ tb.Account, "tb_account_t" },
     // .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
     // .{ tb.Transfer, "tb_transfer_t" },
     // .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
     // .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
     // .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
     // .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
-    // .{ tb.AccountFilter, "tb_account_filter_t" },
+    .{ tb.AccountFilter, "tb_account_filter_t" },
     // .{ tb.AccountFilterFlags, "TB_ACCOUNT_FILTER_FLAGS" },
     // .{ tb.AccountBalance, "tb_account_balance_t" },
     // .{ tb.QueryFilter, "tb_query_filter_t" },
@@ -27,6 +27,7 @@ const type_mappings = .{
 
 fn resolve_rust_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
+        .Array => |info| return resolve_rust_type(info.child),
         .Struct => return resolve_rust_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
         .Int => |info | {
             std.debug.assert(info.signedness == .unsigned);
