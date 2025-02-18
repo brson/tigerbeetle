@@ -1,3 +1,6 @@
+// todo: packed struct typedefs are not the right width
+// todo: don't double-prefix enum variant names
+
 const std = @import("std");
 const vsr = @import("vsr");
 const tb = vsr.tigerbeetle;
@@ -18,9 +21,9 @@ const type_mappings = .{
     // .{ tb.QueryFilter, "tb_query_filter_t" },
     // .{ tb.QueryFilterFlags, "TB_QUERY_FILTER_FLAGS" },
 
-    // .{ tb_client.tb_operation_t, "TB_OPERATION" },
+    .{ tb_client.tb_operation_t, "TB_OPERATION" },
     // .{ tb_client.tb_packet_status_t, "TB_PACKET_STATUS" },
-    .{ tb_client.tb_packet_t, "tb_packet_t" },
+    // .{ tb_client.tb_packet_t, "tb_packet_t" },
     // .{ tb_client.tb_client_t, "tb_client_t" },
     // .{ tb_client.tb_status_t, "TB_STATUS" },
 };
@@ -96,7 +99,8 @@ fn emit_enum(
         if (!skip) {
             const field_name = to_uppercase(field.name);
             if (@typeInfo(Type) == .Enum) {
-                try buffer.writer().print("pub const {s}_{s}: {s} = {};\n", .{
+                try buffer.writer().print("pub const {s}_{s}_{s}: {s} = {};\n", .{
+                    rust_name[0..suffix_pos],
                     rust_name[0..suffix_pos],
                     @as([]const u8, &field_name),
                     rust_name,
@@ -177,7 +181,6 @@ pub fn main() !void {
             .Enum => |info| {
                 comptime var skip: []const []const u8 = &.{};
                 if (ZigType == tb_client.tb_operation_t) {
-                    @panic("todo");
                 }
 
                 try emit_enum(&buffer, ZigType, info, rust_name, skip);
