@@ -1,5 +1,5 @@
 // todo: packed struct typedefs are not the right width
-// todo: don't double-prefix enum variant names
+// todo: don't double-prefix enum/packed struct variant names
 
 const std = @import("std");
 const vsr = @import("vsr");
@@ -21,7 +21,7 @@ const type_mappings = .{
     // .{ tb.QueryFilter, "tb_query_filter_t" },
     // .{ tb.QueryFilterFlags, "TB_QUERY_FILTER_FLAGS" },
 
-    .{ tb_client.tb_operation_t, "TB_OPERATION" },
+    // .{ tb_client.tb_operation_t, "TB_OPERATION" },
     // .{ tb_client.tb_packet_status_t, "TB_PACKET_STATUS" },
     // .{ tb_client.tb_packet_t, "tb_packet_t" },
     // .{ tb_client.tb_client_t, "tb_client_t" },
@@ -108,7 +108,8 @@ fn emit_enum(
                 });
             } else {
                 // Packed structs.
-                try buffer.writer().print("pub const {s}_{s}: {s} = 1 << {};\n", .{
+                try buffer.writer().print("pub const {s}_{s}_{s}: {s} = 1 << {};\n", .{
+                    rust_name,
                     rust_name[0..suffix_pos],
                     @as([]const u8, &field_name),
                     rust_name,
