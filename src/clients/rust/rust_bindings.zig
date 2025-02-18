@@ -101,7 +101,7 @@ fn emit_enum(
             const field_name = to_uppercase(field.name);
             if (@typeInfo(Type) == .Enum) {
                 try buffer.writer().print("pub const {s}_{s}_{s}: {s} = {};\n", .{
-                    rust_name[0..suffix_pos],
+                    rust_name,
                     rust_name[0..suffix_pos],
                     @as([]const u8, &field_name),
                     rust_name,
