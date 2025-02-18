@@ -89,7 +89,7 @@ fn emit_enum(
     var suffix_pos = std.mem.lastIndexOf(u8, rust_name, "_").?;
     if (std.mem.count(u8, rust_name, "_") == 1) suffix_pos = rust_name.len;
 
-    try buffer.writer().print("pub type {s} = ::std::os::raw::c_uint\n", .{rust_name});
+    try buffer.writer().print("pub type {s} = ::std::os::raw::c_uint;\n", .{rust_name});
 
     inline for (type_info.fields, 0..) |field, i| {
         comptime var skip = false;
