@@ -123,6 +123,7 @@ fn emit_struct(
     comptime rust_name: []const u8,
 ) !void {
     try buffer.writer().print("#[repr(C)]\n", .{});
+    try buffer.writer().print("#[derive(Debug, Copy, Clone)]\n", .{});
     try buffer.writer().print("pub struct {s} {{\n", .{rust_name});
 
     inline for (type_info.fields) |field| {
