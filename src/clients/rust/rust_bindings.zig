@@ -1,5 +1,6 @@
 // todo: packed struct typedefs are not the right width
 // todo: don't double-prefix enum/packed struct variant names
+// todo: dead code? `skip = &.{ "reserved", "root", "register" };`
 
 const std = @import("std");
 const vsr = @import("vsr");
@@ -7,25 +8,25 @@ const tb = vsr.tigerbeetle;
 const tb_client = vsr.tb_client;
 
 const type_mappings = .{
-    // .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
-    // .{ tb.Account, "tb_account_t" },
-    // .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
-    // .{ tb.Transfer, "tb_transfer_t" },
-    // .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
-    // .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
-    // .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
-    // .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
-    // .{ tb.AccountFilter, "tb_account_filter_t" },
-    // .{ tb.AccountFilterFlags, "TB_ACCOUNT_FILTER_FLAGS" },
-    // .{ tb.AccountBalance, "tb_account_balance_t" },
-    // .{ tb.QueryFilter, "tb_query_filter_t" },
-    // .{ tb.QueryFilterFlags, "TB_QUERY_FILTER_FLAGS" },
+    .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
+    .{ tb.Account, "tb_account_t" },
+    .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
+    .{ tb.Transfer, "tb_transfer_t" },
+    .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
+    .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
+    .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
+    .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
+    .{ tb.AccountFilter, "tb_account_filter_t" },
+    .{ tb.AccountFilterFlags, "TB_ACCOUNT_FILTER_FLAGS" },
+    .{ tb.AccountBalance, "tb_account_balance_t" },
+    .{ tb.QueryFilter, "tb_query_filter_t" },
+    .{ tb.QueryFilterFlags, "TB_QUERY_FILTER_FLAGS" },
 
-    // .{ tb_client.tb_operation_t, "TB_OPERATION" },
-    // .{ tb_client.tb_packet_status_t, "TB_PACKET_STATUS" },
-    // .{ tb_client.tb_packet_t, "tb_packet_t" },
-    // .{ tb_client.tb_client_t, "tb_client_t" },
-    // .{ tb_client.tb_status_t, "TB_STATUS" },
+    .{ tb_client.tb_operation_t, "TB_OPERATION" },
+    .{ tb_client.tb_packet_status_t, "TB_PACKET_STATUS" },
+    .{ tb_client.tb_packet_t, "tb_packet_t" },
+    .{ tb_client.tb_client_t, "tb_client_t" },
+    .{ tb_client.tb_status_t, "TB_STATUS" },
 };
 
 fn resolve_rust_type(comptime Type: type) []const u8 {
@@ -180,11 +181,7 @@ pub fn main() !void {
                 .@"extern" => try emit_struct(&buffer, info, rust_name),
             },
             .Enum => |info| {
-                comptime var skip: []const []const u8 = &.{};
-                if (ZigType == tb_client.tb_operation_t) {
-                }
-
-                try emit_enum(&buffer, ZigType, info, rust_name, skip);
+                try emit_enum(&buffer, ZigType, info, rust_name, &.{});
             },
             else => try buffer.writer().print("type {s} = {s};\n\n", .{
                 rust_name,
