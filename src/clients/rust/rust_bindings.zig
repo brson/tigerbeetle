@@ -8,7 +8,7 @@ const type_mappings = .{
     // .{ tb.Account, "tb_account_t" },
     // .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
     // .{ tb.Transfer, "tb_transfer_t" },
-    // .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
+    .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
     // .{ tb.CreateTransferResult, "TB_CREATE_TRANSFER_RESULT" },
     // .{ tb.CreateAccountsResult, "tb_create_accounts_result_t" },
     // .{ tb.CreateTransfersResult, "tb_create_transfers_result_t" },
@@ -79,7 +79,7 @@ fn emit_enum(
     var suffix_pos = std.mem.lastIndexOf(u8, rust_name, "_").?;
     if (std.mem.count(u8, rust_name, "_") == 1) suffix_pos = rust_name.len;
 
-    try buffer.writer().print("type {s} = ::std::os::raw::c_uint\n", .{rust_name});
+    try buffer.writer().print("pub type {s} = ::std::os::raw::c_uint\n", .{rust_name});
 
     inline for (type_info.fields, 0..) |field, i| {
         comptime var skip = false;
@@ -90,7 +90,7 @@ fn emit_enum(
         if (!skip) {
             const field_name = to_uppercase(field.name);
             if (@typeInfo(Type) == .Enum) {
-                try buffer.writer().print("const {s}_{s}: {s} = {};\n", .{
+                try buffer.writer().print("pub const {s}_{s}: {s} = {};\n", .{
                     rust_name[0..suffix_pos],
                     @as([]const u8, &field_name),
                     rust_name,
@@ -98,7 +98,7 @@ fn emit_enum(
                 });
             } else {
                 // Packed structs.
-                try buffer.writer().print("const {s}_{s}: {s} = 1 << {};\n", .{
+                try buffer.writer().print("pub const {s}_{s}: {s} = 1 << {};\n", .{
                     rust_name[0..suffix_pos],
                     @as([]const u8, &field_name),
                     rust_name,
@@ -117,26 +117,26 @@ fn emit_struct(
     comptime rust_name: []const u8,
 ) !void {
     try buffer.writer().print("#[repr(C)]\n", .{});
-    try buffer.writer().print("struct {s} {{\n", .{rust_name});
+    try buffer.writer().print("pub struct {s} {{\n", .{rust_name});
 
     inline for (type_info.fields) |field| {
         switch (@typeInfo(field.type)) {
             .Array => |array| {
-                try buffer.writer().print("    {s}: [{s}; {}]", .{
+                try buffer.writer().print("    pub {s}: [{s}; {}]", .{
                     field.name,
                     resolve_rust_type(field.type),
                     array.len,
                 });
             },
             else => {
-                try buffer.writer().print("    {s}: {s}", .{
+                try buffer.writer().print("    pub {s}: {s}", .{
                     field.name,
                     resolve_rust_type(field.type),
                 });
             },
         }
 
-        try buffer.writer().print(";\n", .{});
+        try buffer.writer().print(",\n", .{});
     }
 
     try buffer.writer().print("}}\n\n", .{});
