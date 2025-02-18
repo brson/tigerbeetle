@@ -4,8 +4,8 @@ const tb = vsr.tigerbeetle;
 const tb_client = vsr.tb_client;
 
 const type_mappings = .{
-    .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
-    // .{ tb.Account, "tb_account_t" },
+    // .{ tb.AccountFlags, "TB_ACCOUNT_FLAGS" },
+    .{ tb.Account, "tb_account_t" },
     // .{ tb.TransferFlags, "TB_TRANSFER_FLAGS" },
     // .{ tb.Transfer, "tb_transfer_t" },
     // .{ tb.CreateAccountResult, "TB_CREATE_ACCOUNT_RESULT" },
@@ -27,6 +27,18 @@ const type_mappings = .{
 
 fn resolve_rust_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
+        .Struct => return resolve_rust_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .Int => |info | {
+            std.debug.assert(info.signedness == .unsigned);
+            return switch (info.bits) {
+                8 => "u8",
+                16 => "u16",
+                32 => "u32",
+                64 => "u64",
+                128 => "u128",
+                else => @compileError("invalid int type"),
+            };
+        },
         .Pointer => |info| {
             std.debug.assert(info.size != .Slice);
             std.debug.assert(!info.is_allowzero);
@@ -98,7 +110,36 @@ fn emit_enum(
     try buffer.writer().print("\n", .{});
 }
 
+fn emit_struct(
+    buffer: *std.ArrayList(u8),
+    comptime type_info: anytype,
+    comptime rust_name: []const u8,
+) !void {
+    try buffer.writer().print("#[repr(C)]\n", .{});
+    try buffer.writer().print("struct {s} {{\n", .{rust_name});
 
+    inline for (type_info.fields) |field| {
+        switch (@typeInfo(field.type)) {
+            .Array => |array| {
+                try buffer.writer().print("    {s}: [{s}; {}]", .{
+                    field.name,
+                    resolve_rust_type(field.type),
+                    array.len,
+                });
+            },
+            else => {
+                try buffer.writer().print("    {s}: {s}", .{
+                    field.name,
+                    resolve_rust_type(field.type),
+                });
+            },
+        }
+
+        try buffer.writer().print(";\n", .{});
+    }
+
+    try buffer.writer().print("}}\n\n", .{});
+}
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -123,7 +164,7 @@ pub fn main() !void {
             .Struct => |info| switch (info.layout) {
                 .auto => @compileError("Invalid C struct type: " ++ @typeName(ZigType)),
                 .@"packed" => try emit_enum(&buffer, ZigType, info, rust_name, &.{"padding"}),
-                else => @panic("todo"),
+                .@"extern" => try emit_struct(&buffer, info, rust_name),
             },
             .Enum => |info| {
                 comptime var skip: []const []const u8 = &.{};
