@@ -1,6 +1,8 @@
 // todo: packed struct typedefs are not the right width
 // todo: don't double-prefix enum/packed struct variant names
 // todo: dead code? `skip = &.{ "reserved", "root", "register" };`
+// todo: emit function decls
+// todo: investigate build script rebuilding on commit (.git directory changes?)
 
 const std = @import("std");
 const vsr = @import("vsr");

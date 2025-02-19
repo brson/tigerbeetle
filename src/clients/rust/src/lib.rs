@@ -20,14 +20,14 @@ use std::{mem, ptr};
 #[allow(non_camel_case_types)]
 #[allow(non_snake_case)]
 mod tb_client;
-//use tb_client as tbc;
+use tb_client as tbc;
 
 #[allow(unused)]
 #[allow(non_upper_case_globals)]
 #[allow(non_camel_case_types)]
 #[allow(non_snake_case)]
 mod tb_client2;
-use tb_client2 as tbc;
+//use tb_client2 as tbc;
 
 mod conversions;
 
