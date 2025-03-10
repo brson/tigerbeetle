@@ -558,7 +558,7 @@ pub fn ClientType(
                 std.time.ns_per_ms,
             );
             if (request_completion_time_ms > constants.client_request_completion_warn_ms) {
-                log.warn("{}: on_reply: slow request, request={} size={} {s} time={}ms", .{
+                log.debug("{}: on_reply: slow request, request={} size={} {s} time={}ms", .{
                     self.id,
                     inflight.message.header.request,
                     inflight.message.header.size,
