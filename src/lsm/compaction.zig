@@ -53,6 +53,7 @@ const TableInfoType = @import("manifest.zig").TreeTableInfoType;
 const ManifestType = @import("manifest.zig").ManifestType;
 const schema = @import("schema.zig");
 const RingBufferType = stdx.RingBufferType;
+const snapshot_latest = @import("tree.zig").snapshot_latest;
 
 /// The upper-bound count of input tables to a single tree's compaction.
 ///
@@ -817,6 +818,90 @@ pub fn CompactionType(
                     compaction.range_b.?.key_max,
                 );
             }
+
+            compaction.calc_fullness();
+        }
+
+        fn calc_fullness(compaction: *Compaction) void {
+            const manifest = &compaction.tree.manifest;
+            const level = &manifest.levels[compaction.level_b];
+
+            var table_count: u64 = 0;
+            var value_count: u64 = 0;
+
+            var iter = level.iterator(
+                .visible,
+                &[_]u64{snapshot_latest},
+                .ascending,
+                null,
+            );
+
+            while (iter.next()) |table_info| {
+                table_count += 1;
+                value_count += table_info.value_count;
+            }
+
+            const table_count_max_for_level = @import("tree.zig").table_count_max_for_level;
+            const table_count_max =
+                table_count_max_for_level(constants.lsm_growth_factor, compaction.level_b);
+
+            const value_count_max = Table.value_count_max_actual * table_count;
+            const value_count_max_f: f32 = @floatFromInt(value_count_max);
+            const value_count_f: f32 = @floatFromInt(value_count);
+            const level_fullness = value_count_f / value_count_max_f;
+
+            const is_overfull = level_fullness > 1.0;
+            //const is_underfull = level_fullness < 0.9;
+
+            const target_tree = "Transfer";
+            const is_target_tree = std.mem.eql(u8, target_tree, compaction.tree.config.name);
+
+            assert(!is_overfull);
+
+            if (!is_target_tree) {
+                return;
+            }
+
+            if (compaction.move_table and compaction.level_b > 0) {
+                for (compaction.manifest_entries.slice()) |*entry| {
+                    switch (entry.operation) {
+                        .insert_to_level_b => {
+                        },
+                        .move_to_level_b => {
+                            std.debug.print(
+                                "XXX movex level_a_value_count={}\n",
+                                .{
+                                    entry.table.value_count,                                    
+                                },
+                            );
+                        },
+                    }
+                }
+                switch (compaction.table_info_a.?) {
+                    .disk => |table_info| {
+                        std.debug.print(
+                            "XXX move level_a_value_count={}\n",
+                            .{
+                                table_info.table_info.value_count,
+                            },
+                        );
+                    },
+                    .immutable => unreachable,
+                }
+            }
+            
+            std.debug.print(
+                "XXX tree {s}, level {}, level_fullness={d:0>1.2}, table_count={}, table_count_max={}, value_count={}, value_count_max={}\n",
+                .{
+                    compaction.tree.config.name,
+                    compaction.level_b,
+                    level_fullness,
+                    table_count,
+                    table_count_max,
+                    value_count,
+                    value_count_max,
+                },
+            );
         }
 
         /// Plan the work for the beat:
