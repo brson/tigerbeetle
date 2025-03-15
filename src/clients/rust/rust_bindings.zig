@@ -1,7 +1,6 @@
 // todo: don't double-prefix enum/packed struct variant names
 // todo: dead code? `skip = &.{ "reserved", "root", "register" };`
 // todo: investigate build script rebuilding on commit (.git directory changes?)
-// todo: packed struct typedefs are not the right width in C generator, etc
 // todo: use zig names for structs?
 
 const std = @import("std");
