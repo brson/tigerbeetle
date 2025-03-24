@@ -248,7 +248,7 @@ pub fn main() !void {
         \\    pub fn tb_client_init_echo(
         \\        client_out: *mut tb_client_t,
         \\        // 128-bit unsigned integer represented as a 16-byte little-endian array.
-        \\        const uint8_t cluster_id[16],
+        \\        cluster_id: [u8; 16],
         \\        address_ptr: *const ::std::os::raw::c_char,
         \\        address_len: u32,
         \\        completion_ctx: usize,
