@@ -28,6 +28,10 @@ mod conversions;
 /// This is just a magic number to jump out of logs.
 const COMPLETION_CONTEXT: usize = 0xAB;
 
+// todo
+// - tb_client_t must be boxed
+// - check all calls for status
+
 pub struct Client {
     client: tbc::tb_client_t,
 }
