@@ -50,7 +50,7 @@ impl Client {
                 COMPLETION_CONTEXT,
                 Some(on_completion),
             );
-            if status == tbc::TB_STATUS_TB_STATUS_SUCCESS {
+            if status == tbc::TB_INIT_STATUS_TB_INIT_SUCCESS {
                 Ok(Client { client: tb_client })
             } else {
                 Err(status.into())
