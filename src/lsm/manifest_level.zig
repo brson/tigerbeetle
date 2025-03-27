@@ -595,9 +595,21 @@ pub fn ManifestLevelType(
                         },
                         .range = range,
                     };
+                } else if (range.tables.count() == optimal.?.range.tables.count()) {
+                    if (range.tables.empty()) {
+                        if (table.value_count > optimal.?.table.table_info.value_count) {
+                            optimal = LeastOverlapTable{
+                                .table = TableInfoReference{
+                                    .table_info = table,
+                                    .generation = level_a.generation,
+                                },
+                                .range = range,
+                            };
+                        }
+                    }
                 }
                 // If the table can be moved directly between levels then that is already optimal.
-                if (optimal.?.range.tables.empty()) break;
+                //if (optimal.?.range.tables.empty()) break;
             }
             assert(iterations > 0);
             assert(iterations == level_a.table_count_visible or
