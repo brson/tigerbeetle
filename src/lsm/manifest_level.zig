@@ -170,6 +170,8 @@ pub fn ManifestLevelType(
         /// TableInfo references.
         generation: u32 = 0,
 
+        do_new_move_opt: bool = false,
+
         pub fn init(level: *ManifestLevel, allocator: mem.Allocator) !void {
             level.* = .{
                 .keys = undefined,
@@ -181,6 +183,11 @@ pub fn ManifestLevelType(
 
             level.tables = try Tables.init(allocator);
             errdefer level.tables.deinit(allocator, null);
+
+            if (try std.process.hasEnvVar(allocator, "NEW_MOVE_OPT")) {
+                std.debug.print("NEW MOVE OPT\n", .{});
+                level.do_new_move_opt = true;
+            }
         }
 
         pub fn deinit(level: *ManifestLevel, allocator: mem.Allocator, node_pool: *NodePool) void {
@@ -596,7 +603,7 @@ pub fn ManifestLevelType(
                         .range = range,
                     };
                 } else if (range.tables.count() == optimal.?.range.tables.count()) {
-                    if (range.tables.empty()) {
+                    if (level_a.do_new_move_opt and range.tables.empty()) {
                         if (table.value_count > optimal.?.table.table_info.value_count) {
                             optimal = LeastOverlapTable{
                                 .table = TableInfoReference{
@@ -609,7 +616,9 @@ pub fn ManifestLevelType(
                     }
                 }
                 // If the table can be moved directly between levels then that is already optimal.
-                //if (optimal.?.range.tables.empty()) break;
+                if (!level_a.do_new_move_opt) {
+                    if (optimal.?.range.tables.empty()) break;
+                }
             }
             assert(iterations > 0);
             assert(iterations == level_a.table_count_visible or

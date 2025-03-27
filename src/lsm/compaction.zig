@@ -819,7 +819,7 @@ pub fn CompactionType(
                 );
             }
 
-            compaction.calc_fullness();
+            //compaction.calc_fullness();
         }
 
         fn calc_fullness(compaction: *Compaction) void {
