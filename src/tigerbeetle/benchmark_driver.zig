@@ -136,6 +136,8 @@ const TigerBeetleProcess = struct {
     address: std.net.Address,
 
     fn deinit(self: *TigerBeetleProcess) std.process.Child.ResourceUsageStatistics {
+        // 1s sleep to allow db to quiesce...
+        std.time.sleep(1_000_000);
         // Although we could just kill the child here, let's exercise the "normal" termination logic
         // through stdin closure, such that, from the perspective of the child, there's no
         // difference between the parent process exiting normally or just crashing.
