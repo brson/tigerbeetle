@@ -210,9 +210,12 @@ def compare(
     blocks_released_old = int(res_old["free_set.blocks_released"])
     blocks_released_new = int(res_new["free_set.blocks_released"])
 
-    print(f"blocks_free_new: {blocks_free_new}, blocks_free_old: {blocks_free_old}")
-    print(f"blocks_acquired_new: {blocks_acquired_new}, blocks_acquired_old: {blocks_acquired_old}")
-    print(f"blocks_released_new: {blocks_released_new}, blocks_released_old: {blocks_released_old}")
+    print(f"blocks_free_new: {blocks_free_new}")
+    print(f"blocks_free_old: {blocks_free_old}")
+    print(f"blocks_acquired_new: {blocks_acquired_new}")
+    print(f"blocks_acquired_old: {blocks_acquired_old}")
+    print(f"blocks_released_new: {blocks_released_new}")
+    print(f"blocks_released_old: {blocks_released_old}")
     sys.stdout.flush()
 
     blocks_free_what = What.Good if blocks_free_new > blocks_free_old else\
