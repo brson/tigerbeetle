@@ -88,6 +88,7 @@ def make_runconfig(
 
 def build():
     print("building tigerbeetle")
+    sys.stdout.flush()
     code = subprocess.run([
         zig, "build", "-Drelease",
     ], check=True)
@@ -122,6 +123,7 @@ def benchmark(
     args = make_benchmark_args(runconfig)
     #print(f"benchmark args: {" ".join(args)}")
     print(f"args: {" ".join(args)}")
+    sys.stdout.flush()
     env_vars = os.environ.copy()
     if mode == Mode.New:
         env_vars["NEW_MOVE_OPT"] = "1"
@@ -211,6 +213,7 @@ def compare(
     print(f"blocks_free_new: {blocks_free_new}, blocks_free_old: {blocks_free_old}")
     print(f"blocks_acquired_new: {blocks_acquired_new}, blocks_acquired_old: {blocks_acquired_old}")
     print(f"blocks_released_new: {blocks_released_new}, blocks_released_old: {blocks_released_old}")
+    sys.stdout.flush()
 
     blocks_free_what = What.Good if blocks_free_new > blocks_free_old else\
         What.Bad if blocks_free_new < blocks_free_old else What.Neutral
@@ -222,6 +225,7 @@ def compare(
     print(f"blocks_free_what: {blocks_free_what}")
     print(f"blocks_acquired_what: {blocks_acquired_what}")
     print(f"blocks_released_what: {blocks_released_what}")
+    sys.stdout.flush()
     
 class What(Enum):
     Good = 1,
