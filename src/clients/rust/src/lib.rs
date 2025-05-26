@@ -20,7 +20,8 @@ use std::{mem, ptr};
 #[allow(non_camel_case_types)]
 #[allow(non_snake_case)]
 #[rustfmt::skip]
-mod tb_client;
+#[doc(hidden)]
+pub mod tb_client;
 use tb_client as tbc;
 
 mod conversions;
