@@ -27,6 +27,7 @@ const LanguageCIVortex = .{
     .rust = @import("../testing/vortex/rust_driver/ci.zig"),
     .java = @import("../testing/vortex/java_driver/ci.zig"),
     .python = @import("../testing/vortex/python_driver/ci.zig"),
+    .node = @import("../testing/vortex/node_driver/ci.zig"),
 };
 
 pub const CLIArgs = struct {

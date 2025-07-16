@@ -49,27 +49,6 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
     // Container smoke tests.
     if (builtin.target.os.tag == .linux) {
         try shell.exec("npm pack --quiet", .{});
-
-        for ([_][]const u8{ "node:18", "node:18-alpine" }) |image| {
-            log.info("testing docker image: '{s}'", .{image});
-
-            try shell.exec(
-                \\docker run
-                \\--security-opt seccomp=unconfined
-                \\--volume ./:/host
-                \\{image}
-                \\sh
-                \\-c {script}
-            , .{
-                .image = image,
-                .script =
-                \\set -ex
-                \\mkdir test-project && cd test-project
-                \\npm install /host/tigerbeetle-node-*.tgz
-                \\node -e 'require("tigerbeetle-node"); console.log("SUCCESS!")'
-                ,
-            });
-        }
     }
 }
 
