@@ -287,9 +287,9 @@ class VortexDriver {
             user_data_32: buffer.readUInt32LE(104),
             reserved: buffer.readUInt32LE(108),
             ledger: buffer.readUInt32LE(112),
-            code: buffer.readUInt32LE(116),
-            flags: buffer.readUInt32LE(120),
-            timestamp: buffer.readBigUInt64LE(124)
+            code: buffer.readUInt16LE(116),
+            flags: buffer.readUInt16LE(118),
+            timestamp: buffer.readBigUInt64LE(120)
         };
     }
 
@@ -305,9 +305,9 @@ class VortexDriver {
             user_data_32: buffer.readUInt32LE(104),
             timeout: buffer.readUInt32LE(108),
             ledger: buffer.readUInt32LE(112),
-            code: buffer.readUInt32LE(116),
-            flags: buffer.readUInt32LE(120),
-            timestamp: buffer.readBigUInt64LE(124)
+            code: buffer.readUInt16LE(116),
+            flags: buffer.readUInt16LE(118),
+            timestamp: buffer.readBigUInt64LE(120)
         };
     }
 
@@ -324,9 +324,9 @@ class VortexDriver {
         buffer.writeUInt32LE(account.user_data_32, 104);
         buffer.writeUInt32LE(account.reserved, 108);
         buffer.writeUInt32LE(account.ledger, 112);
-        buffer.writeUInt32LE(account.code, 116);
-        buffer.writeUInt32LE(account.flags, 120);
-        buffer.writeBigUInt64LE(account.timestamp, 124);
+        buffer.writeUInt16LE(account.code, 116);
+        buffer.writeUInt16LE(account.flags, 118);
+        buffer.writeBigUInt64LE(account.timestamp, 120);
 
         return buffer;
     }
@@ -344,9 +344,9 @@ class VortexDriver {
         buffer.writeUInt32LE(transfer.user_data_32, 104);
         buffer.writeUInt32LE(transfer.timeout, 108);
         buffer.writeUInt32LE(transfer.ledger, 112);
-        buffer.writeUInt32LE(transfer.code, 116);
-        buffer.writeUInt32LE(transfer.flags, 120);
-        buffer.writeBigUInt64LE(transfer.timestamp, 124);
+        buffer.writeUInt16LE(transfer.code, 116);
+        buffer.writeUInt16LE(transfer.flags, 118);
+        buffer.writeBigUInt64LE(transfer.timestamp, 120);
 
         return buffer;
     }
