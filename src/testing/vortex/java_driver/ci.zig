@@ -10,8 +10,8 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
 
     assert(shell.file_exists("pom.xml"));
 
-    // NB: This expects the TB java driver to have been installed with `mvn install`.
-    try shell.exec("mvn --batch-mode --file pom.xml --quiet package", .{});
+    // Build using the new zig build target
+    try shell.exec_zig("build vortex:java", .{});
 
     // NB: This expects the vortex bin to be available.
     if (builtin.target.os.tag == .linux) {

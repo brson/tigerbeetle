@@ -6,6 +6,9 @@ const Shell = @import("../../../shell.zig");
 pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
     try shell.exec("python3 -m mypy main.py --ignore-missing-imports", .{});
 
+    // Build using the new zig build target
+    try shell.exec_zig("build vortex:python", .{});
+
     // NB: This expects the vortex bin to be available.
     if (builtin.target.os.tag == .linux) {
         const base_path = "../../../../";

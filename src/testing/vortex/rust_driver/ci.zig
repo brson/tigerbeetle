@@ -7,7 +7,8 @@ const Shell = @import("../../../shell.zig");
 pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
     _ = gpa;
 
-    try shell.exec("cargo build", .{});
+    // Build using the new zig build target
+    try shell.exec_zig("build vortex:rust", .{});
     try shell.exec("cargo fmt --check", .{});
     try shell.exec("cargo clippy -- -D clippy::all", .{});
 

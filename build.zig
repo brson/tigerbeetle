@@ -85,6 +85,10 @@ pub fn build(b: *std.Build) !void {
         .scripts_build = b.step("scripts:build", "Build automation scripts"),
         .vortex = b.step("vortex", "Full system tests with pluggable client drivers"),
         .vortex_build = b.step("vortex:build", "Build the Vortex"),
+        .vortex_java = b.step("vortex:java", "Build Java vortex driver"),
+        .vortex_rust = b.step("vortex:rust", "Build Rust vortex driver"),
+        .vortex_python = b.step("vortex:python", "Build Python vortex driver"),
+        .vortex_all = b.step("vortex:all", "Build vortex and all drivers"),
         .@"test" = b.step("test", "Run all tests"),
         .test_fmt = b.step("test:fmt", "Check formatting"),
         .test_integration = b.step("test:integration", "Run integration tests"),
@@ -277,20 +281,6 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     });
 
-    // zig build vortex
-    build_vortex(b, .{
-        .vortex_build = build_steps.vortex_build,
-        .vortex_run = build_steps.vortex,
-    }, .{
-        .stdx_module = stdx_module,
-        .vsr_module = vsr_module,
-        .vsr_options = vsr_options,
-        .target = target,
-        .mode = mode,
-        .tb_client_header = tb_client_header.path,
-        .print_exe = build_options.print_exe,
-    });
-
     // zig build clients:$lang
     build_rust_client(b, build_steps.clients_rust, .{
         .vsr_module = vsr_module,
@@ -345,6 +335,33 @@ pub fn build(b: *std.Build) !void {
         const nested_build = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
         nested_build.setCwd(b.path("./src/docs_website/"));
         break :blk &nested_build.step;
+    });
+
+    // zig build vortex
+    build_vortex(b, .{
+        .vortex_build = build_steps.vortex_build,
+        .vortex_run = build_steps.vortex,
+    }, .{
+        .stdx_module = stdx_module,
+        .vsr_module = vsr_module,
+        .vsr_options = vsr_options,
+        .target = target,
+        .mode = mode,
+        .tb_client_header = tb_client_header.path,
+        .print_exe = build_options.print_exe,
+    });
+
+    // zig build vortex:* -- vortex driver build targets
+    const vortex_build = @import("src/testing/vortex/build_rules.zig");
+    vortex_build.build_vortex_drivers(b, .{
+        .vortex_java = build_steps.vortex_java,
+        .vortex_rust = build_steps.vortex_rust,
+        .vortex_python = build_steps.vortex_python,
+        .vortex_all = build_steps.vortex_all,
+    }, .{
+        .vortex_step = build_steps.vortex,
+        .clients_java_step = build_steps.clients_java,
+        .clients_python_step = build_steps.clients_python,
     });
 
     // zig build ci
