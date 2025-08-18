@@ -13,11 +13,12 @@ pub const RustDocs = Docs{
     .description =
     \\The TigerBeetle client for Rust.
     \\
-    \\[![Rust Reference](todo)](https://docs.rs/tigerbeetle)
+    \\[![crates.io](https://img.shields.io/crates/v/tigerbeetle)](https://crates.io/crates/tigerbeetle)
+    \\[![docs.rs](https://img.shields.io/docsrs/tigerbeetle)](https://docs.rs/tigerbeetle)
     ,
 
     .prerequisites =
-    \\* t o d o
+    \\* Rust 1.61+
     ,
 
     .project_file_name = "Cargo.toml",

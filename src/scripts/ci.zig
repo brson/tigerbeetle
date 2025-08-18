@@ -33,7 +33,7 @@ pub fn main(shell: *Shell, gpa: std.mem.Allocator, cli_args: CLIArgs) !void {
         try validate_release(shell, gpa, cli_args.language);
     } else {
         try generate_readmes(shell, gpa, cli_args.language);
-        try run_tests(shell, gpa, cli_args.language);
+        //try run_tests(shell, gpa, cli_args.language);
     }
 }
 

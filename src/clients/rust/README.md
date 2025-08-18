@@ -3,13 +3,14 @@
 
 The TigerBeetle client for Rust.
 
-[![Rust Reference](todo)](https://docs.rs/tigerbeetle)
+[![crates.io](https://img.shields.io/crates/v/tigerbeetle)](https://crates.io/crates/tigerbeetle)
+[![docs.rs](https://img.shields.io/docsrs/tigerbeetle)](https://docs.rs/tigerbeetle)
 
 ## Prerequisites
 
 Linux >= 5.6 is the only production environment we
 support. But for ease of development we also support macOS and Windows.
-* t o d o
+* Rust 1.78
 
 ## Setup
 
