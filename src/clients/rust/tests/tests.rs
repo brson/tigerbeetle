@@ -4,7 +4,7 @@ use std::io::{BufRead as _, BufReader};
 use std::mem;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Barrier, OnceLock};
+use std::sync::{Arc, Barrier, Once};
 
 use futures::executor::block_on;
 use futures::pin_mut;
@@ -13,10 +13,17 @@ use futures::{Stream, StreamExt};
 use tigerbeetle as tb;
 
 // Singleton test database.
-static TEST_DB: OnceLock<TestDb> = OnceLock::new();
+static TEST_DB_ONCE: Once = Once::new();
+static mut TEST_DB: Option<TestDb> = None;
 
 fn get_test_db() -> &'static TestDb {
-    TEST_DB.get_or_init(|| TestDb::new().expect("couldn't start test database"))
+    unsafe {
+        TEST_DB_ONCE.call_once(|| {
+            TEST_DB = TestDb::new().ok();
+        });
+
+        TEST_DB.as_ref().expect("couldn't start test database")
+    }
 }
 
 struct TestDb {
@@ -549,7 +556,7 @@ fn multithread() -> anyhow::Result<()> {
     }
 
     block_on(async {
-        let client = Arc::into_inner(client).expect("arc");
+        let client = Arc::try_unwrap(client).expect("arc");
 
         client.close().await;
 
