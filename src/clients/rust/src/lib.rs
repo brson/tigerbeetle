@@ -321,7 +321,7 @@ use futures_channel::oneshot::{channel, Receiver};
 use std::convert::Infallible;
 use std::future::Future;
 use std::os::raw::{c_char, c_void};
-use std::{mem, ptr};
+use std::{fmt, mem, ptr};
 
 #[allow(unused)]
 #[allow(non_upper_case_globals)]
@@ -1014,6 +1014,12 @@ impl Drop for Client {
             }
             .close();
         }
+    }
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        f.write_str("Client")
     }
 }
 
