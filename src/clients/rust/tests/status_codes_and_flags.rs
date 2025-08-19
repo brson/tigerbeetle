@@ -122,7 +122,7 @@ fn round_trip_test<RustType, CType>(
 
 #[test]
 fn round_trip_create_account_result() {
-    round_trip_test::<tb::CreateAccountResult, u32>(
+    round_trip_test(
         "TB_CREATE_ACCOUNT_RESULT",
         &[],
         |c_value| tb::CreateAccountResult::from(c_value),
@@ -132,7 +132,7 @@ fn round_trip_create_account_result() {
 
 #[test]
 fn round_trip_create_transfer_result() {
-    round_trip_test::<tb::CreateTransferResult, u32>(
+    round_trip_test(
         "TB_CREATE_TRANSFER_RESULT",
         &[],
         |c_value| tb::CreateTransferResult::from(c_value),
@@ -142,7 +142,7 @@ fn round_trip_create_transfer_result() {
 
 #[test]
 fn round_trip_init_status() {
-    round_trip_test::<tb::InitStatus, i32>(
+    round_trip_test(
         "TB_INIT_STATUS",
         // Success not represented in tb::InitStatus
         &[0],
@@ -153,7 +153,7 @@ fn round_trip_init_status() {
 
 #[test]
 fn round_trip_packet_status() {
-    round_trip_test::<tb::PacketStatus, u8>(
+    round_trip_test(
         "TB_PACKET_STATUS",
         // Success not represented in tb::PacketStatus
         &[0],
@@ -164,7 +164,7 @@ fn round_trip_packet_status() {
 
 #[test]
 fn round_trip_account_flags() {
-    round_trip_test::<tb::AccountFlags, u16>(
+    round_trip_test(
         "TB_ACCOUNT_FLAGS",
         &[],
         // We use from_bits_truncate here to discard unknown flags.
@@ -176,7 +176,7 @@ fn round_trip_account_flags() {
 
 #[test]
 fn round_trip_transfer_flags() {
-    round_trip_test::<tb::TransferFlags, u16>(
+    round_trip_test(
         "TB_TRANSFER_FLAGS",
         &[],
         |c_value| tb::TransferFlags::from_bits_truncate(c_value),
@@ -186,7 +186,7 @@ fn round_trip_transfer_flags() {
 
 #[test]
 fn round_trip_account_filter_flags() {
-    round_trip_test::<tb::AccountFilterFlags, u32>(
+    round_trip_test(
         "TB_ACCOUNT_FILTER_FLAGS",
         &[],
         |c_value| tb::AccountFilterFlags::from_bits_truncate(c_value),
@@ -196,7 +196,7 @@ fn round_trip_account_filter_flags() {
 
 #[test]
 fn round_trip_query_filter_flags() {
-    round_trip_test::<tb::QueryFilterFlags, u32>(
+    round_trip_test(
         "TB_QUERY_FILTER_FLAGS",
         &[],
         |c_value| tb::QueryFilterFlags::from_bits_truncate(c_value),

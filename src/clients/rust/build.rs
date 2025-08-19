@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn prepare_dependencies(manifest_dir: &str) -> anyhow::Result<()> {
-    let build_in_tree = is_build_in_tree(manifest_dir)?;
+    let build_in_tree = is_build_in_tree(manifest_dir);
     if build_in_tree {
         build_tigerbeetle(manifest_dir)?;
 
@@ -72,12 +72,12 @@ fn prepare_dependencies(manifest_dir: &str) -> anyhow::Result<()> {
     }
 }
 
-fn is_build_in_tree(manifest_dir: &str) -> anyhow::Result<bool> {
-    Ok(Path::new(&format!("{manifest_dir}/../../../build.zig")).try_exists()?)
+fn is_build_in_tree(manifest_dir: &str) -> bool {
+    Path::new(&format!("{manifest_dir}/../../../build.zig")).exists()
 }
 
 fn build_tigerbeetle(manifest_dir: &str) -> anyhow::Result<()> {
-    assert!(is_build_in_tree(manifest_dir)?);
+    assert!(is_build_in_tree(manifest_dir));
 
     let tigerbeetle_root = format!("{manifest_dir}/../../..");
     let zig_compiler = if cfg!(unix) {
@@ -88,7 +88,7 @@ fn build_tigerbeetle(manifest_dir: &str) -> anyhow::Result<()> {
         todo!()
     };
 
-    if !Path::new(&zig_compiler).try_exists()? {
+    if !Path::new(&zig_compiler).exists() {
         println!("cargo:warning=No zig compiler found at {zig_compiler}.");
         println!("cargo:warning=You may need to run zig/download.ps1.");
         panic!("No zig compiler found.");

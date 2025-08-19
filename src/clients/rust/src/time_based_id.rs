@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
-use std::sync::Mutex;
+use std::mem::MaybeUninit;
+use std::sync::{Mutex, Once};
 use std::time::SystemTime;
 
 /// Generate a TigerBeetle time-based identifier.
@@ -29,7 +30,7 @@ use std::time::SystemTime;
 // - https://github.com/tigerbeetle/tigerbeetle/blob/75f77b8b3280ce2f289cf42ae928945190fe4a2a/src/clients/node/src/index.ts#L161-L191
 // - https://github.com/ulid/spec
 pub fn id() -> u128 {
-    let mut guard = GLOBAL_GENERATOR.lock().expect("global tbid generator");
+    let mut guard = get_global_generator_mutex().lock().expect("global tbid generator");
     match *guard {
         None => {
             *guard = Some(TbidGenerator::new());
@@ -40,7 +41,18 @@ pub fn id() -> u128 {
     }
 }
 
-static GLOBAL_GENERATOR: Mutex<Option<TbidGenerator>> = Mutex::new(None);
+// This can just be a static mutex in Rust 1.63+
+static GLOBAL_GENERATOR_ONCE: Once = Once::new();
+static mut GLOBAL_GENERATOR: MaybeUninit<Mutex<Option<TbidGenerator>>> = MaybeUninit::uninit();
+
+fn get_global_generator_mutex() -> &'static Mutex<Option<TbidGenerator>> {
+    unsafe {
+        GLOBAL_GENERATOR_ONCE.call_once(|| {
+            GLOBAL_GENERATOR.write(Mutex::new(None));
+        });
+        GLOBAL_GENERATOR.assume_init_ref()
+    }
+}
 
 struct TbidGenerator {
     ms_since_epoch: u128,

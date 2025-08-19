@@ -45,7 +45,7 @@ impl TestDb {
         let work_dir = env!("CARGO_TARGET_TMPDIR");
         let database_name = "0_0.testdb.tigerbeetle";
 
-        if !Path::new(&format!("{work_dir}/{database_name}")).try_exists()? {
+        if !Path::new(&format!("{work_dir}/{database_name}")).exists() {
             let mut cmd = Command::new(&tigerbeetle_bin);
             cmd.current_dir(&work_dir);
             cmd.args([
