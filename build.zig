@@ -98,6 +98,8 @@ pub fn build(b: *std.Build) !void {
         .test_jni = b.step("test:jni", "Run Java JNI tests"),
         .vopr = b.step("vopr", "Run the VOPR"),
         .vopr_build = b.step("vopr:build", "Build the VOPR"),
+        .tbunshare = b.step("tbunshare", "Build tbunshare debugging binary"),
+        .tbunshare_run = b.step("tbunshare:run", "Run tbunshare debugging binary"),
     };
 
     const mode = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
@@ -266,6 +268,21 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .mode = mode,
         .print_exe = build_options.print_exe,
+    });
+
+    // zig build tbunshare
+    build_tbunshare(b, build_steps.tbunshare, .{
+        .stdx_module = stdx_module,
+        .target = target,
+        .mode = mode,
+        .print_exe = build_options.print_exe,
+    });
+
+    // zig build tbunshare:run
+    build_tbunshare_run(b, build_steps.tbunshare_run, .{
+        .stdx_module = stdx_module,
+        .target = target,
+        .mode = mode,
     });
 
     // zig build scripts -- ci --language=java
@@ -2217,6 +2234,47 @@ fn fetch(b: *std.Build, options: struct {
         copy_from_cache.addArg(hash);
     }
     return result;
+}
+
+fn build_tbunshare(
+    b: *std.Build,
+    step: *std.Build.Step,
+    options: struct {
+        stdx_module: *std.Build.Module,
+        target: std.Build.ResolvedTarget,
+        mode: std.builtin.OptimizeMode,
+        print_exe: bool,
+    },
+) void {
+    const tbunshare = b.addExecutable(.{
+        .name = "tbunshare",
+        .root_source_file = b.path("src/tbunshare.zig"),
+        .target = options.target,
+        .optimize = options.mode,
+    });
+    tbunshare.root_module.addImport("stdx", options.stdx_module);
+    step.dependOn(print_or_install(b, tbunshare, options.print_exe));
+}
+
+fn build_tbunshare_run(
+    b: *std.Build,
+    step: *std.Build.Step,
+    options: struct {
+        stdx_module: *std.Build.Module,
+        target: std.Build.ResolvedTarget,
+        mode: std.builtin.OptimizeMode,
+    },
+) void {
+    const tbunshare = b.addExecutable(.{
+        .name = "tbunshare",
+        .root_source_file = b.path("src/tbunshare.zig"),
+        .target = options.target,
+        .optimize = options.mode,
+    });
+    tbunshare.root_module.addImport("stdx", options.stdx_module);
+    const run_cmd = b.addRunArtifact(tbunshare);
+    if (b.args) |args| run_cmd.addArgs(args);
+    step.dependOn(&run_cmd.step);
 }
 
 const MiB = 1024 * 1024;

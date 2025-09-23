@@ -42,11 +42,173 @@ pub fn maybe_unshare_and_relaunch(
         network: bool,
     },
 ) !void {
+    const args_ours = std.os.argv;
+
+    // We get a fresh path to the exe instead of using the original
+    // first argument so that the exe path will be correct even if
+    // this process's cwd has changed relative to the original exe.
+    var exe_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_path = try std.fs.selfExePath(&exe_path_buffer);
+
+    // Convert arguments to execve format: [*:null]const ?[*:0]const u8
+    const argv_execve = try gpa.allocSentinel(?[*:0]const u8, args_ours.len, null);
+    // Handle partial initialization failure yuck is there a better way?
+    for (0..args_ours.len) |arg_index| {
+        argv_execve[arg_index] = null;
+    }
+    defer {
+        for (0..args_ours.len) |arg_index| {
+            const arg = argv_execve[arg_index] orelse {
+                continue;
+            };
+            gpa.free(std.mem.span(arg));
+        }
+        gpa.free(argv_execve);
+    }
+
+    // First argument is the exe path (null-terminated)
+    argv_execve[0] = try gpa.dupeZ(u8, exe_path);
+
+    // Convert remaining arguments to null-terminated strings
+    for (1..args_ours.len) |arg_index| {
+        const arg_span = std.mem.span(args_ours[arg_index]);
+        argv_execve[arg_index] = try gpa.dupeZ(u8, arg_span);
+    }
+
+    // todo don't use env_map if it can be avoided
+    var env_map = try std.process.getEnvMap(gpa);
+    defer env_map.deinit();
+
+    try env_map.put("TB_UNSHARED", "1");
+
+    // Convert environment to execve format: [*:null]const ?[*:0]const u8
+    const envp_execve = try std.process.createEnvironFromMap(gpa, &env_map, .{});
+    defer {
+        for (envp_execve) |maybe_env| {
+            if (maybe_env) |env| {
+                gpa.free(std.mem.span(env));
+            }
+        }
+        gpa.free(envp_execve);
+    }
+
+    // Convert exe_path to null-terminated format
+    const exe_path_z = try gpa.dupeZ(u8, exe_path);
+    defer gpa.free(exe_path_z);
+
+    return maybe_unshare_and_run_primitive(gpa, .{
+        .pid = options.pid,
+        .network = options.network,
+        .exe_path = exe_path_z.ptr,
+        .argv = @ptrCast(argv_execve.ptr),
+        .envp = @ptrCast(envp_execve.ptr),
+    });
+}
+
+pub fn maybe_unshare_and_run(
+    gpa: std.mem.Allocator,
+    options: struct {
+        pid: bool,
+        network: bool,
+        command: []const []const u8,
+    },
+) !void {
+    assert(options.command.len > 0);
+
+    const exe_path_z = try gpa.dupeZ(u8, options.command[0]);
+    defer gpa.free(exe_path_z);
+
+    // Convert arguments to execve format: [*:null]const ?[*:0]const u8.
+    const argv_execve = try gpa.allocSentinel(?[*:0]const u8, options.command.len, null);
+    // Handle partial initialization failure yuck is there a better way?
+    for (0..options.command.len) |arg_index| {
+        argv_execve[arg_index] = null;
+    }
+    defer {
+        for (0..options.command.len) |arg_index| {
+            const arg = argv_execve[arg_index] orelse {
+                continue;
+            };
+            gpa.free(std.mem.span(arg));
+        }
+        gpa.free(argv_execve);
+    }
+
+    // Convert arguments to null-terminated strings.
+    for (options.command, 0..) |arg, arg_index| {
+        argv_execve[arg_index] = try gpa.dupeZ(u8, arg);
+    }
+
+    // Add TB_UNSHARED to the environment.
+    var env_map = try std.process.getEnvMap(gpa);
+    defer env_map.deinit();
+
+    try env_map.put("TB_UNSHARED", "1");
+
+    // Convert environment to execve format: [*:null]const ?[*:0]const u8.
+    const envp_execve = try std.process.createEnvironFromMap(gpa, &env_map, .{});
+    defer {
+        for (envp_execve) |maybe_env| {
+            if (maybe_env) |env| {
+                gpa.free(std.mem.span(env));
+            }
+        }
+        gpa.free(envp_execve);
+    }
+
+    return maybe_unshare_and_run_primitive(gpa, .{
+        .pid = options.pid,
+        .network = options.network,
+        .exe_path = exe_path_z.ptr,
+        .argv = @ptrCast(argv_execve.ptr),
+        .envp = @ptrCast(envp_execve.ptr),
+    });
+}
+
+pub fn maybe_unshare_and_run_primitive(
+    gpa: std.mem.Allocator,
+    options: struct {
+        pid: bool,
+        network: bool,
+        exe_path: [*:0]const u8,
+        argv: [*:null]const ?[*:0]const u8,
+        envp: [*:null]const ?[*:0]const u8,
+    },
+) !void {
     comptime assert(builtin.os.tag == .linux);
+
+    {
+        log.debug("pid: {}", .{options.pid});
+        log.debug("network: {}", .{options.network});
+        log.debug("exe_path: {s}", .{options.exe_path});
+        for (std.mem.span(options.argv), 0..) |arg, arg_index| {
+            log.debug("argv[{}]: {s}", .{ arg_index, arg.? });
+        }
+    }
 
     const should_unshare_and_fork = std.posix.getenv("TB_UNSHARED") == null;
 
     if (should_unshare_and_fork) {
+        var action_new_mask: linux.sigset_t = linux.empty_sigset;
+        linux.sigaddset(&action_new_mask, linux.SIG.CHLD);
+        const action_new: linux.Sigaction = .{
+            .handler = .{ .handler = linux.SIG.DFL },
+            .mask = action_new_mask,
+            .flags = linux.SA.RESTART,
+            .restorer = null,
+        };
+        var action_old: linux.Sigaction = undefined;
+        const sigaction_result = linux.sigaction(linux.SIG.CHLD, &action_new, &action_old);
+        const sigaction_errno = std.os.linux.E.init(sigaction_result);
+        if (sigaction_errno != .SUCCESS) {
+            log.err("Failed to call sigaction: {}", .{sigaction_errno});
+            return error.UnshareFailure;
+        }
+
+        defer {
+            @panic("todo");
+        }
+
         try linux_unshare(.{
             .pid = options.pid,
             .network = options.network,
@@ -54,7 +216,11 @@ pub fn maybe_unshare_and_relaunch(
         if (options.network) {
             try linux_ip_link_loopback();
         }
-        try fork_and_exit(gpa);
+        try fork_and_exit(gpa, .{
+            .exe_path = options.exe_path,
+            .argv = options.argv,
+            .envp = options.envp,
+        });
     }
 }
 
@@ -221,49 +387,143 @@ pub fn linux_ip_link_loopback() !void {
     }
 }
 
-fn fork_and_exit(gpa: std.mem.Allocator) !void {
-    const args_ours = std.os.argv;
+const ChildArgs = struct {
+    exe_path: [*:0]const u8,
+    argv: [*:null]?[*:0]const u8,
+    envp: [*:null]const ?[*:0]const u8,
+    old_sigset: linux.sigset_t,
+};
 
-    // We get a fresh path to the exe instead of using the original
-    // first argument so that the exe path will be correct even if
-    // this process's cwd has changed relative to the original exe.
-    var exe_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = try std.fs.selfExePath(&exe_path_buffer);
+fn fork_and_exit(
+    gpa: std.mem.Allocator,
+    options: struct {
+        exe_path: [*:0]const u8,
+        argv: [*:null]const ?[*:0]const u8,
+        envp: [*:null]const ?[*:0]const u8,
+    },
+) !void {
+    // Block INT and TERM signals before forking, like standard unshare does.
+    // This prevents Ctrl+C from reaching the child directly and allows the
+    // parent to handle child termination properly.
+    var old_sigset: linux.sigset_t = undefined;
+    var new_sigset: linux.sigset_t = linux.empty_sigset;
+    linux.sigaddset(&new_sigset, linux.SIG.INT);
+    linux.sigaddset(&new_sigset, linux.SIG.TERM);
 
-    const args_new = try gpa.alloc([]const u8, args_ours.len);
-    defer gpa.free(args_new);
-
-    args_new[0] = exe_path;
-
-    for (1..args_ours.len) |arg_index| {
-        args_new[arg_index] = std.mem.span(args_ours[arg_index]);
+    const sigprocmask_result = linux.sigprocmask(linux.SIG.BLOCK, &new_sigset, &old_sigset);
+    //const sigprocmask_result = linux.sigprocmask(linux.SIG.SETMASK, &new_sigset, &old_sigset);
+    if (linux.E.init(sigprocmask_result) != .SUCCESS) {
+        log.err("Failed to block signals before fork", .{});
+        return error.SignalMaskFailure;
     }
 
-    var env_map = try std.process.getEnvMap(gpa);
-    defer env_map.deinit();
-
-    try env_map.put("TB_UNSHARED", "1");
-
-    var child = std.process.Child.init(args_new, gpa);
-
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    child.env_map = &env_map;
-
-    const result = try child.spawnAndWait();
-
-    switch (result) {
-        .Exited => |code| {
-            std.process.exit(code);
-        },
-        .Signal => |signal| {
-            log.info("sandboxed subprocesses exited with signal {}", .{signal});
-            std.process.exit(1);
-        },
-        else => {
-            log.err("sandboxed subprocesses exited abnormally", .{});
-            std.process.exit(2);
-        },
+    // Restore signal mask when we're done.
+    // There are early-return trys below so this is needed even though we intend to `process.exit`.
+    defer {
+        _ = linux.sigprocmask(linux.SIG.SETMASK, &old_sigset, null);
     }
+
+    // The posix.execvpeZ_expandArg0 function, unlike `linux.execve`, wants to
+    // mutate the argv slice, so we just make a copy instead of pushing more
+    // args-related complexity up to the caller.
+    const argv_slice = std.mem.span(options.argv);
+    const argv_copy: [:null]?[*:0]const u8 = try gpa.allocSentinel(?[*:0]const u8, argv_slice.len, null);
+    @memcpy(argv_copy[0..argv_slice.len], argv_slice);
+    defer gpa.free(argv_copy);
+
+    const child_args = ChildArgs{
+        .exe_path = options.exe_path,
+        .argv = argv_copy,
+        .envp = options.envp,
+        .old_sigset = old_sigset,
+    };
+
+    // fixme it _looks_ like unshare is able to just pass null to clone,
+    // const clone_stack = null;
+
+    // Allocate stack for child process using mmap.
+    const stack_size = 8 * 1024 * 1024; // 8MB stack
+    const stack_base = std.posix.mmap(
+        null,
+        stack_size,
+        std.posix.PROT.READ | std.posix.PROT.WRITE,
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .STACK = true },
+        -1,
+        0,
+    ) catch |err| {
+        log.err("Failed to allocate stack: {}", .{err});
+        return error.StackAllocationFailure;
+    };
+
+    // Stack grows downward, so point to the top of allocated memory
+    // Align to 16-byte boundary for proper stack alignment
+    const stack_top = @intFromPtr(stack_base.ptr) + stack_size;
+    const clone_stack = stack_top & ~@as(usize, 15); // Align to 16 bytes
+
+    // Ensure stack cleanup happens even on early return
+    defer std.posix.munmap(stack_base);
+
+    const clone_flags = linux.SIG.CHLD;
+    const clone_fn_args = @intFromPtr(&child_args);
+    const clone_ptid = null;
+    const clone_tp = 0;
+    const clone_ctid = null;
+
+    const child_pid = linux.clone(
+        clone_fn,
+        clone_stack,
+        clone_flags,
+        clone_fn_args,
+        clone_ptid,
+        clone_tp,
+        clone_ctid,
+    );
+    const clone_errno = linux.E.init(child_pid);
+    if (clone_errno != .SUCCESS) {
+        log.err("Failed to clone child process: {}", .{clone_errno});
+        return error.CloneFailure;
+    }
+
+    assert(child_pid > 0);
+    log.debug("child_pid: {}", .{child_pid});
+
+    // Parent process: wait for child
+    var wstatus: u32 = undefined;
+    const wait_result = linux.wait4(@intCast(child_pid), &wstatus, 0, null);
+    const wait_errno = linux.E.init(wait_result);
+    if (wait_errno != .SUCCESS) {
+        log.err("wait4 failed: {}", .{wait_errno});
+        std.process.exit(2);
+    }
+
+    // Handle child exit status
+    if (linux.W.IFEXITED(wstatus)) {
+        const exit_code = linux.W.EXITSTATUS(wstatus);
+        log.debug("unshared subprocesses exited with exit code {}", .{exit_code});
+        std.process.exit(@intCast(exit_code));
+    } else if (linux.W.IFSIGNALED(wstatus)) {
+        const signal = linux.W.TERMSIG(wstatus);
+        log.info("unshared subprocesses exited with signal {}", .{signal});
+        std.process.exit(1);
+    } else {
+        log.err("unshared subprocesses exited abnormally", .{});
+        std.process.exit(2);
+    }
+}
+
+fn clone_fn(args_addr: usize) callconv(.c) u8 {
+    const args: *const ChildArgs = @ptrFromInt(args_addr);
+
+    var parent_sigset: linux.sigset_t = undefined;
+
+    const sigprocmask_result = linux.sigprocmask(linux.SIG.SETMASK, &args.old_sigset, &parent_sigset);
+    const sigprocmask_errno = linux.E.init(sigprocmask_result);
+    if (sigprocmask_errno != .SUCCESS) {
+        log.err("unshared child process sigprocmask failed: {}", .{sigprocmask_errno});
+        return 2;
+    }
+
+    const execvpe_error = std.posix.execvpeZ_expandArg0(.expand, args.exe_path, args.argv, args.envp);
+    log.err("unshared child process execvpe failed: {}", .{execvpe_error});
+    return 2;
 }
