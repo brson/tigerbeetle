@@ -1294,7 +1294,7 @@ fn build_rust_client(
         });
         root_module.addImport("vsr", options.vsr_module);
         root_module.addOptions("vsr_options", options.vsr_options);
-        if (options.mode == .ReleaseSafe) strip_root_module(root_module);
+        if (options.mode == .ReleaseSafe) strip_root_module_rust(root_module);
 
         const static_lib = b.addLibrary(.{
             .name = "tb_client",
@@ -1816,6 +1816,13 @@ fn strip_root_module(root_module: *std.Build.Module) void {
     root_module.strip = true;
     // Ensure that we get stack traces even in release builds.
     root_module.omit_frame_pointer = false;
+    root_module.unwind_tables = .none;
+}
+
+fn strip_root_module_rust(root_module: *std.Build.Module) void {
+    //root_module.strip = true;
+    // Ensure that we get stack traces even in release builds.
+    //root_module.omit_frame_pointer = false;
     root_module.unwind_tables = .none;
 }
 
