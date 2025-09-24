@@ -20,6 +20,9 @@ const windows = if (builtin.os.tag == .windows) struct {
     extern "ntdll" fn NtResumeProcess(ProcessHandle: HANDLE) callconv(std.os.windows.WINAPI) NTSTATUS;
     extern "kernel32" fn OpenProcess(dwDesiredAccess: std.os.windows.DWORD, bInheritHandle: std.os.windows.BOOL, dwProcessId: std.os.windows.DWORD) callconv(std.os.windows.WINAPI) ?HANDLE;
     extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+    extern "kernel32" fn SetNamedPipeHandleState(hNamedPipe: HANDLE, lpMode: ?*std.os.windows.DWORD, lpMaxCollectionCount: ?*std.os.windows.DWORD, lpCollectDataTimeout: ?*std.os.windows.DWORD) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+
+    const PIPE_NOWAIT = 0x00000001;
 
     const PROCESS_SUSPEND_RESUME = 0x0800;
     const STATUS_SUCCESS = @as(NTSTATUS, @enumFromInt(0));
@@ -70,11 +73,16 @@ pub fn spawn(
     // Zig doesn't have non-blocking version of child.wait, so we use `BrokenPipe`
     // on writing to child's stdin to detect if a child is dead in a non-blocking
     // manner. Checks once a second in a separate thread.
-    _ = try std.posix.fcntl(
-        self.child.stdin.?.handle,
-        std.posix.F.SETFL,
-        @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true })),
-    );
+    if (builtin.os.tag == .windows) {
+        var mode: std.os.windows.DWORD = windows.PIPE_NOWAIT;
+        _ = windows.SetNamedPipeHandleState(self.child.stdin.?.handle, &mode, null, null);
+    } else {
+        _ = try std.posix.fcntl(
+            self.child.stdin.?.handle,
+            std.posix.F.SETFL,
+            @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true })),
+        );
+    }
     self.stdin_thread = try std.Thread.spawn(
         .{},
         struct {
