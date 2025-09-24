@@ -657,23 +657,44 @@ const Supervisor = struct {
             for (supervisor.replicas, 0..) |replica, index| {
                 if (replica.state() == .terminated) {
                     const replica_result = try replica.process.?.wait();
-                    switch (replica_result) {
-                        .Signal => |signal| {
-                            switch (signal) {
-                                switch (builtin.os.tag) { .windows => 9, else => std.posix.SIG.KILL } => {},
-                                else => {
+                    if (builtin.os.tag == .windows) {
+                        // On Windows, processes don't use signals
+                        switch (replica_result) {
+                            .Exited => |code| {
+                                if (code == 1) {
+                                    // Exit code 1 is expected (equivalent to SIGKILL)
+                                } else {
                                     log.err(
-                                        "replica {d} terminated unexpectedly with signal {d}",
-                                        .{ index, signal },
+                                        "replica {d} terminated unexpectedly with exit code {d}",
+                                        .{ index, code },
                                     );
                                     std.process.exit(1);
-                                },
-                            }
-                        },
-                        else => {
-                            log.err("unexpected replica result: {any}", .{replica_result});
-                            return error.TestFailed;
-                        },
+                                }
+                            },
+                            else => {
+                                log.err("unexpected replica result: {any}", .{replica_result});
+                                return error.TestFailed;
+                            },
+                        }
+                    } else {
+                        switch (replica_result) {
+                            .Signal => |signal| {
+                                switch (signal) {
+                                    std.posix.SIG.KILL => {},
+                                    else => {
+                                        log.err(
+                                            "replica {d} terminated unexpectedly with signal {d}",
+                                            .{ index, signal },
+                                        );
+                                        std.process.exit(1);
+                                    },
+                                }
+                            },
+                            else => {
+                                log.err("unexpected replica result: {any}", .{replica_result});
+                                return error.TestFailed;
+                            },
+                        }
                     }
                 }
             }
@@ -694,26 +715,44 @@ const Supervisor = struct {
                 try supervisor.workload.process.wait();
         };
 
-        switch (workload_result) {
-            .Signal => |signal| {
-                switch (signal) {
-                    switch (builtin.os.tag) { .windows => 9, else => std.posix.SIG.KILL } => log.info(
-                        "workload terminated as requested",
-                        .{},
-                    ),
-                    else => {
-                        log.err(
-                            "workload exited unexpectedly with signal {d}",
-                            .{signal},
-                        );
+        if (builtin.os.tag == .windows) {
+            // On Windows, processes don't use signals
+            switch (workload_result) {
+                .Exited => |code| {
+                    if (code == 0) {
+                        log.info("workload terminated as requested", .{});
+                    } else {
+                        log.err("workload exited unexpectedly with exit code {d}", .{code});
                         std.process.exit(1);
-                    },
-                }
-            },
-            else => {
-                log.err("unexpected workload result: {any}", .{workload_result});
-                return error.TestFailed;
-            },
+                    }
+                },
+                else => {
+                    log.err("unexpected workload result: {any}", .{workload_result});
+                    return error.TestFailed;
+                },
+            }
+        } else {
+            switch (workload_result) {
+                .Signal => |signal| {
+                    switch (signal) {
+                        std.posix.SIG.KILL => log.info(
+                            "workload terminated as requested",
+                            .{},
+                        ),
+                        else => {
+                            log.err(
+                                "workload exited unexpectedly with signal {d}",
+                                .{signal},
+                            );
+                            std.process.exit(1);
+                        },
+                    }
+                },
+                else => {
+                    log.err("unexpected workload result: {any}", .{workload_result});
+                    return error.TestFailed;
+                },
+            }
         }
     }
 };

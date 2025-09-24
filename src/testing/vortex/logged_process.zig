@@ -176,6 +176,12 @@ pub fn terminate(
     };
 
     // Await thread.
+    if (builtin.os.tag == .windows) {
+        // On Windows, forcefully terminate the stdin thread since pipe detection may not work
+        self.current_state.store(.terminated, .seq_cst);
+        // Give the thread a moment to see the state change and exit
+        std.time.sleep(100 * std.time.ns_per_ms);
+    }
     self.stdin_thread.join();
 
     // Await the terminated process.
