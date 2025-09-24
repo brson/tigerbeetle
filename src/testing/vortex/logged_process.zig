@@ -114,7 +114,7 @@ pub fn stop(
     self: *LoggedProcess,
 ) !void {
     assert(builtin.os.tag != .windows);
-    try std.posix.kill(self.child.id, std.posix.SIG.STOP);
+    if (builtin.os.tag != .windows) { try std.posix.kill(self.child.id, std.posix.SIG.STOP); }
     self.current_state.store(.stopped, .seq_cst);
 }
 
@@ -122,7 +122,7 @@ pub fn cont(
     self: *LoggedProcess,
 ) !void {
     assert(builtin.os.tag != .windows);
-    try std.posix.kill(self.child.id, std.posix.SIG.CONT);
+    if (builtin.os.tag != .windows) { try std.posix.kill(self.child.id, std.posix.SIG.CONT); }
     self.current_state.store(.running, .seq_cst);
 }
 

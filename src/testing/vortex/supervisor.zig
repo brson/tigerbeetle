@@ -660,7 +660,7 @@ const Supervisor = struct {
                     switch (replica_result) {
                         .Signal => |signal| {
                             switch (signal) {
-                                std.posix.SIG.KILL => {},
+                                switch (builtin.os.tag) { .windows => 9, else => std.posix.SIG.KILL } => {},
                                 else => {
                                     log.err(
                                         "replica {d} terminated unexpectedly with signal {d}",
@@ -697,7 +697,7 @@ const Supervisor = struct {
         switch (workload_result) {
             .Signal => |signal| {
                 switch (signal) {
-                    std.posix.SIG.KILL => log.info(
+                    switch (builtin.os.tag) { .windows => 9, else => std.posix.SIG.KILL } => log.info(
                         "workload terminated as requested",
                         .{},
                     ),
