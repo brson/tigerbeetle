@@ -128,7 +128,7 @@ pub const CLIArgs = struct {
 pub fn main(allocator: std.mem.Allocator, args: CLIArgs) !void {
     if (builtin.os.tag == .windows) {
         log.err("vortex is not supported on Windows", .{});
-        return error.NotSupported;
+        //return error.NotSupported;
     }
 
     if (builtin.os.tag == .linux) {

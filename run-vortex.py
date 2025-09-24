@@ -6,6 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 import argparse
+import io
+import shutil
+
+sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.detach(), encoding='utf-8')
 
 DEFAULT_OUT_DIRECTORY = "./vortex-out"
 DEFAULT_TEST_DURATION_SECONDS = 2
@@ -74,7 +79,7 @@ def parse_args():
 def main():
     if platform.system().lower() != "linux":
         print("❌ This script must be run on Linux.")
-        sys.exit(1)
+        #sys.exit(1)
 
     args = parse_args()
 
@@ -125,8 +130,8 @@ def run(args):
 
     # Build TigerBeetle
     try:
-        run_command([ZIG_CMD, "build"])
-        run_command([ZIG_CMD, "build", "vortex:build"])
+        run_command([ZIG_CMD, "build", "--verbose"])
+        run_command([ZIG_CMD, "build", "vortex:build", "--verbose"])
     except subprocess.CalledProcessError as e:
         print(f"❌ Build failed: {e}")
         sys.exit(e.returncode)
@@ -135,8 +140,8 @@ def run(args):
     build_driver(args.driver)
 
     # Run vortex
-    vortex_path = Path("zig-out/bin/vortex")
-    tigerbeetle_path = Path("zig-out/bin/tigerbeetle")
+    vortex_path = Path(shutil.which("zig-out/bin/vortex"))
+    tigerbeetle_path = Path(shutil.which("zig-out/bin/tigerbeetle"))
 
     if not vortex_path.exists():
         print(f"❌ Vortex executable not found at {vortex_path}")

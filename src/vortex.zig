@@ -43,7 +43,7 @@ pub fn main() !void {
 
     if (builtin.os.tag == .windows) {
         log.err("vortex is not supported for Windows", .{});
-        return error.NotSupported;
+        //return error.NotSupported;
     }
 
     var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};

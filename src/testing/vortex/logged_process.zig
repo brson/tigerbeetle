@@ -54,6 +54,10 @@ pub fn spawn(
         _ = self.child.kill() catch {};
     }
 
+    if (builtin.os.tag == .windows) {
+        return self;
+    }
+
     // Zig doesn't have non-blocking version of child.wait, so we use `BrokenPipe`
     // on writing to child's stdin to detect if a child is dead in a non-blocking
     // manner. Checks once a second in a separate thread.
