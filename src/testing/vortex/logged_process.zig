@@ -11,6 +11,19 @@ const builtin = @import("builtin");
 const log = std.log.scoped(.logged_process);
 
 const assert = std.debug.assert;
+// Windows process suspension/resume APIs
+const windows = if (builtin.os.tag == .windows) struct {
+    const HANDLE = std.os.windows.HANDLE;
+    const NTSTATUS = std.os.windows.NTSTATUS;
+
+    extern "ntdll" fn NtSuspendProcess(ProcessHandle: HANDLE) callconv(std.os.windows.WINAPI) NTSTATUS;
+    extern "ntdll" fn NtResumeProcess(ProcessHandle: HANDLE) callconv(std.os.windows.WINAPI) NTSTATUS;
+    extern "kernel32" fn OpenProcess(dwDesiredAccess: std.os.windows.DWORD, bInheritHandle: std.os.windows.BOOL, dwProcessId: std.os.windows.DWORD) callconv(std.os.windows.WINAPI) ?HANDLE;
+    extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+
+    const PROCESS_SUSPEND_RESUME = 0x0800;
+    const STATUS_SUCCESS = @as(NTSTATUS, @enumFromInt(0));
+} else void;
 
 const LoggedProcess = @This();
 
@@ -113,16 +126,24 @@ pub fn state(self: *LoggedProcess) State {
 pub fn stop(
     self: *LoggedProcess,
 ) !void {
-    assert(builtin.os.tag != .windows);
-    if (builtin.os.tag != .windows) { try std.posix.kill(self.child.id, std.posix.SIG.STOP); }
+    if (builtin.os.tag == .windows) {
+        const status = windows.NtSuspendProcess(self.child.id);
+        if (status != windows.STATUS_SUCCESS) return error.SuspendProcessFailed;
+    } else {
+        try std.posix.kill(self.child.id, std.posix.SIG.STOP);
+    }
     self.current_state.store(.stopped, .seq_cst);
 }
 
 pub fn cont(
     self: *LoggedProcess,
 ) !void {
-    assert(builtin.os.tag != .windows);
-    if (builtin.os.tag != .windows) { try std.posix.kill(self.child.id, std.posix.SIG.CONT); }
+    if (builtin.os.tag == .windows) {
+        const status = windows.NtResumeProcess(self.child.id);
+        if (status != windows.STATUS_SUCCESS) return error.ResumeProcessFailed;
+    } else {
+        try std.posix.kill(self.child.id, std.posix.SIG.CONT);
+    }
     self.current_state.store(.running, .seq_cst);
 }
 
