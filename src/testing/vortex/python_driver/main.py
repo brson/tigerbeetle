@@ -7,13 +7,14 @@ import ctypes
 from typing import Optional, List, Union
 from enum import Enum
 import tigerbeetle as tb
-from tigerbeetle.bindings import CAccount, CTransfer
+from tigerbeetle.bindings import CAccount, CTransfer, CAccountFilter
 
 # Operation constants from src/state_machine.zig
 CREATE_ACCOUNTS = 138
 CREATE_TRANSFERS = 139
 LOOKUP_ACCOUNTS = 140
 LOOKUP_TRANSFERS = 141
+GET_ACCOUNT_TRANSFERS = 142
 
 class Request:
     pass
@@ -34,6 +35,10 @@ class LookupTransfersRequest(Request):
     def __init__(self, transfer_ids: List[int]):
         self.transfer_ids = transfer_ids
 
+class GetAccountTransfersRequest(Request):
+    def __init__(self, filters: List[tb.AccountFilter]):
+        self.filters = filters
+
 class Reply:
     pass
 
@@ -50,6 +55,10 @@ class LookupAccountsReply(Reply):
         self.accounts = accounts
 
 class LookupTransfersReply(Reply):
+    def __init__(self, transfers: List[tb.Transfer]):
+        self.transfers = transfers
+
+class GetAccountTransfersReply(Reply):
     def __init__(self, transfers: List[tb.Transfer]):
         self.transfers = transfers
 
@@ -113,6 +122,16 @@ class BinaryProtocol:
                     transfer_ids.append(transfer_id)
                 return LookupTransfersRequest(transfer_ids)
 
+            elif operation == GET_ACCOUNT_TRANSFERS:
+                filters = []
+                for i in range(count):
+                    filter_bytes = self.read_exact(128)
+                    c_filter = CAccountFilter()
+                    ctypes.memmove(ctypes.addressof(c_filter), filter_bytes, 128)
+                    filter_obj = c_filter.to_python()
+                    filters.append(filter_obj)
+                return GetAccountTransfersRequest(filters)
+
             else:
                 raise ValueError(f"Unsupported operation: {operation}")
 
@@ -141,6 +160,13 @@ class BinaryProtocol:
                 self.output_stream.write(account_bytes)
 
         elif isinstance(reply, LookupTransfersReply):
+            self.output_stream.write(struct.pack('<I', len(reply.transfers)))
+            for transfer in reply.transfers:
+                c_transfer = CTransfer.from_param(transfer)
+                transfer_bytes = ctypes.string_at(ctypes.addressof(c_transfer), 128)
+                self.output_stream.write(transfer_bytes)
+
+        elif isinstance(reply, GetAccountTransfersReply):
             self.output_stream.write(struct.pack('<I', len(reply.transfers)))
             for transfer in reply.transfers:
                 c_transfer = CTransfer.from_param(transfer)
@@ -188,6 +214,8 @@ class VortexDriver:
             return self.lookup_accounts(request.account_ids)
         elif isinstance(request, LookupTransfersRequest):
             return self.lookup_transfers(request.transfer_ids)
+        elif isinstance(request, GetAccountTransfersRequest):
+            return self.get_account_transfers(request.filters)
         else:
             raise ValueError(f"Unsupported request type: {type(request)}")
 
@@ -206,6 +234,11 @@ class VortexDriver:
     def lookup_transfers(self, transfer_ids: List[int]) -> LookupTransfersReply:
         transfers = self.client.lookup_transfers(transfer_ids)
         return LookupTransfersReply(transfers)
+
+    def get_account_transfers(self, filters: List[tb.AccountFilter]) -> GetAccountTransfersReply:
+        assert len(filters) == 1, "get_account_transfers expects exactly one filter"
+        transfers = self.client.get_account_transfers(filters[0])
+        return GetAccountTransfersReply(transfers)
 
 def main():
     if len(sys.argv) != 3:

@@ -56,6 +56,17 @@ fn execute(client: &mut tb::Client, op: Request) -> AnyResult<Reply> {
             let response = block_on(response)?;
             Ok(Reply::LookupTransfers(response))
         }
+        Request::GetAccountTransfers(filters) => {
+            // Since get_account_transfers takes a single filter, we need to handle this carefully
+            assert_eq!(
+                filters.len(),
+                1,
+                "get_account_transfers expects exactly one filter"
+            );
+            let response = client.get_account_transfers(filters[0]);
+            let response = block_on(response)?;
+            Ok(Reply::GetAccountTransfers(response))
+        }
     }
 }
 
@@ -85,6 +96,7 @@ enum Request {
     CreateTransfers(Vec<tb::Transfer>),
     LookupAccounts(Vec<u128>),
     LookupTransfers(Vec<u128>),
+    GetAccountTransfers(Vec<tb::AccountFilter>),
 }
 
 enum Reply {
@@ -92,6 +104,7 @@ enum Reply {
     CreateTransfers(Vec<tb::CreateTransfersResult>),
     LookupAccounts(Vec<tb::Account>),
     LookupTransfers(Vec<tb::Transfer>),
+    GetAccountTransfers(Vec<tb::Transfer>),
 }
 
 struct Input {
@@ -167,6 +180,16 @@ impl Input {
                 }
                 Ok(Some(Request::LookupTransfers(events)))
             }
+            tbc::TB_OPERATION_TB_OPERATION_GET_ACCOUNT_TRANSFERS => {
+                let mut events = Vec::with_capacity(event_count as usize);
+                for i in 0..event_count {
+                    let mut bytes = [0; mem::size_of::<tb::AccountFilter>()];
+                    self.reader.read_exact(&mut bytes)?;
+                    let event: tb::AccountFilter = unsafe { mem::transmute(bytes) };
+                    events.push(event);
+                }
+                Ok(Some(Request::GetAccountTransfers(events)))
+            }
             _ => todo!("{op}"),
         }
     }
@@ -223,6 +246,15 @@ impl Output {
                 }
             }
             Reply::LookupTransfers(results) => {
+                let results_length = u32::try_from(results.len())?;
+                self.writer.write_all(&results_length.to_le_bytes())?;
+                for result in results {
+                    let bytes: [u8; mem::size_of::<tb::Transfer>()] =
+                        unsafe { mem::transmute(result) };
+                    self.writer.write_all(&bytes)?;
+                }
+            }
+            Reply::GetAccountTransfers(results) => {
                 let results_length = u32::try_from(results.len())?;
                 self.writer.write_all(&results_length.to_le_bytes())?;
                 for result in results {

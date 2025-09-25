@@ -105,6 +105,7 @@ const Command = union(enum) {
     create_transfers: []tb.Transfer,
     lookup_all_accounts: []u128,
     lookup_latest_transfers: []u128,
+    get_account_transfers: []tb.AccountFilter,
 
     fn event_count(command: Command) usize {
         return switch (command) {
@@ -112,6 +113,7 @@ const Command = union(enum) {
             .create_transfers => |entries| entries.len,
             .lookup_all_accounts => |entries| entries.len,
             .lookup_latest_transfers => |entries| entries.len,
+            .get_account_transfers => |entries| entries.len,
         };
     }
 };
@@ -124,6 +126,7 @@ const Result = union(enum) {
     create_transfers: []tb.CreateTransfersResult,
     lookup_all_accounts: []tb.Account,
     lookup_latest_transfers: []tb.Transfer,
+    get_account_transfers: []tb.Transfer,
 };
 const ResultBuffers = FixedSizeBuffersType(Result);
 var result_buffers: ResultBuffers = std.mem.zeroes(ResultBuffers);
@@ -154,6 +157,7 @@ fn operation_from_command(tag: std.meta.Tag(Command)) StateMachine.Operation {
         .create_transfers => .create_transfers,
         .lookup_all_accounts => .lookup_accounts,
         .lookup_latest_transfers => .lookup_transfers,
+        .get_account_transfers => .get_account_transfers,
     };
 }
 
@@ -293,6 +297,45 @@ fn reconcile(result: Result, command: *const Command, model: *Model) !void {
                 timestamp_max = transfer.timestamp;
             }
         },
+        .get_account_transfers => |transfers_found| {
+            const filter = &command.get_account_transfers[0];
+
+            // Check that timestamps are monotonically increasing.
+            var timestamp_max: u64 = 0;
+            for (transfers_found) |transfer| {
+                if (transfer.timestamp <= timestamp_max) {
+                    log.err(
+                        "account transfer timestamp {d} is not greater than previous timestamp {d}",
+                        .{ transfer.timestamp, timestamp_max },
+                    );
+                    return error.TestFailed;
+                }
+                timestamp_max = transfer.timestamp;
+
+                // Verify transfers belong to the queried account
+                const account_id = filter.account_id;
+                const belongs_to_account = (filter.flags.debits and transfer.debit_account_id == account_id) or
+                                          (filter.flags.credits and transfer.credit_account_id == account_id);
+
+                if (!belongs_to_account) {
+                    log.err(
+                        "transfer {d} does not belong to queried account {d}",
+                        .{ transfer.id, account_id },
+                    );
+                    return error.TestFailed;
+                }
+
+                // Verify both accounts exist in our model
+                if (!model.account_exists(transfer.debit_account_id) or
+                    !model.account_exists(transfer.credit_account_id)) {
+                    log.err(
+                        "transfer {d} references unknown accounts: debit={d}, credit={d}",
+                        .{ transfer.id, transfer.debit_account_id, transfer.credit_account_id },
+                    );
+                    return error.TestFailed;
+                }
+            }
+        },
     }
 }
 
@@ -339,11 +382,13 @@ fn random_command(prng: *stdx.PRNG, model: *const Model) Command {
         .create_transfers = if (model.accounts.items.len > 2) 10 else 0,
         .lookup_all_accounts = 0,
         .lookup_latest_transfers = 5,
+        .get_account_transfers = if (model.accounts.items.len > 0) 3 else 0,
     });
     switch (command_tag) {
         .create_accounts => return random_create_accounts(prng, model),
         .create_transfers => return random_create_transfers(prng, model),
         .lookup_latest_transfers => return lookup_latest_transfers(model),
+        .get_account_transfers => return random_get_account_transfers(prng, model),
         .lookup_all_accounts => unreachable,
     }
 }
@@ -468,6 +513,32 @@ fn lookup_latest_transfers(model: *const Model) Command {
         count += 1;
     }
     return .{ .lookup_latest_transfers = buffer };
+}
+
+fn random_get_account_transfers(prng: *stdx.PRNG, model: *const Model) Command {
+    // get_account_transfers is not batchable - only send one filter
+    const buffer = command_buffers.get_account_transfers[0..1];
+
+    // Pick a random account to query
+    const account = model.accounts.items[prng.index(model.accounts.items)];
+    buffer[0] = tb.AccountFilter{
+        .account_id = account.id,
+        .user_data_128 = 0,
+        .user_data_64 = 0,
+        .user_data_32 = 0,
+        .code = 0,
+        .reserved = [_]u8{0} ** 58,
+        .timestamp_min = 0,
+        .timestamp_max = 0,
+        .limit = 1, // Query only 1 transfer record (buffer size limitation)
+        .flags = .{
+            .debits = true,
+            .credits = true,
+            .reversed = false,
+        },
+    };
+
+    return .{ .get_account_transfers = buffer };
 }
 
 /// Converts a union type, where each field is of a slice type, into a struct of arrays of the

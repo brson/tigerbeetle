@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
 import com.tigerbeetle.AccountBatch;
+import com.tigerbeetle.AccountFilter;
 import com.tigerbeetle.AccountFlags;
 import com.tigerbeetle.Client;
 import com.tigerbeetle.CreateAccountResult;
@@ -122,8 +123,13 @@ class Driver {
         else
           lookupTransfers(reader, writer, count);
         break;
-      case GET_ACCOUNT_BALANCES:
       case GET_ACCOUNT_TRANSFERS:
+        if (isAsync)
+          getAccountTransfersAsync(reader, writer, count);
+        else
+          getAccountTransfers(reader, writer, count);
+        break;
+      case GET_ACCOUNT_BALANCES:
       case QUERY_ACCOUNTS:
       case QUERY_TRANSFERS:
         // The Vortex workload currently does not request these operations, so this driver doesn't
@@ -503,6 +509,101 @@ class Driver {
     writer.flush();
   }
 
+  void getAccountTransfers(Reader reader, Writer writer, int count) throws IOException {
+    // get_account_transfers expects exactly one AccountFilter
+    assert count == 1 : "get_account_transfers expects exactly one filter, got " + count;
+
+    reader.read(Driver.Operation.GET_ACCOUNT_TRANSFERS.eventSize() * count);
+    var filter = new AccountFilter();
+
+    // Parse AccountFilter (128 bytes) - based on AccountFilter struct in tigerbeetle.zig
+    filter.setAccountId(reader.u128());           // account_id: u128
+    filter.setUserData128(reader.u128());        // user_data_128: u128
+    filter.setUserData64(reader.u64());          // user_data_64: u64
+    filter.setUserData32(reader.u32());          // user_data_32: u32
+    reader.u16();                                // code: u16
+    // Skip reserved bytes (58 bytes)
+    for (int i = 0; i < 58; i++) {
+      reader.u8();
+    }
+    filter.setTimestampMin(reader.u64());        // timestamp_min: u64
+    filter.setTimestampMax(reader.u64());        // timestamp_max: u64
+    filter.setLimit(reader.u32());               // limit: u32
+    var flags = reader.u32();                    // flags: AccountFilterFlags
+    // Parse AccountFilterFlags
+    filter.setDebits((flags & 0x1) != 0);
+    filter.setCredits((flags & 0x2) != 0);
+    filter.setReversed((flags & 0x4) != 0);
+
+    var results = client.getAccountTransfers(filter);
+    writer.allocate(4 + Driver.Operation.GET_ACCOUNT_TRANSFERS.resultSize() * results.getLength());
+    writer.u32(results.getLength());
+    while (results.next()) {
+      writer.u128(results.getId());
+      writer.u128(results.getDebitAccountId());
+      writer.u128(results.getCreditAccountId());
+      writer.u128(UInt128.asBytes(results.getAmount()));
+      writer.u128(results.getPendingId());
+      writer.u128(results.getUserData128());
+      writer.u64(results.getUserData64());
+      writer.u32(results.getUserData32());
+      writer.u32(results.getTimeout());
+      writer.u32(results.getLedger());
+      writer.u16(results.getCode());
+      writer.u16(results.getFlags());
+      writer.u64(results.getTimestamp());
+    }
+    writer.flush();
+  }
+
+  void getAccountTransfersAsync(Reader reader, Writer writer, int count)
+      throws IOException, InterruptedException, ExecutionException {
+    // get_account_transfers expects exactly one AccountFilter
+    assert count == 1 : "get_account_transfers expects exactly one filter, got " + count;
+
+    reader.read(Driver.Operation.GET_ACCOUNT_TRANSFERS.eventSize() * count);
+    var filter = new AccountFilter();
+
+    // Parse AccountFilter (128 bytes) - based on AccountFilter struct in tigerbeetle.zig
+    filter.setAccountId(reader.u128());           // account_id: u128
+    filter.setUserData128(reader.u128());        // user_data_128: u128
+    filter.setUserData64(reader.u64());          // user_data_64: u64
+    filter.setUserData32(reader.u32());          // user_data_32: u32
+    reader.u16();                                // code: u16
+    // Skip reserved bytes (58 bytes)
+    for (int i = 0; i < 58; i++) {
+      reader.u8();
+    }
+    filter.setTimestampMin(reader.u64());        // timestamp_min: u64
+    filter.setTimestampMax(reader.u64());        // timestamp_max: u64
+    filter.setLimit(reader.u32());               // limit: u32
+    var flags = reader.u32();                    // flags: AccountFilterFlags
+    // Parse AccountFilterFlags
+    filter.setDebits((flags & 0x1) != 0);
+    filter.setCredits((flags & 0x2) != 0);
+    filter.setReversed((flags & 0x4) != 0);
+
+    var results = client.getAccountTransfersAsync(filter).get();
+    writer.allocate(4 + Driver.Operation.GET_ACCOUNT_TRANSFERS.resultSize() * results.getLength());
+    writer.u32(results.getLength());
+    while (results.next()) {
+      writer.u128(results.getId());
+      writer.u128(results.getDebitAccountId());
+      writer.u128(results.getCreditAccountId());
+      writer.u128(UInt128.asBytes(results.getAmount()));
+      writer.u128(results.getPendingId());
+      writer.u128(results.getUserData128());
+      writer.u64(results.getUserData64());
+      writer.u32(results.getUserData32());
+      writer.u32(results.getTimeout());
+      writer.u32(results.getLedger());
+      writer.u16(results.getCode());
+      writer.u16(results.getFlags());
+      writer.u64(results.getTimestamp());
+    }
+    writer.flush();
+  }
+
   void lookupTransfersAsync(Reader reader, Writer writer, int count)
       throws IOException, InterruptedException, ExecutionException {
     reader.read(Driver.Operation.LOOKUP_TRANSFERS.eventSize() * count);
@@ -650,8 +751,9 @@ class Driver {
           return 16;
         case LOOKUP_TRANSFERS:
           return 16;
-        case GET_ACCOUNT_BALANCES:
         case GET_ACCOUNT_TRANSFERS:
+          return 128;
+        case GET_ACCOUNT_BALANCES:
         case QUERY_ACCOUNTS:
         case QUERY_TRANSFERS:
         default:
@@ -669,8 +771,9 @@ class Driver {
           return 128;
         case LOOKUP_TRANSFERS:
           return 128;
-        case GET_ACCOUNT_BALANCES:
         case GET_ACCOUNT_TRANSFERS:
+          return 128;
+        case GET_ACCOUNT_BALANCES:
         case QUERY_ACCOUNTS:
         case QUERY_TRANSFERS:
         default:
