@@ -1072,6 +1072,7 @@ pub const IO = struct {
 
     pub fn event_trigger(self: *IO, event: Event, completion: *Completion) void {
         assert(event != INVALID_EVENT);
+        assert(completion.callback != null);
         os.windows.PostQueuedCompletionStatus(
             self.iocp,
             0,
