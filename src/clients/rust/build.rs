@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         ("x86_64", "linux", "gnu") => "x86_64-linux-gnu.2.27",
         ("x86_64", "linux", "musl") => "x86_64-linux-musl",
         ("x86_64", "macos", "") => "x86_64-macos",
-        ("x86_64", "windows", "") => "x86_64-windows",
+        ("x86_64", "windows", "") | ("x86_64", "windows", "gnu") => "x86_64-windows",
         _ => todo!(),
     };
 
@@ -39,6 +39,10 @@ fn main() -> anyhow::Result<()> {
         println!("cargo:rerun-if-changed={libdir}/lib{libname}.a");
     } else if windows {
         println!("cargo:rerun-if-changed={libdir}/{libname}.lib");
+        // Link Windows system libraries required by tb_client
+        println!("cargo:rustc-link-lib=dylib=advapi32");
+        println!("cargo:rustc-link-lib=dylib=ws2_32");
+        println!("cargo:rustc-link-lib=dylib=ntdll");
     } else {
         todo!();
     }
