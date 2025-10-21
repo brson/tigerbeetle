@@ -122,8 +122,9 @@
 //! Here is an example of paging to get started with:
 //!
 //! ```no_run
+//! # use tb::futures_polyfills as futures;
 //! use tigerbeetle as tb;
-//! use futures::{stream, Stream};
+//! use futures::{Stream, stream};
 //!
 //! fn get_account_transfers_paged(
 //!     client: &tb::Client,
@@ -142,7 +143,7 @@
 //!
 //!     let is_reverse = event.flags.contains(tb::AccountFilterFlags::Reversed);
 //!
-//!     futures::stream::unfold(State::Start, move |state| async move {
+//!     stream::unfold(State::Start, move |state| async move {
 //!         let event = match state {
 //!             State::Start => event,
 //!             State::Continue(timestamp_begin) => {
@@ -266,6 +267,7 @@
 //! [`futures::executor::block_on`]: https://docs.rs/futures/latest/futures/executor/fn.block_on.html
 //!
 //! ```no_run
+//! # use tb::futures_polyfills as futures;
 //! use futures::executor::block_on;
 //! use tigerbeetle as tb;
 //!
@@ -340,6 +342,11 @@ mod conversions;
 mod time_based_id;
 
 pub use time_based_id::id;
+
+// To reduce our MSRV we have vendored futures bits that we use for tests.
+#[doc(hidden)]
+pub mod futures_polyfills;
+
 
 /// The tb_client completion context is unused by the Rust bindings.
 /// This is just a magic number to jump out of logs.
@@ -1825,3 +1832,4 @@ extern "C" fn on_completion(
         callback(context, packet, timestamp, result_ptr, result_len);
     }
 }
+

@@ -7,11 +7,12 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier, Once};
 
-use futures::executor::block_on;
-use futures::pin_mut;
-use futures::{Stream, StreamExt};
+use futures_core::Stream;
 
 use tigerbeetle as tb;
+use tb::futures_polyfills::executor::block_on;
+use tb::futures_polyfills::stream::{self, StreamExt};
+use tb::tb_pin_mut;
 
 // Singleton test database.
 // This can be a OnceLock in Rust 1.70+, and LazyLock in 1.80.
@@ -687,7 +688,7 @@ fn get_account_transfers_paged(
 
     let is_reverse = event.flags.contains(tb::AccountFilterFlags::Reversed);
 
-    futures::stream::unfold(State::Start, move |state| async move {
+    stream::unfold(State::Start, move |state| async move {
         let event = match state {
             State::Start => event,
             State::Continue(timestamp_begin) => {
@@ -814,7 +815,7 @@ fn paging_forward() -> anyhow::Result<()> {
         },
     );
 
-    pin_mut!(query_results);
+    tb_pin_mut!(query_results);
 
     let mut batches = 0;
     let mut transfer_count = 0;
@@ -846,7 +847,7 @@ fn paging_reverse() -> anyhow::Result<()> {
         },
     );
 
-    pin_mut!(query_results);
+    tb_pin_mut!(query_results);
 
     let mut batches = 0;
     let mut transfer_count = 0;
