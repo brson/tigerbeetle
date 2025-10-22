@@ -294,6 +294,8 @@ pub fn build(b: *std.Build) !void {
         .vsr_options = vsr_options,
         .tb_client_header = tb_client_header,
         .mode = mode,
+        .config_release = build_options.config_release,
+        .config_release_client_min = build_options.config_release_client_min,
     });
     build_go_client(b, build_steps.clients_go, .{
         .vsr_module = vsr_module,
@@ -1271,6 +1273,8 @@ fn build_rust_client(
         vsr_options: *std.Build.Step.Options,
         tb_client_header: *Generated,
         mode: std.builtin.OptimizeMode,
+        config_release: ?[]const u8,
+        config_release_client_min: ?[]const u8,
     },
 ) void {
     step_clients_rust.dependOn(&options.tb_client_header.step);
@@ -1315,7 +1319,7 @@ fn build_rust_client(
         }),
     });
     rust_bindings_generator.root_module.addImport("vsr", options.vsr_module);
-    rust_bindings_generator.root_module.addOptions("vsr_options", options.vsr_options);
+
     const bindings = Generated.file(b, .{
         .generator = rust_bindings_generator,
         .path = "./src/clients/rust/src/tb_client.rs",

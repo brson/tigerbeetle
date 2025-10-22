@@ -44,6 +44,8 @@ fn main() -> anyhow::Result<()> {
     let libpath = format!("{libdir}/{libfile}");
 
     println!("cargo:rerun-if-changed={libpath}");
+    println!("cargo:rerun-if-env-changed=TB_CLIENT_RELEASE");
+    println!("cargo:rerun-if-env-changed=TB_CLIENT_RELEASE_CLIENT_MIN");
 
     if windows {
         // tb_client needs access to the random number generator in here.
@@ -82,6 +84,18 @@ fn is_build_in_tree(manifest_dir: &str) -> anyhow::Result<bool> {
     Ok(Path::new(&format!("{manifest_dir}/../../../build.zig")).try_exists()?)
 }
 
+fn get_version_config() -> Option<(String, String)> {
+    // Try environment variables (for external users).
+    if let (Ok(release), Ok(release_client_min)) = (
+        env::var("TB_CLIENT_RELEASE"),
+        env::var("TB_CLIENT_RELEASE_CLIENT_MIN"),
+    ) {
+        return Some((release, release_client_min));
+    }
+
+    None
+}
+
 fn build_tigerbeetle(manifest_dir: &str) -> anyhow::Result<()> {
     assert!(is_build_in_tree(manifest_dir)?);
 
@@ -100,6 +114,8 @@ fn build_tigerbeetle(manifest_dir: &str) -> anyhow::Result<()> {
         panic!("No zig compiler found.");
     }
 
+    let version_config = get_version_config();
+
     let build_targets = [
         "clients:rust", // Build the tb_client library, tb_client.h, and tb_client.rs
         "install",      // Build tigerbeetle binary for testing
@@ -108,6 +124,13 @@ fn build_tigerbeetle(manifest_dir: &str) -> anyhow::Result<()> {
     for build_target in build_targets {
         let mut cmd = std::process::Command::new(&zig_compiler);
         cmd.args(["build", build_target, "-Drelease"]);
+
+        // Add version configuration if available.
+        if let Some((release, release_client_min)) = &version_config {
+            cmd.arg(format!("-Dconfig-release={release}"));
+            cmd.arg(format!("-Dconfig-release-client-min={release_client_min}"));
+        }
+
         let result = cmd.status()?;
 
         if !result.success() {
