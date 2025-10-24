@@ -1,6 +1,7 @@
 #![allow(unused)]
 // This code reads better if all protocol byte conversions are transmutes -
 // rustc would prefer us to use safe conversions for the u128s.
+#![allow(unnecessary_transmutes)]
 
 use anyhow::Result as AnyResult;
 use anyhow::{bail, Context};
@@ -26,8 +27,13 @@ fn main() -> AnyResult<()> {
 
     let mut client = tb::Client::new(args.cluster_id, &args.addresses)?;
 
-    while let Some(op) = input.receive()? {
+    loop {
+        let Some(op) = input.receive()? else {
+            break;
+        };
+
         let result = execute(&mut client, op)?;
+
         output.send(result)?;
     }
 
@@ -64,9 +70,8 @@ impl CliArgs {
         let _arg0 = args.next();
         let arg1 = args.next();
         let arg2 = args.next();
-        let (arg1, arg2) = match (arg1, arg2) {
-            (Some(arg1), Some(arg2)) => (arg1, arg2),
-            _ => bail!("two arguments required"),
+        let (Some(arg1), Some(arg2)) = (arg1, arg2) else {
+            bail!("two arguments required");
         };
 
         let cluster_id: u128 =
@@ -152,7 +157,7 @@ impl Input {
                 for i in 0..event_count {
                     let mut bytes = [0; mem::size_of::<u128>()];
                     self.reader.read_exact(&mut bytes)?;
-                    let event: u128 = unsafe { u128::from_ne_bytes(bytes) };
+                    let event: u128 = unsafe { mem::transmute(bytes) };
                     events.push(event);
                 }
                 Ok(Some(Request::LookupAccounts(events)))
@@ -162,7 +167,7 @@ impl Input {
                 for i in 0..event_count {
                     let mut bytes = [0; mem::size_of::<u128>()];
                     self.reader.read_exact(&mut bytes)?;
-                    let event: u128 = unsafe { u128::from_ne_bytes(bytes) };
+                    let event: u128 = unsafe { mem::transmute(bytes) };
                     events.push(event);
                 }
                 Ok(Some(Request::LookupTransfers(events)))

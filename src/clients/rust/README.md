@@ -3,14 +3,13 @@
 
 The TigerBeetle client for Rust.
 
-[![crates.io](https://img.shields.io/crates/v/tigerbeetle)](https://crates.io/crates/tigerbeetle)
-[![docs.rs](https://img.shields.io/docsrs/tigerbeetle)](https://docs.rs/tigerbeetle)
+[![Rust Reference](todo)](https://docs.rs/tigerbeetle)
 
 ## Prerequisites
 
 Linux >= 5.6 is the only production environment we
 support. But for ease of development we also support macOS and Windows.
-* Rust 1.68+
+* t o d o
 
 ## Setup
 
@@ -19,28 +18,21 @@ First, create a directory for your project and `cd` into the directory.
 Then create `Cargo.toml` and copy this into it:
 
 ```toml
-[package]
-name = "tigerbeetle-test"
-version = "0.1.0"
-edition = "2024"
+ t o d o
+```
 
-[dependencies]
-tigerbeetle.path = "../.."
-futures = "0.3"
+Then, install the TigerBeetle client:
+
+```console
+cargo add tigerbeetle
 ```
 
 Now, create `src/main.rs` and copy this into it:
 
 ```rust
-use tigerbeetle as tb;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    futures::executor::block_on(main_async())
-}
-
-async fn main_async() -> Result<(), Box<dyn std::error::Error>> {
-    println!("hello world");
-}
+fn main() {
+// // todo
 ```
 
 Finally, build and run:
@@ -82,11 +74,7 @@ replica. The address is read from the `TB_ADDRESS`
 environment variable and defaults to port `3000`.
 
 ```rust
-let cluster_id = 0;
-let replica_address = std::env::var("TB_ADDRESS")
-    .ok()
-    .unwrap_or_else(|| String::from("3000"));
-let client = tb::Client::new(cluster_id, &replica_address)?;
+// // todo
 ```
 
 The following are valid addresses:
@@ -100,19 +88,18 @@ See details for account fields in the [Accounts
 reference](https://docs.tigerbeetle.com/reference/account).
 
 ```rust
-let account_errors = client
-    .create_accounts(&[tb::Account {
-        id: tb::id(),
-        ledger: 1,
-        code: 718,
-        ..Default::default()
-    }])
-    .await?;
-// Error handling omitted.
+// // todo
 ```
 
 See details for the recommended ID scheme in
 [time-based identifiers](https://docs.tigerbeetle.com/coding/data-modeling#tigerbeetle-time-based-identifiers-recommended).
+
+The `Uint128` fields like `ID`, `UserData128`, `Amount` and
+account balances have a few helper functions to make it easier
+to convert 128-bit little-endian unsigned integers between
+`string`, `math/big.Int`, and `[]byte`.
+
+See the type [Uint128](https://pkg.go.dev/github.com/tigerbeetle/tigerbeetle-go/pkg/types#Uint128) for more details.
 
 ### Account Flags
 
@@ -120,37 +107,20 @@ The account flags value is a bitfield. See details for
 these flags in the [Accounts
 reference](https://docs.tigerbeetle.com/reference/account#flags).
 
-To toggle behavior for an account, use the `AccountFlags` bitflags.
-You can combine multiple flags using the `|` operator. Here are a
+To toggle behavior for an account, use the `types.AccountFlags` struct
+to combine enum values and generate a `uint16`. Here are a
 few examples:
 
-* `AccountFlags::Linked`
-* `AccountFlags::DebitsMustNotExceedCredits`
-* `AccountFlags::CreditsMustNotExceedDebits`
-* `AccountFlags::History`
-* `AccountFlags::Linked | AccountFlags::History`
+* `AccountFlags{Linked: true}.ToUint16()`
+* `AccountFlags{DebitsMustNotExceedCredits: true}.ToUint16()`
+* `AccountFlags{CreditsMustNotExceedDebits: true}.ToUint16()`
+* `AccountFlags{History: true}.ToUint16()`
 
 For example, to link two accounts where the first account
 additionally has the `debits_must_not_exceed_credits` constraint:
 
 ```rust
-let account0 = tb::Account {
-    id: 100,
-    ledger: 1,
-    code: 718,
-    flags: tb::AccountFlags::DebitsMustNotExceedCredits | tb::AccountFlags::Linked,
-    ..Default::default()
-};
-let account1 = tb::Account {
-    id: 101,
-    ledger: 1,
-    code: 718,
-    flags: tb::AccountFlags::History,
-    ..Default::default()
-};
-
-let account_errors = client.create_accounts(&[account0, account1]).await?;
-// Error handling omitted.
+// // todo
 ```
 
 ### Response and Errors
@@ -166,50 +136,13 @@ See all error conditions in the [create_accounts
 reference](https://docs.tigerbeetle.com/reference/requests/create_accounts).
 
 ```rust
-let account0 = tb::Account {
-    id: (102),
-    ledger: 1,
-    code: 718,
-    ..Default::default()
-};
-let account1 = tb::Account {
-    id: (103),
-    ledger: 1,
-    code: 718,
-    ..Default::default()
-};
-let account2 = tb::Account {
-    id: (104),
-    ledger: 1,
-    code: 718,
-    ..Default::default()
-};
-
-let account_errors = client
-    .create_accounts(&[account0, account1, account2])
-    .await?;
-
-assert!(account_errors.len() <= 3);
-
-for err in account_errors {
-    match err.result {
-        tb::CreateAccountResult::Exists => {
-            println!("Batch account at {} already exists.", err.index);
-        }
-        _ => {
-            println!(
-                "Batch account at {} failed to create: {:?}",
-                err.index, err.result
-            );
-        }
-    }
-}
+// // todo
 ```
 
-To handle errors, iterate over the `Vec<CreateAccountsResult>` returned
-from `client.create_accounts()`. Each result contains an `index` field
-to map back to the input account and a `result` field with the
-`CreateAccountResult` enum.
+To handle errors you can either 1) exactly match error codes returned
+from `client.createAccounts` with enum values in the
+`CreateAccountError` object, or you can 2) look up the error code in
+the `CreateAccountError` object for a human-readable string.
 
 ## Account Lookup
 
@@ -223,7 +156,7 @@ request. You can refer to the ID field in the response to
 distinguish accounts.
 
 ```rust
-let accounts = client.lookup_accounts(&[100, 101]).await?;
+// // todo
 ```
 
 ## Create Transfers
@@ -234,18 +167,7 @@ See details for transfer fields in the [Transfers
 reference](https://docs.tigerbeetle.com/reference/transfer).
 
 ```rust
-let transfers = vec![tb::Transfer {
-    id: tb::id(),
-    debit_account_id: 101,
-    credit_account_id: 102,
-    amount: 10,
-    ledger: 1,
-    code: 1,
-    ..Default::default()
-}];
-
-let transfer_errors = client.create_transfers(&transfers).await?;
-// Error handling omitted.
+// // todo
 ```
 
 See details for the recommended ID scheme in
@@ -263,57 +185,8 @@ See all error conditions in the [create_transfers
 reference](https://docs.tigerbeetle.com/reference/requests/create_transfers).
 
 ```rust
-let transfers = vec![
-    tb::Transfer {
-        id: 1,
-        debit_account_id: (101),
-        credit_account_id: (102),
-        amount: (10),
-        ledger: 1,
-        code: 1,
-        ..Default::default()
-    },
-    tb::Transfer {
-        id: 2,
-        debit_account_id: (101),
-        credit_account_id: (102),
-        amount: (10),
-        ledger: 1,
-        code: 1,
-        ..Default::default()
-    },
-    tb::Transfer {
-        id: 3,
-        debit_account_id: (101),
-        credit_account_id: (102),
-        amount: (10),
-        ledger: 1,
-        code: 1,
-        ..Default::default()
-    },
-];
-
-let transfer_errors = client.create_transfers(&transfers).await?;
-
-for err in transfer_errors {
-    match err.result {
-        tb::CreateTransferResult::Exists => {
-            println!("Batch transfer at {} already exists.", err.index);
-        }
-        _ => {
-            println!(
-                "Batch transfer at {} failed to create: {:?}",
-                err.index, err.result
-            );
-        }
-    }
-}
+// // todo
 ```
-
-To handle transfer errors, iterate over the `Vec<CreateTransfersResult>`
-returned from `client.create_transfers()`. Each result contains an
-`index` field to map back to the input transfer and a `result` field
-with the `CreateTransferResult` enum.
 
 ## Batching
 
@@ -327,23 +200,14 @@ the insert rate will be a *fraction* of the potential, because the client will
 wait for a reply between each one.
 
 ```rust
-let batch: Vec<tb::Transfer> = vec![];
-for transfer in &batch {
-    let transfer_errors = client.create_transfers(&[*transfer]).await?;
-    // Error handling omitted.
-}
+// // todo
 ```
 
 Instead, **always batch as much as you can**.
 The maximum batch size is set in the TigerBeetle server. The default is 8189.
 
 ```rust
-let transfers: Vec<tb::Transfer> = vec![];
-const BATCH_SIZE: usize = 8189;
-for batch in transfers.chunks(BATCH_SIZE) {
-    let transfer_errors = client.create_transfers(batch).await?;
-    // Error handling omitted.
-}
+// // todo
 ```
 
 ### Queues and Workers
@@ -360,41 +224,19 @@ The transfer `flags` value is a bitfield. See details for these flags in
 the [Transfers
 reference](https://docs.tigerbeetle.com/reference/transfer#flags).
 
-To toggle behavior for a transfer, use the `TransferFlags` bitflags.
-You can combine multiple flags using the `|` operator. Here are a
+To toggle behavior for an account, use the `types.TransferFlags` struct
+to combine enum values and generate a `uint16`. Here are a
 few examples:
 
-* `TransferFlags::Linked`
-* `TransferFlags::Pending`
-* `TransferFlags::PostPendingTransfer`
-* `TransferFlags::VoidPendingTransfer`
-* `TransferFlags::Linked | TransferFlags::Pending`
+* `TransferFlags{Linked: true}.ToUint16()`
+* `TransferFlags{Pending: true}.ToUint16()`
+* `TransferFlags{PostPendingTransfer: true}.ToUint16()`
+* `TransferFlags{VoidPendingTransfer: true}.ToUint16()`
 
 For example, to link `transfer0` and `transfer1`:
 
 ```rust
-let transfer0 = tb::Transfer {
-    id: 4,
-    debit_account_id: 101,
-    credit_account_id: 102,
-    amount: 10,
-    ledger: 1,
-    code: 1,
-    flags: tb::TransferFlags::Linked,
-    ..Default::default()
-};
-let transfer1 = tb::Transfer {
-    id: 5,
-    debit_account_id: 101,
-    credit_account_id: 102,
-    amount: 10,
-    ledger: 1,
-    code: 1,
-    ..Default::default()
-};
-
-let transfer_errors = client.create_transfers(&[transfer0, transfer1]).await?;
-// Error handling omitted.
+// // todo
 ```
 
 ### Two-Phase Transfers
@@ -414,29 +256,7 @@ appropriate accounts and apply them to the `debits_posted` and
 `credits_posted` balances.
 
 ```rust
-let transfer0 = tb::Transfer {
-    id: 6,
-    debit_account_id: 101,
-    credit_account_id: 102,
-    amount: 10,
-    ledger: 1,
-    code: 1,
-    ..Default::default()
-};
-
-let transfer_errors = client.create_transfers(&[transfer0]).await?;
-// Error handling omitted.
-
-let transfer1 = tb::Transfer {
-    id: 7,
-    amount: u128::MAX,
-    pending_id: 6,
-    flags: tb::TransferFlags::PostPendingTransfer,
-    ..Default::default()
-};
-
-let transfer_errors = client.create_transfers(&[transfer1]).await?;
-// Error handling omitted.
+// // todo
 ```
 
 #### Void a Pending Transfer
@@ -448,29 +268,7 @@ appropriate accounts and **not** apply them to the `debits_posted` and
 `credits_posted` balances.
 
 ```rust
-let transfer0 = tb::Transfer {
-    id: 8,
-    debit_account_id: 101,
-    credit_account_id: 102,
-    amount: 10,
-    ledger: 1,
-    code: 1,
-    ..Default::default()
-};
-
-let transfer_errors = client.create_transfers(&[transfer0]).await?;
-// Error handling omitted.
-
-let transfer1 = tb::Transfer {
-    id: 9,
-    amount: 0,
-    pending_id: 8,
-    flags: tb::TransferFlags::VoidPendingTransfer,
-    ..Default::default()
-};
-
-let transfer_errors = client.create_transfers(&[transfer1]).await?;
-// Error handling omitted.
+// // todo
 ```
 
 ## Transfer Lookup
@@ -488,7 +286,7 @@ the same as the order of `id`s in the request. You can refer to the
 `id` field in the response to distinguish transfers.
 
 ```rust
-let transfers = client.lookup_transfers(&[1, 2]).await?;
+// // todo
 ```
 
 ## Get Account Transfers
@@ -503,22 +301,7 @@ The transfers in the response are sorted by `timestamp` in chronological or
 reverse-chronological order.
 
 ```rust
-let filter = tb::AccountFilter {
-    account_id: 2,
-    user_data_128: 0,
-    user_data_64: 0,
-    user_data_32: 0,
-    code: 0,
-    reserved: Default::default(),
-    timestamp_min: 0,
-    timestamp_max: 0,
-    limit: 10,
-    flags: tb::AccountFilterFlags::Debits
-        | tb::AccountFilterFlags::Credits
-        | tb::AccountFilterFlags::Reversed,
-};
-
-let transfers = client.get_account_transfers(filter).await?;
+// // todo
 ```
 
 ## Get Account Balances
@@ -537,22 +320,7 @@ The balances in the response are sorted by `timestamp` in chronological or
 reverse-chronological order.
 
 ```rust
-let filter = tb::AccountFilter {
-    account_id: 2,
-    user_data_128: 0,
-    user_data_64: 0,
-    user_data_32: 0,
-    code: 0,
-    reserved: Default::default(),
-    timestamp_min: 0,
-    timestamp_max: 0,
-    limit: 10,
-    flags: tb::AccountFilterFlags::Debits
-        | tb::AccountFilterFlags::Credits
-        | tb::AccountFilterFlags::Reversed,
-};
-
-let account_balances = client.get_account_balances(filter).await?;
+// // todo
 ```
 
 ## Query Accounts
@@ -566,20 +334,7 @@ The accounts in the response are sorted by `timestamp` in chronological or
 reverse-chronological order.
 
 ```rust
-let filter = tb::QueryFilter {
-    user_data_128: 1000,
-    user_data_64: 100,
-    user_data_32: 10,
-    code: 1,
-    ledger: 0,
-    reserved: Default::default(),
-    timestamp_min: 0,
-    timestamp_max: 0,
-    limit: 10,
-    flags: tb::QueryFilterFlags::Reversed,
-};
-
-let accounts = client.query_accounts(filter).await?;
+// // todo
 ```
 
 ## Query Transfers
@@ -593,20 +348,7 @@ The transfers in the response are sorted by `timestamp` in chronological or
 reverse-chronological order.
 
 ```rust
-let filter = tb::QueryFilter {
-    user_data_128: 1000,
-    user_data_64: 100,
-    user_data_32: 10,
-    code: 1,
-    ledger: 0,
-    reserved: Default::default(),
-    timestamp_min: 0,
-    timestamp_max: 0,
-    limit: 10,
-    flags: tb::QueryFilterFlags::Reversed,
-};
-
-let transfers = client.query_transfers(filter).await?;
+// // todo
 ```
 
 ## Linked Events
@@ -628,67 +370,7 @@ break the chain will have a unique error result. Other events in the
 chain will have their error result set to `linked_event_failed`.
 
 ```rust
-let mut batch = vec![];
-let linked_flag = tb::TransferFlags::Linked;
-
-// An individual transfer (successful):
-batch.push(tb::Transfer {
-    id: 1,
-    ..Default::default()
-});
-
-// A chain of 4 transfers (the last transfer in the chain closes the chain with linked=false):
-batch.push(tb::Transfer {
-    id: 2,
-    flags: linked_flag,
-    ..Default::default()
-});
-batch.push(tb::Transfer {
-    id: 3,
-    flags: linked_flag,
-    ..Default::default()
-});
-batch.push(tb::Transfer {
-    id: 2,
-    flags: linked_flag,
-    ..Default::default()
-});
-batch.push(tb::Transfer {
-    id: 4,
-    ..Default::default()
-});
-
-// An individual transfer (successful):
-// This should not see any effect from the failed chain above.
-batch.push(tb::Transfer {
-    id: 2,
-    ..Default::default()
-});
-
-// A chain of 2 transfers (the first transfer fails the chain):
-batch.push(tb::Transfer {
-    id: 2,
-    flags: linked_flag,
-    ..Default::default()
-});
-batch.push(tb::Transfer {
-    id: 3,
-    ..Default::default()
-});
-
-// A chain of 2 transfers (successful):
-batch.push(tb::Transfer {
-    id: 3,
-    flags: linked_flag,
-    ..Default::default()
-});
-batch.push(tb::Transfer {
-    id: 4,
-    ..Default::default()
-});
-
-let transfer_errors = client.create_transfers(&batch).await?;
-// Error handling omitted.
+// // todo
 ```
 
 ## Imported Events
@@ -705,48 +387,5 @@ This approach gives the application a chance to correct failed imported events, 
 the batch again with the same user-defined timestamps.
 
 ```rust
-// External source of time.
-let mut historical_timestamp: u64 = 0;
-let historical_accounts: Vec<tb::Account> = vec![]; // Loaded from an external source.
-let historical_transfers: Vec<tb::Transfer> = vec![]; // Loaded from an external source.
-
-// First, load and import all accounts with their timestamps from the historical source.
-let mut accounts_batch = vec![];
-for (index, mut account) in historical_accounts.into_iter().enumerate() {
-    // Set a unique and strictly increasing timestamp.
-    historical_timestamp += 1;
-    account.timestamp = historical_timestamp;
-
-    account.flags = if index < accounts_batch.len() - 1 {
-        tb::AccountFlags::Imported | tb::AccountFlags::Linked
-    } else {
-        tb::AccountFlags::Imported
-    };
-
-    accounts_batch.push(account);
-}
-
-let account_errors = client.create_accounts(&accounts_batch).await?;
-// Error handling omitted.
-
-// Then, load and import all transfers with their timestamps from the historical source.
-let mut transfers_batch = vec![];
-for (index, mut transfer) in historical_transfers.into_iter().enumerate() {
-    // Set a unique and strictly increasing timestamp.
-    historical_timestamp += 1;
-    transfer.timestamp = historical_timestamp;
-
-    transfer.flags = if index < transfers_batch.len() - 1 {
-        tb::TransferFlags::Imported | tb::TransferFlags::Linked
-    } else {
-        tb::TransferFlags::Imported
-    };
-
-    transfers_batch.push(transfer);
-}
-
-let transfer_errors = client.create_transfers(&transfers_batch).await?;
-// Error handling omitted.
-// Since it is a linked chain, in case of any error the entire batch is rolled back and can be retried
-// with the same historical timestamps without regressing the cluster timestamp.
+// // todo
 ```
