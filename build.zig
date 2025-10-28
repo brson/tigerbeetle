@@ -295,6 +295,7 @@ pub fn build(b: *std.Build) !void {
         .tb_client_header = tb_client_header,
         .mode = mode,
     });
+    build_steps.clients_rust.dependOn(b.getInstallStep());
     build_go_client(b, build_steps.clients_go, .{
         .vsr_module = vsr_module,
         .vsr_options = vsr_options,
@@ -1274,6 +1275,13 @@ fn build_rust_client(
     },
 ) void {
     step_clients_rust.dependOn(&options.tb_client_header.step);
+
+    // Copy the generated header file to the Rust client assets directory:
+    const tb_client_header_copy = Generated.file_copy(b, .{
+        .from = options.tb_client_header.path,
+        .path = "./src/clients/rust/assets/tb_client.h",
+    });
+    step_clients_rust.dependOn(&tb_client_header_copy.step);
 
     inline for (platforms) |platform| {
         const query = Query.parse(.{
