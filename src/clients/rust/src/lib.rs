@@ -123,7 +123,7 @@
 //!
 //! ```no_run
 //! use tigerbeetle as tb;
-//! use futures_util::{stream, Stream};
+//! use tb::futures_polyfills::{unfold, Stream};
 //!
 //! fn get_account_transfers_paged(
 //!     client: &tb::Client,
@@ -142,7 +142,7 @@
 //!
 //!     let is_reverse = event.flags.contains(tb::AccountFilterFlags::Reversed);
 //!
-//!     stream::unfold(State::Start, move |state| async move {
+//!     unfold(State::Start, move |state| async move {
 //!         let event = match state {
 //!             State::Start => event,
 //!             State::Continue(timestamp_begin) => {
@@ -337,8 +337,8 @@ pub mod tb_client;
 use tb_client as tbc;
 
 mod conversions;
-mod time_based_id;
 pub mod futures_polyfills;
+mod time_based_id;
 
 pub use time_based_id::id;
 

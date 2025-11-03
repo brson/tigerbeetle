@@ -1,8 +1,8 @@
 #![allow(unused)]
 
 // section:imports
-use tigerbeetle as tb;
 use tb::futures_polyfills::block_on;
+use tigerbeetle as tb;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     block_on(main_async())
