@@ -123,7 +123,7 @@
 //!
 //! ```no_run
 //! use tigerbeetle as tb;
-//! use futures::{stream, Stream};
+//! use futures_util::{stream, Stream};
 //!
 //! fn get_account_transfers_paged(
 //!     client: &tb::Client,
@@ -142,7 +142,7 @@
 //!
 //!     let is_reverse = event.flags.contains(tb::AccountFilterFlags::Reversed);
 //!
-//!     futures::stream::unfold(State::Start, move |state| async move {
+//!     stream::unfold(State::Start, move |state| async move {
 //!         let event = match state {
 //!             State::Start => event,
 //!             State::Continue(timestamp_begin) => {
@@ -266,7 +266,7 @@
 //! [`futures::executor::block_on`]: https://docs.rs/futures/latest/futures/executor/fn.block_on.html
 //!
 //! ```no_run
-//! use futures::executor::block_on;
+//! use futures_executor::block_on;
 //! use tigerbeetle as tb;
 //!
 //! fn synchronous_function() -> Result<(), Box<dyn std::error::Error>> {

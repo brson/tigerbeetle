@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier, Once};
 
-use futures::executor::block_on;
-use futures::pin_mut;
-use futures::{Stream, StreamExt};
+use futures_executor::block_on;
+use futures_util::pin_mut;
+use futures_util::{Stream, StreamExt};
 
 use tigerbeetle as tb;
 
@@ -689,7 +689,7 @@ fn get_account_transfers_paged(
 
     let is_reverse = event.flags.contains(tb::AccountFilterFlags::Reversed);
 
-    futures::stream::unfold(State::Start, move |state| async move {
+    futures_util::stream::unfold(State::Start, move |state| async move {
         let event = match state {
             State::Start => event,
             State::Continue(timestamp_begin) => {
