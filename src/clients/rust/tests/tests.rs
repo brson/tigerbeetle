@@ -47,7 +47,7 @@ struct TestDb {
 }
 
 impl TestDb {
-    fn new() -> anyhow::Result<TestDb> {
+    fn new() -> Result<TestDb, Box<dyn std::error::Error>> {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
         // NB: There is one test database shared between all tests, and reused
@@ -98,7 +98,7 @@ impl TestDb {
     }
 }
 
-fn test_client() -> anyhow::Result<tb::Client> {
+fn test_client() -> Result<tb::Client, Box<dyn std::error::Error>> {
     let address = &format!("127.0.0.1:{}", get_test_db().port);
     let client = tb::Client::new(0, address)?;
 
@@ -113,7 +113,7 @@ const TEST_LEDGER: u32 = 10;
 const TEST_CODE: u16 = 20;
 
 #[test]
-fn smoke() -> anyhow::Result<()> {
+fn smoke() -> Result<(), Box<dyn std::error::Error>> {
     let account_id1 = tb::id();
     let account_id2 = tb::id();
     let transfer_id1 = tb::id();
@@ -312,7 +312,7 @@ fn smoke() -> anyhow::Result<()> {
 }
 
 #[test]
-fn ctor_fail() -> anyhow::Result<()> {
+fn ctor_fail() -> Result<(), Box<dyn std::error::Error>> {
     let client = tb::Client::new(0, "hey");
 
     assert!(matches!(client, Err(tb::InitStatus::AddressInvalid)));
@@ -321,7 +321,7 @@ fn ctor_fail() -> anyhow::Result<()> {
 }
 
 #[test]
-fn dtor() -> anyhow::Result<()> {
+fn dtor() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -333,7 +333,7 @@ fn dtor() -> anyhow::Result<()> {
 }
 
 #[test]
-fn close() -> anyhow::Result<()> {
+fn close() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -346,7 +346,7 @@ fn close() -> anyhow::Result<()> {
 // Send a request and immediately drop the client.
 // Should still clean up correctly.
 #[test]
-fn dtor_no_wait() -> anyhow::Result<()> {
+fn dtor_no_wait() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -357,7 +357,7 @@ fn dtor_no_wait() -> anyhow::Result<()> {
 }
 
 #[test]
-fn close_no_wait() -> anyhow::Result<()> {
+fn close_no_wait() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -368,7 +368,7 @@ fn close_no_wait() -> anyhow::Result<()> {
 }
 
 #[test]
-fn client_drop_before_future_awaited() -> anyhow::Result<()> {
+fn client_drop_before_future_awaited() -> Result<(), Box<dyn std::error::Error>> {
     let future = {
         let client = test_client()?;
 
@@ -396,7 +396,7 @@ fn client_drop_before_future_awaited() -> anyhow::Result<()> {
 }
 
 #[test]
-fn client_drop_causes_shutdown_status() -> anyhow::Result<()> {
+fn client_drop_causes_shutdown_status() -> Result<(), Box<dyn std::error::Error>> {
     let futures = {
         let client = test_client()?;
 
@@ -431,7 +431,7 @@ fn client_drop_causes_shutdown_status() -> anyhow::Result<()> {
 }
 
 #[test]
-fn too_many_events() -> anyhow::Result<()> {
+fn too_many_events() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -469,7 +469,7 @@ fn lots_of_accounts() -> Vec<tb::Account> {
 }
 
 #[test]
-fn zero_events_create_accounts() -> anyhow::Result<()> {
+fn zero_events_create_accounts() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -482,7 +482,7 @@ fn zero_events_create_accounts() -> anyhow::Result<()> {
 }
 
 #[test]
-fn zero_events_create_transfers() -> anyhow::Result<()> {
+fn zero_events_create_transfers() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -495,7 +495,7 @@ fn zero_events_create_transfers() -> anyhow::Result<()> {
 }
 
 #[test]
-fn zero_events_lookup_accounts() -> anyhow::Result<()> {
+fn zero_events_lookup_accounts() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -508,7 +508,7 @@ fn zero_events_lookup_accounts() -> anyhow::Result<()> {
 }
 
 #[test]
-fn zero_events_lookup_transfers() -> anyhow::Result<()> {
+fn zero_events_lookup_transfers() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     block_on(async {
@@ -521,7 +521,7 @@ fn zero_events_lookup_transfers() -> anyhow::Result<()> {
 }
 
 #[test]
-fn multithread() -> anyhow::Result<()> {
+fn multithread() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
     let client = Arc::new(client);
 
@@ -533,34 +533,36 @@ fn multithread() -> anyhow::Result<()> {
     let join_handles = std::iter::repeat(()).take(num_threads).map(|_| {
         let client = client.clone();
         let barrier = barrier.clone();
-        std::thread::spawn(move || -> anyhow::Result<()> {
-            barrier.wait();
-            block_on(async {
-                for _ in 0..num_requests {
-                    let results = client
-                        .create_accounts(&[tb::Account {
-                            id: tb::id(),
-                            debits_pending: 0,
-                            debits_posted: 0,
-                            credits_pending: 0,
-                            credits_posted: 0,
-                            user_data_128: 0,
-                            user_data_64: 0,
-                            user_data_32: 0,
-                            reserved: tb::Reserved::default(),
-                            ledger: TEST_LEDGER,
-                            code: TEST_CODE,
-                            flags: tb::AccountFlags::History,
-                            timestamp: 0,
-                        }])
-                        .await?;
+        std::thread::spawn(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+                barrier.wait();
+                block_on(async {
+                    for _ in 0..num_requests {
+                        let results = client
+                            .create_accounts(&[tb::Account {
+                                id: tb::id(),
+                                debits_pending: 0,
+                                debits_posted: 0,
+                                credits_pending: 0,
+                                credits_posted: 0,
+                                user_data_128: 0,
+                                user_data_64: 0,
+                                user_data_32: 0,
+                                reserved: tb::Reserved::default(),
+                                ledger: TEST_LEDGER,
+                                code: TEST_CODE,
+                                flags: tb::AccountFlags::History,
+                                timestamp: 0,
+                            }])
+                            .await?;
 
-                    assert_eq!(results.len(), 0);
-                }
+                        assert_eq!(results.len(), 0);
+                    }
 
-                Ok(())
-            })
-        })
+                    Ok(())
+                })
+            },
+        )
     });
 
     // collect the handles to evaluate the thread::spawns
@@ -581,7 +583,7 @@ fn multithread() -> anyhow::Result<()> {
 }
 
 #[test]
-fn concurrent_requests() -> anyhow::Result<()> {
+fn concurrent_requests() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
 
     let mut responses = Vec::new();
@@ -615,7 +617,7 @@ fn concurrent_requests() -> anyhow::Result<()> {
 
 // A potentially suprising behavior, documented in the crate docs.
 #[test]
-fn client_drop_loses_pending_transactions() -> anyhow::Result<()> {
+fn client_drop_loses_pending_transactions() -> Result<(), Box<dyn std::error::Error>> {
     let mut ids = Vec::new();
 
     // Queue up lots of transactions, drop their futures, drop the client.
@@ -749,7 +751,9 @@ struct PagingTestParams {
     transfer_count: usize,
 }
 
-fn make_paging_test_transfers(client: &tb::Client) -> anyhow::Result<PagingTestParams> {
+fn make_paging_test_transfers(
+    client: &tb::Client,
+) -> Result<PagingTestParams, Box<dyn std::error::Error>> {
     let batch_size: usize = 1234;
     let transfer_count: usize = 5678;
     let account_id1 = tb::id();
@@ -800,7 +804,7 @@ fn make_paging_test_transfers(client: &tb::Client) -> anyhow::Result<PagingTestP
 }
 
 #[test]
-fn paging_forward() -> anyhow::Result<()> {
+fn paging_forward() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
     let test_params = make_paging_test_transfers(&client)?;
 
@@ -832,7 +836,7 @@ fn paging_forward() -> anyhow::Result<()> {
 }
 
 #[test]
-fn paging_reverse() -> anyhow::Result<()> {
+fn paging_reverse() -> Result<(), Box<dyn std::error::Error>> {
     let client = test_client()?;
     let test_params = make_paging_test_transfers(&client)?;
 
