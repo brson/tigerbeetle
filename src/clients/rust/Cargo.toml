@@ -21,4 +21,3 @@ include = [
 
 [dependencies]
 bitflags = "2.6.0"
-futures-channel = "0.3.31"

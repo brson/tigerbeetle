@@ -316,11 +316,12 @@
 //! [The TigerBeetle Reference](https://docs.tigerbeetle.com/reference/).
 
 use bitflags::bitflags;
-use futures_channel::oneshot::{channel, Receiver};
 
-use std::convert::Infallible;
 use std::future::Future;
 use std::os::raw::{c_char, c_void};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::{fmt, mem, ptr};
 
 // The generated bindings.
@@ -510,7 +511,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
 
             let responses: &[tbc::tb_create_accounts_result_t] = handle_message(&msg)?;
 
@@ -642,7 +643,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
 
             let responses: &[tbc::tb_create_transfers_result_t] = handle_message(&msg)?;
 
@@ -750,7 +751,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
             let responses: &[Account] = handle_message(&msg)?;
             Ok(Vec::from(responses))
         }
@@ -839,7 +840,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
             let responses: &[Transfer] = handle_message(&msg)?;
             Ok(Vec::from(responses))
         }
@@ -872,7 +873,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
             let result: &[Transfer] = handle_message(&msg)?;
 
             Ok(result.to_vec())
@@ -906,7 +907,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
             let result: &[AccountBalance] = handle_message(&msg)?;
 
             Ok(result.to_vec())
@@ -938,7 +939,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
             let result: &[Account] = handle_message(&msg)?;
 
             Ok(result.to_vec())
@@ -970,7 +971,7 @@ impl Client {
         }
 
         async {
-            let msg = rx.await.expect("channel");
+            let msg = rx.await;
             let result: &[Transfer] = handle_message(&msg)?;
 
             Ok(result.to_vec())
@@ -992,7 +993,7 @@ impl Client {
         let client = std::mem::replace(&mut self.client, std::ptr::null_mut());
         let client = SendClient(client);
 
-        let (tx, rx) = channel::<Infallible>();
+        let (tx, rx) = OneshotFuture::<()>::new();
 
         std::thread::spawn(move || {
             let client = client;
@@ -1002,11 +1003,10 @@ impl Client {
                 assert_eq!(status, tbc::TB_CLIENT_STATUS_TB_CLIENT_OK);
                 std::mem::drop(Box::from_raw(client.0));
             }
-            drop(tx);
+            tx.send(());
         });
 
         async {
-            // wait for the channel to close
             let _ = rx.await;
         }
     }
@@ -1719,14 +1719,75 @@ impl<const N: usize> Default for Reserved<N> {
     }
 }
 
+/// A minimal single-use future for completion notifications.
+///
+/// This replaces the futures-channel oneshot to reduce allocations.
+struct OneshotFuture<T> {
+    shared: Arc<OneshotShared<T>>,
+}
+
+struct OneshotShared<T> {
+    waker: Mutex<Option<Waker>>,
+    value: Mutex<Option<T>>,
+}
+
+impl<T> OneshotFuture<T> {
+    fn new() -> (OneshotSender<T>, Self) {
+        let shared = Arc::new(OneshotShared {
+            waker: Mutex::new(None),
+            value: Mutex::new(None),
+        });
+        let sender = OneshotSender {
+            shared: shared.clone(),
+        };
+        let receiver = OneshotFuture { shared };
+        (sender, receiver)
+    }
+}
+
+impl<T> Future for OneshotFuture<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut value = self.shared.value.lock().unwrap();
+        if let Some(val) = value.take() {
+            return Poll::Ready(val);
+        }
+
+        let mut waker = self.shared.waker.lock().unwrap();
+        *waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+struct OneshotSender<T> {
+    shared: Arc<OneshotShared<T>>,
+}
+
+impl<T> OneshotSender<T> {
+    fn send(self, value: T) {
+        let mut val_guard = self.shared.value.lock().unwrap();
+        *val_guard = Some(value);
+        drop(val_guard);
+
+        let mut waker = self.shared.waker.lock().unwrap();
+        if let Some(waker) = waker.take() {
+            waker.wake();
+        }
+    }
+}
+
 fn create_packet<Event>(
     op: u8, // TB_OPERATION
     events: &[Event],
-) -> (Box<tbc::tb_packet_t>, Receiver<CompletionMessage<Event>>)
+) -> (
+    Box<tbc::tb_packet_t>,
+    OneshotFuture<CompletionMessage<Event>>,
+)
 where
     Event: Copy + 'static,
 {
-    let (tx, rx) = channel::<CompletionMessage<Event>>();
+    let (tx, rx) = OneshotFuture::<CompletionMessage<Event>>::new();
     let callback: Box<OnCompletion> = Box::new(Box::new(
         |context, packet, timestamp, result_ptr, result_len| unsafe {
             let events_len = (*packet).data_size as usize / mem::size_of::<Event>();
@@ -1742,7 +1803,7 @@ where
             };
             let result = Vec::from(result);
 
-            let _ = tx.send(CompletionMessage {
+            tx.send(CompletionMessage {
                 _context: context,
                 packet,
                 _timestamp: timestamp,
