@@ -43,18 +43,33 @@ struct TestDb {
     port: u16,
     // Keep the server's stdin handle open as long as the test process is running,
     // at which point the server will terminate.
-    _server: Child,
+    // This is None when using an external server (TIGERBEETLE_SERVER_PORT).
+    _server: Option<Child>,
 }
 
 impl TestDb {
     fn new() -> anyhow::Result<TestDb> {
+        // If TIGERBEETLE_SERVER_PORT is set, use an external server on that port.
+        // This is useful for Wine testing where spawning and piping don't work reliably.
+        if let Ok(port_str) = env::var("TIGERBEETLE_SERVER_PORT") {
+            let port: u16 = port_str.parse()?;
+            return Ok(TestDb {
+                port,
+                _server: None,
+            });
+        }
+
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
         // NB: There is one test database shared between all tests, and reused
         // between test runs. If the tests choose their IDs correctly there
         // should never be any collisions, and that one database should work
         // forever, just taking up a lot of space.
-        let tigerbeetle_bin = format!("{manifest_dir}/../../../tigerbeetle{EXE_SUFFIX}");
+
+        // Allow overriding the server binary path via environment variable.
+        // This is useful for cross-platform testing (e.g., Wine tests with native server).
+        let tigerbeetle_bin = env::var("TIGERBEETLE_SERVER_BIN")
+            .unwrap_or_else(|_| format!("{manifest_dir}/../../../tigerbeetle{EXE_SUFFIX}"));
         let work_dir = env!("CARGO_TARGET_TMPDIR");
         let database_name = "0_0.testdb.tigerbeetle";
 
@@ -93,7 +108,7 @@ impl TestDb {
 
         Ok(TestDb {
             port,
-            _server: server,
+            _server: Some(server),
         })
     }
 }

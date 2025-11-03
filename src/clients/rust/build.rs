@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         ("x86_64", "linux", "gnu") => "x86_64-linux-gnu.2.27",
         ("x86_64", "linux", "musl") => "x86_64-linux-musl",
         ("x86_64", "macos", "") => "x86_64-macos",
-        ("x86_64", "windows", "msvc") => "x86_64-windows",
+        ("x86_64", "windows", "msvc") | ("x86_64", "windows", "gnu") => "x86_64-windows",
         _ => todo!(),
     };
 
@@ -57,8 +57,10 @@ fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed={libpath}");
 
     if windows {
-        // tb_client needs access to the random number generator in here.
+        // Link Windows system libraries required by tb_client.
         println!("cargo:rustc-link-lib=advapi32");
+        println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=ntdll");
     }
 
     Ok(())
