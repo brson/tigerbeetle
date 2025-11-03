@@ -7,11 +7,11 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier, Once};
 
-use futures_executor::block_on;
 use futures_util::pin_mut;
 use futures_util::{Stream, StreamExt};
 
 use tigerbeetle as tb;
+use tb::futures_polyfills::block_on;
 
 // Singleton test database.
 // This can be a OnceLock in Rust 1.70+, and LazyLock in 1.80.

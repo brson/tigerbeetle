@@ -260,14 +260,14 @@
 //! # Use in non-async codebases
 //!
 //! The TigerBeetle client is async-only, but if you're working in a synchronous
-//! codebase, you can use [`futures::executor::block_on`] to run async operations
+//! codebase, you can use [`futures_polyfills::block_on`] to run async operations
 //! to completion.
 //!
-//! [`futures::executor::block_on`]: https://docs.rs/futures/latest/futures/executor/fn.block_on.html
+//! [`futures_polyfills::block_on`]: futures_polyfills::block_on
 //!
 //! ```no_run
-//! use futures_executor::block_on;
 //! use tigerbeetle as tb;
+//! use tb::futures_polyfills::block_on;
 //!
 //! fn synchronous_function() -> Result<(), Box<dyn std::error::Error>> {
 //!     block_on(async {
@@ -338,6 +338,7 @@ use tb_client as tbc;
 
 mod conversions;
 mod time_based_id;
+pub mod futures_polyfills;
 
 pub use time_based_id::id;
 

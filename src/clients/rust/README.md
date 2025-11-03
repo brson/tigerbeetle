@@ -33,9 +33,10 @@ Now, create `src/main.rs` and copy this into it:
 
 ```rust
 use tigerbeetle as tb;
+use tb::futures_polyfills::block_on;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    futures::executor::block_on(main_async())
+    block_on(main_async())
 }
 
 async fn main_async() -> Result<(), Box<dyn std::error::Error>> {
