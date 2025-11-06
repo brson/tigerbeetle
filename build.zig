@@ -1308,7 +1308,6 @@ fn build_rust_client(
         });
         root_module.addImport("vsr", options.vsr_module);
         root_module.addOptions("vsr_options", options.vsr_options);
-        if (options.mode == .ReleaseSafe) strip_root_module(root_module);
 
         const static_lib = b.addLibrary(.{
             .name = "tb_client",

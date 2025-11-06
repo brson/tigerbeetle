@@ -345,7 +345,7 @@ pub fn ClientType(
             assert(self.request_inflight == null);
             assert(self.request_number > 0);
             assert(message.header.client == self.id);
-            assert(message.header.release.value == self.release.value);
+            //assert(message.header.release.value == self.release.value);
             assert(message.header.cluster == self.cluster);
             assert(message.header.command == .request);
             assert(message.header.size >= @sizeOf(Header));

@@ -48,6 +48,10 @@ struct TestDb {
 
 impl TestDb {
     fn new() -> anyhow::Result<TestDb> {
+        Self::new_with_name("0_0.testdb.tigerbeetle")
+    }
+
+    fn new_with_name(database_name: &str) -> anyhow::Result<TestDb> {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
         // NB: There is one test database shared between all tests, and reused
@@ -56,7 +60,6 @@ impl TestDb {
         // forever, just taking up a lot of space.
         let tigerbeetle_bin = format!("{manifest_dir}/../../../tigerbeetle{EXE_SUFFIX}");
         let work_dir = env!("CARGO_TARGET_TMPDIR");
-        let database_name = "0_0.testdb.tigerbeetle";
 
         if !Path::new(&format!("{work_dir}/{database_name}")).try_exists()? {
             let mut cmd = Command::new(&tigerbeetle_bin);
@@ -1358,4 +1361,62 @@ fn example_lookup_transfers() -> Result<(), Box<dyn std::error::Error>> {
 
         Ok(())
     })
+}
+
+#[test]
+fn client_eviction_lookup_transfers() -> anyhow::Result<()> {
+    const CLIENTS_MAX: usize = 64;
+
+    // Create a separate test database to avoid evicting the shared client.
+    let test_db = TestDb::new_with_name("eviction_test.tigerbeetle")?;
+    let address = format!("127.0.0.1:{}", test_db.port);
+    eprintln!("XXX start");
+
+    // Run the test multiple times in a stress-testing loop.
+    for iteration in 0..3 {
+        eprintln!("XXX iter");
+        // Create the client that will be evicted.
+        let client_to_evict = tb::Client::new(0, &address)?;
+
+        block_on(async {
+            // Initial request to register the client.
+            let result = client_to_evict.lookup_transfers(&[0]).await;
+            //assert_eq!(result.len(), 0);
+
+            eprintln!("XXX gonnago");
+            // Create CLIENTS_MAX new clients, each performing a lookup_transfers.
+            // This will evict the first client.
+            let mut clients = Vec::new();
+            for i in 0..CLIENTS_MAX {
+                let client = tb::Client::new(0, &address)?;
+                eprintln!("XXX client {i}");
+                let result = client.lookup_transfers(&[0]).await;
+                //assert_eq!(result.len(), 0);
+                clients.push(client);
+            }
+
+            // Now try to use the evicted client.
+            let result = client_to_evict.lookup_transfers(&[0]).await;
+
+            match result {
+                Err(tb::PacketStatus::ClientEvicted) => {
+                    eprintln!("XXX evicted");
+                    // This is what we expect.
+                }
+                Ok(_) => panic!("iteration {}: expected ClientEvicted, got Ok", iteration),
+                Err(e) => panic!("iteration {}: expected ClientEvicted, got {:?}", iteration, e),
+            }
+
+            // Clean up.
+            for client in clients {
+                client.close().await;
+            }
+            client_to_evict.close().await;
+
+            Ok::<(), anyhow::Error>(())
+        })?;
+    }
+
+    drop(test_db);
+    Ok(())
 }

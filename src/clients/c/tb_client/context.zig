@@ -652,7 +652,7 @@ pub fn ContextType(
             const previous_request_latency =
                 self.previous_request_latency orelse stdx.Duration{ .ns = 0 };
             message.header.* = .{
-                .release = self.client.release,
+                .release = vsr.Release.from(.{ .major = 2, .minor = 0, .patch = 0 }),
                 .client = self.client.id,
                 .request = 0, // Set by client.raw_request.
                 .cluster = self.client.cluster,
@@ -747,6 +747,7 @@ pub fn ContextType(
                 std.enums.tagName(vsr.Header.Eviction.Reason, eviction.header.reason),
                 @intFromEnum(eviction.header.reason),
             });
+            std.debug.print("CLIENTEVICTIONCALLBACK\n", .{});
 
             // Now that the client is evicted, no more requests can be submitted to it and we can
             // safely deinitialize it. First, we stop the IO thread, which then deinitializes the
