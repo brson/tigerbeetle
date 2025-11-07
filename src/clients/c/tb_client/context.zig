@@ -205,7 +205,7 @@ pub fn ContextType(
         pending: Packet.Queue,
 
         signal: Signal,
-        eviction_reason: ?vsr.Header.Eviction.Reason,
+        eviction_reason: std.atomic.Value(u8),
         thread: std.Thread,
 
         previous_request_instant: ?stdx.Instant = null,
@@ -334,7 +334,7 @@ pub fn ContextType(
             });
             context.completion_context = completion_ctx;
             context.completion_callback = completion_callback;
-            context.eviction_reason = null;
+            context.eviction_reason = std.atomic.Value(u8).init(0);
 
             log.debug("{}: init: initializing signal", .{context.client_id});
             try context.signal.init(&context.io, Context.signal_notify_callback);
@@ -366,7 +366,7 @@ pub fn ContextType(
         }
 
         fn tick(self: *Context) void {
-            if (self.eviction_reason == null) {
+            if (self.eviction_reason.load(.seq_cst) == 0) {
                 self.client.tick();
             }
         }
@@ -423,7 +423,8 @@ pub fn ContextType(
             assert(packet_list.phase != .complete);
             packet_list.assert_phase(packet_list.phase);
 
-            const result = if (self.eviction_reason) |reason| switch (reason) {
+            const eviction_reason_value = self.eviction_reason.load(.seq_cst);
+            const result = if (eviction_reason_value != 0) switch (@as(vsr.Header.Eviction.Reason, @enumFromInt(eviction_reason_value))) {
                 .reserved => unreachable,
                 .client_release_too_low => error.ClientReleaseTooLow,
                 .client_release_too_high => error.ClientReleaseTooHigh,
@@ -445,7 +446,7 @@ pub fn ContextType(
             assert(self.batch_size_limit != null);
             packet.assert_phase(.submitted);
 
-            if (self.eviction_reason != null) {
+            if (self.eviction_reason.load(.seq_cst) != 0) {
                 return self.packet_cancel(packet);
             }
 
@@ -740,7 +741,7 @@ pub fn ContextType(
 
         fn client_eviction_callback(client: *Client, eviction: *const Message.Eviction) void {
             const self: *Context = @fieldParentPtr("client", client);
-            assert(self.eviction_reason == null);
+            assert(self.eviction_reason.load(.seq_cst) == 0);
 
             log.debug("{}: client_eviction_callback: reason={?s} reason_int={}", .{
                 self.client_id,
@@ -749,10 +750,12 @@ pub fn ContextType(
             });
             std.debug.print("CLIENTEVICTIONCALLBACK\n", .{});
 
+            self.interface.locker.lock();
+            defer self.interface.locker.unlock();
             // Now that the client is evicted, no more requests can be submitted to it and we can
             // safely deinitialize it. First, we stop the IO thread, which then deinitializes the
             // client before it exits (see `io_thread`).
-            self.eviction_reason = eviction.header.reason;
+            self.eviction_reason.store(@intFromEnum(eviction.header.reason), .seq_cst);
             self.signal.stop();
         }
 
@@ -897,7 +900,7 @@ pub fn ContextType(
                 .phase = .submitted,
             };
 
-            if (self.eviction_reason == null) {
+            if (self.eviction_reason.load(.seq_cst) == 0) {
                 // Enqueue the packet and notify the IO thread to process it asynchronously.
                 assert(self.signal.status() == .running);
                 self.submitted.push(packet);
