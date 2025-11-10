@@ -205,6 +205,7 @@ pub fn ClientType(
 
         pub fn on_message(self: *Client, message: *Message) void {
             assert(!self.evicted);
+            std.debug.print("on_message\n", .{});
 
             // Switch on the header type so that we don't log opaque bytes for the per-command data.
             switch (message.header.into_any()) {
@@ -240,7 +241,7 @@ pub fn ClientType(
         }
 
         pub fn tick(self: *Client) void {
-            assert(!self.evicted);
+            //assert(!self.evicted);
 
             self.ticks += 1;
 

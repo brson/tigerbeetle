@@ -383,7 +383,7 @@ pub fn ContextType(
                 };
             }
 
-            self.cancel_request_inflight();
+            //self.cancel_request_inflight();
 
             while (self.pending.pop()) |packet| {
                 packet.assert_phase(.pending);
@@ -408,11 +408,11 @@ pub fn ContextType(
         /// as it won't be replied anymore.
         fn cancel_request_inflight(self: *Context) void {
             if (self.client.request_inflight) |*inflight| {
-                if (inflight.message.header.operation != .register) {
-                    const packet: *Packet = @as(UserData, @bitCast(inflight.user_data)).packet;
-                    packet.assert_phase(.sent);
-                    self.packet_cancel(packet);
-                }
+                assert(inflight.message.header.operation != .register);
+                const packet: *Packet = @as(UserData, @bitCast(inflight.user_data)).packet;
+                std.debug.print("phase {}\n", .{packet.phase});
+                packet.assert_phase(.sent);
+                self.packet_cancel(packet);
             }
         }
 
@@ -446,9 +446,12 @@ pub fn ContextType(
             assert(self.batch_size_limit != null);
             packet.assert_phase(.submitted);
 
+            std.debug.print("enqueue1\n", .{});
             if (self.eviction_reason.load(.seq_cst) != 0) {
+                std.debug.print("enqueue2\n", .{});
                 return self.packet_cancel(packet);
             }
+            std.debug.print("enqueue3\n", .{});
 
             const operation: Operation = operation_from_int(packet.operation) orelse {
                 return self.notify_completion(packet, error.InvalidOperation);
@@ -499,6 +502,7 @@ pub fn ContextType(
 
             // Avoid making a packet inflight by cancelling it if the client was shutdown.
             if (self.signal.status() != .running) {
+                std.debug.print("enqueue4\n", .{});
                 self.packet_cancel(packet);
                 return;
             }
@@ -511,6 +515,7 @@ pub fn ContextType(
                 packet.multi_batch_count = 1;
                 packet.multi_batch_event_count = @intCast(batch.event_count);
                 packet.multi_batch_result_count_expected = @intCast(batch.result_count_expected);
+                std.debug.print("enqueue5\n", .{});
                 self.packet_send(packet);
                 return;
             }
@@ -581,6 +586,11 @@ pub fn ContextType(
 
             // On shutdown, cancel this packet as well as any others batched onto it.
             if (self.signal.status() != .running) {
+                return self.packet_cancel(packet_list);
+            }
+
+            // On shutdown, cancel this packet as well as any others batched onto it.
+            if (self.eviction_reason.load(.seq_cst) != 0) {
                 return self.packet_cancel(packet_list);
             }
 
@@ -685,17 +695,21 @@ pub fn ContextType(
         fn signal_notify_callback(signal: *Signal) void {
             const self: *Context = @alignCast(@fieldParentPtr("signal", signal));
             assert(self.signal.status() != .stopped);
+            std.debug.print("notified1\n", .{});
 
             // Don't send any requests until registration completes.
             if (self.batch_size_limit == null) {
+                std.debug.print("notified0.5\n", .{});
                 assert(self.client.request_inflight != null);
                 assert(self.client.request_inflight.?.message.header.operation == .register);
                 return;
             }
 
+            std.debug.print("notified2\n", .{});
             // Prevents IO thread starvation under heavy client load.
             // Process only the minimal number of packets for the next pending request.
             const enqueued_count = self.pending.count();
+            std.debug.print("enqueued_count {}\n", .{enqueued_count});
             const safety_limit = 8 * 1024; // Avoid unbounded loop in case of invalid packets.
             for (0..safety_limit) |_| {
                 const packet: *Packet = pop: {
@@ -748,7 +762,6 @@ pub fn ContextType(
                 std.enums.tagName(vsr.Header.Eviction.Reason, eviction.header.reason),
                 @intFromEnum(eviction.header.reason),
             });
-            std.debug.print("CLIENTEVICTIONCALLBACK\n", .{});
 
             self.interface.locker.lock();
             defer self.interface.locker.unlock();
@@ -756,7 +769,17 @@ pub fn ContextType(
             // safely deinitialize it. First, we stop the IO thread, which then deinitializes the
             // client before it exits (see `io_thread`).
             self.eviction_reason.store(@intFromEnum(eviction.header.reason), .seq_cst);
-            self.signal.stop();
+
+            self.cancel_request_inflight();
+
+            while (self.pending.pop()) |packet| {
+                packet.assert_phase(.pending);
+                self.packet_cancel(packet);
+            }
+
+            //self.signal.stop();
+            std.debug.print("evicted\n", .{});
+            self.signal.notify();
         }
 
         fn client_result_callback(
@@ -765,10 +788,12 @@ pub fn ContextType(
             timestamp: u64,
             reply: []const u8,
         ) void {
+            std.debug.print("result1\n", .{});
             const user_data: UserData = @bitCast(raw_user_data);
             const self: *Context = user_data.self;
             const packet_list: *Packet = user_data.packet;
             const operation = operation_vsr.cast(Client.Operation);
+            assert(self.eviction_reason.load(.seq_cst) == 0);
             assert(packet_list.operation == @intFromEnum(operation));
             assert(timestamp > 0);
             packet_list.assert_phase(.sent);
@@ -900,16 +925,16 @@ pub fn ContextType(
                 .phase = .submitted,
             };
 
-            if (self.eviction_reason.load(.seq_cst) == 0) {
+            //if (self.eviction_reason.load(.seq_cst) == 0) {
                 // Enqueue the packet and notify the IO thread to process it asynchronously.
                 assert(self.signal.status() == .running);
                 self.submitted.push(packet);
                 self.signal.notify();
-            } else {
+            //} else {
                 // Cancel the packet since we stop the IO thread during eviction.
-                assert(self.signal.status() != .running);
-                self.packet_cancel(packet);
-            }
+                //assert(self.signal.status() != .running);
+                //self.packet_cancel(packet);
+            //}
         }
 
         fn vtable_completion_context_fn(context: *anyopaque) usize {
