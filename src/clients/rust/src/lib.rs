@@ -315,8 +315,6 @@
 //!
 //! [The TigerBeetle Reference](https://docs.tigerbeetle.com/reference/).
 
-use bitflags::bitflags;
-
 use std::future::Future;
 use std::os::raw::{c_char, c_void};
 use std::pin::Pin;
@@ -337,9 +335,12 @@ pub mod tb_client;
 
 use tb_client as tbc;
 
+mod bitflags_polyfill;
 mod conversions;
 pub mod futures_polyfills;
 mod time_based_id;
+
+use bitflags_polyfill::bitflags;
 
 pub use time_based_id::id;
 
