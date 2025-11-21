@@ -3,7 +3,7 @@ use std::{env, path::Path};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
 
-    if !Path::new(&format!("{cargo_manifest_dir}/assets/tb_client.h")).try_exists()? {
+    if !Path::new(&format!("{}/assets/tb_client.h", cargo_manifest_dir)).exists() {
         panic!(
             "\n\
              TigerBeetle assets not found for in-tree build.\n\
@@ -11,9 +11,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    assert!(Path::new(&format!("{cargo_manifest_dir}/src/tb_client.rs")).try_exists()?);
+    assert!(Path::new(&format!("{}/src/tb_client.rs", cargo_manifest_dir)).exists());
 
-    println!("cargo:rerun-if-changed={cargo_manifest_dir}/assets/tb_client.h");
+    println!("cargo:rerun-if-changed={}/assets/tb_client.h", cargo_manifest_dir);
 
     let unix = env::var("CARGO_CFG_UNIX").is_ok();
     let windows = env::var("CARGO_CFG_WINDOWS").is_ok();
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_os = target_os.as_ref();
     let target_env = target_env.as_ref();
 
-    let libprefix = format!("{cargo_manifest_dir}/assets/lib");
+    let libprefix = format!("{}/assets/lib", cargo_manifest_dir);
     let archpath = match (target_arch, target_os, target_env) {
         ("aarch64", "linux", "gnu") => "aarch64-linux-gnu.2.27",
         ("aarch64", "linux", "musl") => "aarch64-linux-musl",
@@ -38,23 +38,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => todo!(),
     };
 
-    let libdir = format!("{libprefix}/{archpath}");
+    let libdir = format!("{}/{}", libprefix, archpath);
     let libname = "tb_client";
 
-    println!("cargo:rustc-link-search=native={libdir}");
-    println!("cargo:rustc-link-lib=static={libname}");
+    println!("cargo:rustc-link-search=native={}", libdir);
+    println!("cargo:rustc-link-lib=static={}", libname);
 
     let libfile = if unix {
-        format!("lib{libname}.a")
+        format!("lib{}.a", libname)
     } else if windows {
-        format!("{libname}.lib")
+        format!("{}.lib", libname)
     } else {
         todo!()
     };
-    let libpath = format!("{libdir}/{libfile}");
+    let libpath = format!("{}/{}", libdir, libfile);
 
-    assert!(Path::new(&libpath).try_exists()?);
-    println!("cargo:rerun-if-changed={libpath}");
+    assert!(Path::new(&libpath).exists());
+    println!("cargo:rerun-if-changed={}", libpath);
 
     if windows {
         // tb_client needs access to the random number generator in here.

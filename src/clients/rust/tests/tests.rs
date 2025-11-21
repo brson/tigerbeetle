@@ -52,11 +52,11 @@ impl TestDb {
         // between test runs. If the tests choose their IDs correctly there
         // should never be any collisions, and that one database should work
         // forever, just taking up a lot of space.
-        let tigerbeetle_bin = format!("{manifest_dir}/../../../tigerbeetle{EXE_SUFFIX}");
+        let tigerbeetle_bin = format!("{}/../../../tigerbeetle{}", manifest_dir, EXE_SUFFIX);
         let work_dir = env!("CARGO_TARGET_TMPDIR");
         let database_name = "0_0.testdb.tigerbeetle";
 
-        if !Path::new(&format!("{work_dir}/{database_name}")).try_exists()? {
+        if !Path::new(&format!("{}/{}", work_dir, database_name)).exists() {
             let mut cmd = Command::new(&tigerbeetle_bin);
             cmd.current_dir(&work_dir);
             cmd.args([

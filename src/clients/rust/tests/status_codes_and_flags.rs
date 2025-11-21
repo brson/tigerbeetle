@@ -20,7 +20,7 @@ fn parse_c_enum_values(name: &str) -> Vec<u32> {
     let enum_body_lines = find_enum_body_lines(TB_CLIENT_H, name);
 
     if enum_body_lines.is_empty() {
-        panic!("enum {name} has no parsable body");
+        panic!("enum {} has no parsable body", name);
     }
 
     let mut enum_values = Vec::new();
@@ -33,8 +33,8 @@ fn parse_c_enum_values(name: &str) -> Vec<u32> {
 }
 
 fn find_enum_body_lines<'t>(text: &'t str, name: &str) -> Vec<&'t str> {
-    let start_line = format!("typedef enum {name} {{");
-    let end_line = format!("}} {name};");
+    let start_line = format!("typedef enum {} {{", name);
+    let end_line = format!("}} {};", name);
 
     let lines = text
         .lines()
@@ -47,7 +47,7 @@ fn find_enum_body_lines<'t>(text: &'t str, name: &str) -> Vec<&'t str> {
 
 fn parse_enum_value(text: &str) -> u32 {
     let after_equals = text.split("=").skip(1).next();
-    let after_equals = after_equals.expect(&format!("missing '=' in enum variant text '{text}'"));
+    let after_equals = after_equals.expect(&format!("missing '=' in enum variant text '{}'", text));
 
     assert!(after_equals.ends_with(","));
     let expr = &after_equals[..after_equals.len() - 1];
@@ -58,25 +58,25 @@ fn parse_enum_value(text: &str) -> u32 {
         match expr.parse() {
             Ok(val) => val,
             Err(_) => {
-                panic!("enum text '{text}' didn't parse as u32");
+                panic!("enum text '{}' didn't parse as u32", text);
             }
         }
     } else {
         let mut split = expr.split("<<");
         let arg1 = split
             .next()
-            .expect(&format!("missing bitshift arg1 in '{text}'"));
+            .expect(&format!("missing bitshift arg1 in '{}'", text));
         let arg2 = split
             .next()
-            .expect(&format!("missing bitshift arg2 in '{text}'"));
+            .expect(&format!("missing bitshift arg2 in '{}'", text));
         let arg1: u32 = arg1
             .trim()
             .parse()
-            .expect(&format!("enum arg1 in '{text}' didn't parse as u32"));
+            .expect(&format!("enum arg1 in '{}' didn't parse as u32", text));
         let arg2: u32 = arg2
             .trim()
             .parse()
-            .expect(&format!("enum arg1 in '{text}' didn't parse as u32"));
+            .expect(&format!("enum arg1 in '{}' didn't parse as u32", text));
         arg1 << arg2
     }
 }
@@ -95,22 +95,24 @@ fn does_our_c_enum_parser_even_work() {
     }
 }
 
-fn round_trip_test<RustType, CType>(
+fn round_trip_test<RustType, CType, F1, F2>(
     c_enum_name: &str,
     ignore_list: &[CType],
-    rust_from_c: impl Fn(CType) -> RustType,
-    c_from_rust: impl Fn(RustType) -> CType,
+    rust_from_c: F1,
+    c_from_rust: F2,
 ) where
     RustType: std::fmt::Debug,
     CType: std::fmt::Debug + Eq + Copy,
     CType: TryFrom<u32>,
     <CType as TryFrom<u32>>::Error: std::fmt::Debug,
+    F1: Fn(CType) -> RustType,
+    F2: Fn(RustType) -> CType,
 {
     let c_values = parse_c_enum_values(c_enum_name);
     assert!(!c_values.is_empty());
     for c_value_u32 in c_values {
         let c_value_original = CType::try_from(c_value_u32)
-            .expect(&format!("unexpected value {c_value_u32} for enum"));
+            .expect(&format!("unexpected value {} for enum", c_value_u32));
         if ignore_list.contains(&c_value_original) {
             continue;
         }
@@ -122,7 +124,7 @@ fn round_trip_test<RustType, CType>(
 
 #[test]
 fn round_trip_create_account_result() {
-    round_trip_test::<tb::CreateAccountResult, u32>(
+    round_trip_test(
         "TB_CREATE_ACCOUNT_RESULT",
         &[],
         |c_value| tb::CreateAccountResult::from(c_value),
@@ -132,7 +134,7 @@ fn round_trip_create_account_result() {
 
 #[test]
 fn round_trip_create_transfer_result() {
-    round_trip_test::<tb::CreateTransferResult, u32>(
+    round_trip_test(
         "TB_CREATE_TRANSFER_RESULT",
         &[],
         |c_value| tb::CreateTransferResult::from(c_value),
@@ -142,7 +144,7 @@ fn round_trip_create_transfer_result() {
 
 #[test]
 fn round_trip_init_status() {
-    round_trip_test::<tb::InitStatus, i32>(
+    round_trip_test(
         "TB_INIT_STATUS",
         // Success not represented in tb::InitStatus
         &[0],
@@ -153,7 +155,7 @@ fn round_trip_init_status() {
 
 #[test]
 fn round_trip_packet_status() {
-    round_trip_test::<tb::PacketStatus, u8>(
+    round_trip_test(
         "TB_PACKET_STATUS",
         // Success not represented in tb::PacketStatus
         &[0],
@@ -164,7 +166,7 @@ fn round_trip_packet_status() {
 
 #[test]
 fn round_trip_account_flags() {
-    round_trip_test::<tb::AccountFlags, u16>(
+    round_trip_test(
         "TB_ACCOUNT_FLAGS",
         &[],
         // We use from_bits_truncate here to discard unknown flags.
@@ -176,7 +178,7 @@ fn round_trip_account_flags() {
 
 #[test]
 fn round_trip_transfer_flags() {
-    round_trip_test::<tb::TransferFlags, u16>(
+    round_trip_test(
         "TB_TRANSFER_FLAGS",
         &[],
         |c_value| tb::TransferFlags::from_bits_truncate(c_value),
@@ -186,7 +188,7 @@ fn round_trip_transfer_flags() {
 
 #[test]
 fn round_trip_account_filter_flags() {
-    round_trip_test::<tb::AccountFilterFlags, u32>(
+    round_trip_test(
         "TB_ACCOUNT_FILTER_FLAGS",
         &[],
         |c_value| tb::AccountFilterFlags::from_bits_truncate(c_value),
@@ -196,7 +198,7 @@ fn round_trip_account_filter_flags() {
 
 #[test]
 fn round_trip_query_filter_flags() {
-    round_trip_test::<tb::QueryFilterFlags, u32>(
+    round_trip_test(
         "TB_QUERY_FILTER_FLAGS",
         &[],
         |c_value| tb::QueryFilterFlags::from_bits_truncate(c_value),

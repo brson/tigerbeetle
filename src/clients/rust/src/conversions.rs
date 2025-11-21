@@ -34,7 +34,7 @@ impl From<u32> for CreateAccountResult {
             TB_CREATE_ACCOUNT_RESULT_TB_CREATE_ACCOUNT_LEDGER_MUST_NOT_BE_ZERO => LedgerMustNotBeZero,
             TB_CREATE_ACCOUNT_RESULT_TB_CREATE_ACCOUNT_CODE_MUST_NOT_BE_ZERO => CodeMustNotBeZero,
             TB_CREATE_ACCOUNT_RESULT_TB_CREATE_ACCOUNT_IMPORTED_EVENT_TIMESTAMP_MUST_NOT_REGRESS => ImportedEventTimestampMustNotRegress,
-            v => panic!("Unknown CreateAccountResult: {v}"),
+            v => panic!("Unknown CreateAccountResult: {}", v),
         }
     }
 }
@@ -152,7 +152,7 @@ impl From<u32> for CreateTransferResult {
             TB_CREATE_TRANSFER_RESULT_TB_CREATE_TRANSFER_OVERFLOWS_TIMEOUT => OverflowsTimeout,
             TB_CREATE_TRANSFER_RESULT_TB_CREATE_TRANSFER_EXCEEDS_CREDITS => ExceedsCredits,
             TB_CREATE_TRANSFER_RESULT_TB_CREATE_TRANSFER_EXCEEDS_DEBITS => ExceedsDebits,
-            v => panic!("Unknown CreateTransferResult: {v}"),
+            v => panic!("Unknown CreateTransferResult: {}", v),
         }
     }
 }
@@ -249,7 +249,7 @@ impl From<i32> for InitStatus {
             TB_INIT_STATUS_TB_INIT_ADDRESS_LIMIT_EXCEEDED => AddressLimitExceeded,
             TB_INIT_STATUS_TB_INIT_SYSTEM_RESOURCES => SystemResources,
             TB_INIT_STATUS_TB_INIT_NETWORK_SUBSYSTEM => NetworkSubsystem,
-            v => panic!("Unknown InitStatus: {v}"),
+            v => panic!("Unknown InitStatus: {}", v),
         }
     }
 }
@@ -284,7 +284,7 @@ impl From<u8> for PacketStatus {
             TB_PACKET_STATUS_TB_PACKET_CLIENT_SHUTDOWN => ClientShutdown,
             TB_PACKET_STATUS_TB_PACKET_INVALID_OPERATION => InvalidOperation,
             TB_PACKET_STATUS_TB_PACKET_INVALID_DATA_SIZE => InvalidDataSize,
-            v => panic!("Unknown PacketStatus: {v}"),
+            v => panic!("Unknown PacketStatus: {}", v),
         }
     }
 }

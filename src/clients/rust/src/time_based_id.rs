@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
-use std::sync::Mutex;
+use std::mem::MaybeUninit;
+use std::sync::{Mutex, Once};
 use std::time::SystemTime;
 
 /// Generate a TigerBeetle time-based identifier.
@@ -28,19 +29,23 @@ use std::time::SystemTime;
 //
 // - https://github.com/tigerbeetle/tigerbeetle/blob/75f77b8b3280ce2f289cf42ae928945190fe4a2a/src/clients/node/src/index.ts#L161-L191
 // - https://github.com/ulid/spec
+#[allow(unknown_lints)] // static_mut_refs only in newer versions
 pub fn id() -> u128 {
-    let mut guard = GLOBAL_GENERATOR.lock().expect("global tbid generator");
-    match *guard {
-        None => {
-            *guard = Some(TbidGenerator::new());
-            drop(guard);
-            id()
-        }
-        Some(ref mut generator) => generator.next(),
-    }
-}
+    static ONCE: Once = Once::new();
+    static mut GLOBAL_GENERATOR: MaybeUninit<Mutex<TbidGenerator>> = MaybeUninit::uninit();
 
-static GLOBAL_GENERATOR: Mutex<Option<TbidGenerator>> = Mutex::new(None);
+    ONCE.call_once(|| unsafe {
+        // Safety: protected by call_once
+        #[allow(static_mut_refs)]
+        GLOBAL_GENERATOR.as_mut_ptr().write(Mutex::new(TbidGenerator::new()));
+    });
+
+    // Safety: protected by call_once
+    #[allow(static_mut_refs)]
+    let mutex = unsafe { &*GLOBAL_GENERATOR.as_ptr() };
+    let mut guard = mutex.lock().expect("global tbid generator");
+    guard.next()
+}
 
 struct TbidGenerator {
     ms_since_epoch: u128,
