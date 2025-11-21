@@ -62,7 +62,7 @@ impl TestDb {
         if !Path::new(&format!("{}/{}", work_dir, database_name)).exists() {
             let mut cmd = Command::new(&tigerbeetle_bin);
             cmd.current_dir(&work_dir);
-            cmd.args([
+            cmd.args(&[
                 "format",
                 "--replica-count=1",
                 "--replica=0",
@@ -75,7 +75,7 @@ impl TestDb {
 
         let mut cmd = Command::new(&tigerbeetle_bin);
         cmd.current_dir(&work_dir);
-        cmd.args([
+        cmd.args(&[
             "start",
             // magic address 0: tell us the port to use,
             // shutdown when stdin closes
