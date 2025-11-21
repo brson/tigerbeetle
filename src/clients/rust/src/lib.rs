@@ -122,6 +122,7 @@
 //! Here is an example of paging to get started with:
 //!
 //! ```no_run
+//! # use std::convert::TryFrom;
 //! use tigerbeetle as tb;
 //! use tb::futures_polyfills::{unfold, Stream};
 //!
@@ -315,6 +316,7 @@
 //!
 //! [The TigerBeetle Reference](https://docs.tigerbeetle.com/reference/).
 
+use std::convert::TryFrom;
 use std::future::Future;
 use std::os::raw::{c_char, c_void};
 use std::pin::Pin;

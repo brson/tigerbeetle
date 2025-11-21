@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::convert::TryFrom;
 use std::env;
 use std::env::consts::EXE_SUFFIX;
 use std::io::{BufRead as _, BufReader};

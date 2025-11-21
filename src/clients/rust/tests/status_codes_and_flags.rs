@@ -11,6 +11,7 @@
 // exactly how it would do that anyway. But at least we can do it for the Rust
 // client. Rust client is best client!
 
+use std::convert::TryFrom;
 use tigerbeetle as tb;
 
 static TB_CLIENT_H: &str = include_str!("../assets/tb_client.h");
