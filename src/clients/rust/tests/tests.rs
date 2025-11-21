@@ -54,8 +54,10 @@ impl TestDb {
         // should never be any collisions, and that one database should work
         // forever, just taking up a lot of space.
         let tigerbeetle_bin = format!("{}/../../../tigerbeetle{}", manifest_dir, EXE_SUFFIX);
-        let work_dir = env!("CARGO_TARGET_TMPDIR");
+        let work_dir = format!("{}/target/tmp", manifest_dir);
         let database_name = "0_0.testdb.tigerbeetle";
+
+        std::fs::create_dir_all(&work_dir)?;
 
         if !Path::new(&format!("{}/{}", work_dir, database_name)).exists() {
             let mut cmd = Command::new(&tigerbeetle_bin);
