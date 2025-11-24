@@ -157,8 +157,23 @@ fn emit_struct(
     comptime type_info: anytype,
     comptime rust_name: []const u8,
 ) !void {
+    // Check if any array field exceeds 32 elements (pre-1.47 Rust limitation).
+    comptime var has_large_array = false;
+    inline for (type_info.fields) |field| {
+        switch (@typeInfo(field.type)) {
+            .array => |array| {
+                if (array.len > 32) has_large_array = true;
+            },
+            else => {},
+        }
+    }
+
     try buffer.writer().print("#[repr(C)]\n", .{});
-    try buffer.writer().print("#[derive(Debug, Copy, Clone)]\n", .{});
+    if (has_large_array) {
+        try buffer.writer().print("#[derive(Copy, Clone)]\n", .{});
+    } else {
+        try buffer.writer().print("#[derive(Debug, Copy, Clone)]\n", .{});
+    }
     try buffer.writer().print("pub struct {s} {{\n", .{rust_name});
 
     inline for (type_info.fields) |field| {
@@ -181,7 +196,33 @@ fn emit_struct(
         try buffer.writer().print(",\n", .{});
     }
 
-    try buffer.writer().print("}}\n\n", .{});
+    try buffer.writer().print("}}\n", .{});
+
+    // Emit manual Debug impl for structs with large arrays.
+    if (has_large_array) {
+        try buffer.writer().print("\nimpl core::fmt::Debug for {s} {{\n", .{rust_name});
+        try buffer.writer().print("    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n", .{});
+        try buffer.writer().print("        f.debug_struct(\"{s}\")\n", .{rust_name});
+        inline for (type_info.fields) |field| {
+            switch (@typeInfo(field.type)) {
+                .array => |array| {
+                    if (array.len > 32) {
+                        try buffer.writer().print("            .field(\"{s}\", &\"...\")\n", .{field.name});
+                    } else {
+                        try buffer.writer().print("            .field(\"{s}\", &self.{s})\n", .{ field.name, field.name });
+                    }
+                },
+                else => {
+                    try buffer.writer().print("            .field(\"{s}\", &self.{s})\n", .{ field.name, field.name });
+                },
+            }
+        }
+        try buffer.writer().print("            .finish()\n", .{});
+        try buffer.writer().print("    }}\n", .{});
+        try buffer.writer().print("}}\n", .{});
+    }
+
+    try buffer.writer().print("\n", .{});
 }
 
 pub fn main() !void {

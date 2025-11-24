@@ -172,7 +172,7 @@ pub struct tb_create_transfers_result_t {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct tb_account_filter_t {
     pub account_id: u128,
     pub user_data_128: u128,
@@ -186,13 +186,30 @@ pub struct tb_account_filter_t {
     pub flags: u32,
 }
 
+impl core::fmt::Debug for tb_account_filter_t {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("tb_account_filter_t")
+            .field("account_id", &self.account_id)
+            .field("user_data_128", &self.user_data_128)
+            .field("user_data_64", &self.user_data_64)
+            .field("user_data_32", &self.user_data_32)
+            .field("code", &self.code)
+            .field("reserved", &"...")
+            .field("timestamp_min", &self.timestamp_min)
+            .field("timestamp_max", &self.timestamp_max)
+            .field("limit", &self.limit)
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
 pub type TB_ACCOUNT_FILTER_FLAGS = u32;
 pub const TB_ACCOUNT_FILTER_FLAGS_TB_ACCOUNT_FILTER_DEBITS: TB_ACCOUNT_FILTER_FLAGS = 1 << 0;
 pub const TB_ACCOUNT_FILTER_FLAGS_TB_ACCOUNT_FILTER_CREDITS: TB_ACCOUNT_FILTER_FLAGS = 1 << 1;
 pub const TB_ACCOUNT_FILTER_FLAGS_TB_ACCOUNT_FILTER_REVERSED: TB_ACCOUNT_FILTER_FLAGS = 1 << 2;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct tb_account_balance_t {
     pub debits_pending: u128,
     pub debits_posted: u128,
@@ -200,6 +217,19 @@ pub struct tb_account_balance_t {
     pub credits_posted: u128,
     pub timestamp: u64,
     pub reserved: [u8; 56],
+}
+
+impl core::fmt::Debug for tb_account_balance_t {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("tb_account_balance_t")
+            .field("debits_pending", &self.debits_pending)
+            .field("debits_posted", &self.debits_posted)
+            .field("credits_pending", &self.credits_pending)
+            .field("credits_posted", &self.credits_posted)
+            .field("timestamp", &self.timestamp)
+            .field("reserved", &"...")
+            .finish()
+    }
 }
 
 #[repr(C)]
@@ -233,7 +263,7 @@ pub struct tb_client_t {
 // This struct must be "pinned" (not copyable or movable), as its address must remain stable
 // throughout the lifetime of the request.
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct tb_packet_t {
     pub user_data: *mut ::std::os::raw::c_void,
     pub data: *mut ::std::os::raw::c_void,
@@ -242,6 +272,20 @@ pub struct tb_packet_t {
     pub operation: u8,
     pub status: u8,
     pub opaque: [u8; 64],
+}
+
+impl core::fmt::Debug for tb_packet_t {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("tb_packet_t")
+            .field("user_data", &self.user_data)
+            .field("data", &self.data)
+            .field("data_size", &self.data_size)
+            .field("user_tag", &self.user_tag)
+            .field("operation", &self.operation)
+            .field("status", &self.status)
+            .field("opaque", &"...")
+            .finish()
+    }
 }
 
 pub type TB_OPERATION = u8;

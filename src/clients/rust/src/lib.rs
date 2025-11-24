@@ -1715,12 +1715,51 @@ macro_rules! reserved_type {
         /// This type is instantiated with [`Default::default`] and typically
         /// does not need to be used directly.
         #[repr(transparent)]
-        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         pub struct $name([u8; $size]);
+
+        impl Copy for $name {}
+
+        impl Clone for $name {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
 
         impl Default for $name {
             fn default() -> $name {
                 $name([0; $size])
+            }
+        }
+
+        impl core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.debug_tuple(stringify!($name)).field(&"...").finish()
+            }
+        }
+
+        impl Eq for $name {}
+
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.0[..] == other.0[..]
+            }
+        }
+
+        impl Ord for $name {
+            fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+                self.0[..].cmp(&other.0[..])
+            }
+        }
+
+        impl PartialOrd for $name {
+            fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl core::hash::Hash for $name {
+            fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+                self.0[..].hash(state);
             }
         }
     };
