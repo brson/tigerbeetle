@@ -316,7 +316,7 @@ fn smoke() -> Result<(), Box<dyn std::error::Error>> {
 fn ctor_fail() -> Result<(), Box<dyn std::error::Error>> {
     let client = tb::Client::new(0, "hey");
 
-    assert!(matches!(client, Err(tb::InitStatus::AddressInvalid)));
+    assert!(match client { Err(tb::InitStatus::AddressInvalid) => true, _ => false });
 
     Ok(())
 }
