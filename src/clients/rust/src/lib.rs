@@ -1132,7 +1132,7 @@ pub struct Account {
     pub user_data_128: u128,
     pub user_data_64: u64,
     pub user_data_32: u32,
-    pub reserved: Reserved<4>,
+    pub reserved: Reserved4,
     pub ledger: u32,
     pub code: u16,
     pub flags: AccountFlags,
@@ -1221,7 +1221,7 @@ pub struct AccountFilter {
     pub user_data_64: u64,
     pub user_data_32: u32,
     pub code: u16,
-    pub reserved: Reserved<58>,
+    pub reserved: Reserved58,
     pub timestamp_min: u64,
     pub timestamp_max: u64,
     pub limit: u32,
@@ -1259,7 +1259,7 @@ pub struct AccountBalance {
     pub credits_pending: u128,
     pub credits_posted: u128,
     pub timestamp: u64,
-    pub reserved: Reserved<56>,
+    pub reserved: Reserved56,
 }
 
 /// Parameters for querying accounts and transfers.
@@ -1275,7 +1275,7 @@ pub struct QueryFilter {
     pub user_data_32: u32,
     pub ledger: u32,
     pub code: u16,
-    pub reserved: Reserved<6>,
+    pub reserved: Reserved6,
     pub timestamp_min: u64,
     pub timestamp_max: u64,
     pub limit: u32,
@@ -1708,19 +1708,28 @@ impl core::fmt::Display for NotFound {
     }
 }
 
-/// A utility type for representing reserved bytes in structs.
-///
-/// This type is instantiated with [`Default::default`] and typically
-/// does not need to be used directly.
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Reserved<const N: usize>([u8; N]);
+macro_rules! reserved_type {
+    ($name:ident, $size:expr) => {
+        /// A utility type for representing reserved bytes in structs.
+        ///
+        /// This type is instantiated with [`Default::default`] and typically
+        /// does not need to be used directly.
+        #[repr(transparent)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        pub struct $name([u8; $size]);
 
-impl<const N: usize> Default for Reserved<N> {
-    fn default() -> Reserved<N> {
-        Reserved([0; N])
-    }
+        impl Default for $name {
+            fn default() -> $name {
+                $name([0; $size])
+            }
+        }
+    };
 }
+
+reserved_type!(Reserved4, 4);
+reserved_type!(Reserved6, 6);
+reserved_type!(Reserved56, 56);
+reserved_type!(Reserved58, 58);
 
 /// A minimal single-use future for completion notifications.
 ///
