@@ -86,7 +86,7 @@ impl TestDb {
         .stdout(Stdio::piped());
 
         let mut server = cmd.spawn()?;
-        let server_stdout = mem::take(&mut server.stdout).unwrap();
+        let server_stdout = mem::replace(&mut server.stdout, None).unwrap();
         let mut server_stdout = BufReader::new(server_stdout);
         let mut first_line = String::new();
         server_stdout.read_line(&mut first_line)?;

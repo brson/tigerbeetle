@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("x86_64", "linux", "musl") => "x86_64-linux-musl",
         ("x86_64", "macos", "") => "x86_64-macos",
         ("x86_64", "windows", "msvc") => "x86_64-windows",
-        _ => todo!(),
+        _ => unimplemented!(),
     };
 
     let libdir = format!("{}/{}", libprefix, archpath);
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if windows {
         format!("{}.lib", libname)
     } else {
-        todo!()
+        unimplemented!()
     };
     let libpath = format!("{}/{}", libdir, libfile);
 

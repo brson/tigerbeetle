@@ -1312,7 +1312,6 @@ bitflags! {
 ///
 /// [`CreateAccountResult`](https://docs.tigerbeetle.com/reference/requests/create_accounts/#result).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[non_exhaustive]
 pub enum CreateAccountResult {
     Ok,
     LinkedEventFailed,
@@ -1416,7 +1415,6 @@ impl core::fmt::Display for CreateAccountResult {
 ///
 /// [`CreateTransferResult`](https://docs.tigerbeetle.com/reference/requests/create_transfers/#result).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[non_exhaustive]
 pub enum CreateTransferResult {
     Ok,
     LinkedEventFailed,
@@ -1620,7 +1618,6 @@ impl core::fmt::Display for CreateTransferResult {
 
 /// Errors resulting from constructing a [`Client`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[non_exhaustive]
 pub enum InitStatus {
     /// Some other unexpected error occurrred.
     Unexpected,
@@ -1657,7 +1654,6 @@ impl core::fmt::Display for InitStatus {
 /// When one of these is returned as a result of a transaction request,
 /// then all operations in the request can be assumed to have not been processed.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[non_exhaustive]
 pub enum PacketStatus {
     /// Too many events were submitted to a multi-event request.
     TooMuchData,
