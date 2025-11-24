@@ -719,7 +719,7 @@ fn get_account_transfers_paged(
                     let (timestamp_begin_next, should_continue) = if !is_reverse {
                         assert!(timestamp_first < timestamp_last);
                         let timestamp_begin_next = timestamp_last.checked_add(1).expect("overflow");
-                        assert_ne!(timestamp_begin_next, u64::MAX);
+                        assert_ne!(timestamp_begin_next, core::u64::MAX);
                         let should_continue =
                             timestamp_begin_next <= event.timestamp_max || event.timestamp_max == 0;
                         (timestamp_begin_next, should_continue)
