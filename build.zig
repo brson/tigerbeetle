@@ -358,6 +358,7 @@ fn build_vsr_module(b: *std.Build, options: struct {
     config_release: ?[]const u8,
     config_release_client_min: ?[]const u8,
     config_aof_recovery: bool,
+    config_production_cluster: bool = false,
 }) struct { *std.Build.Step.Options, *std.Build.Module } {
     // Ideally, we would return _just_ the module here, and keep options an implementation detail.
     // However, currently Zig makes it awkward to provide multiple entry points for a module:
@@ -375,6 +376,7 @@ fn build_vsr_module(b: *std.Build, options: struct {
         options.config_release_client_min,
     );
     vsr_options.addOption(bool, "config_aof_recovery", options.config_aof_recovery);
+    vsr_options.addOption(bool, "config_production_cluster", options.config_production_cluster);
 
     const vsr_module = b.createModule(.{
         .root_source_file = b.path("src/vsr.zig"),
@@ -924,7 +926,8 @@ fn build_test_integration(
     },
 ) void {
     // For integration tests, we build an independent copy of TigerBeetle with "real" config and
-    // multiversioning.
+    // multiversioning. We also use production cluster config so that tests using tb_client
+    // directly have matching message sizes with the server.
     const vsr_options, const vsr_module = build_vsr_module(b, .{
         .stdx_module = options.stdx_module,
         .git_commit = "bee71e0000000000000000000000000000bee71e".*, // Beetle-hash!
@@ -932,6 +935,7 @@ fn build_test_integration(
         .config_release = "65535.0.0",
         .config_release_client_min = "0.16.4",
         .config_aof_recovery = false,
+        .config_production_cluster = true,
     });
     const tigerbeetle_previous = download_release(b, "latest", options.target, options.mode);
     const tigerbeetle = build_tigerbeetle_executable_multiversion(b, .{

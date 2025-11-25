@@ -25,6 +25,7 @@ const tigerbeetle_past: []const u8 = @import("test_options").tigerbeetle_exe_pas
 
 comptime {
     _ = @import("clients/c/tb_client_header_test.zig");
+    _ = @import("clients/c/tb_client/context_test.zig");
 }
 
 test "repl integration" {

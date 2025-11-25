@@ -24,6 +24,7 @@ const BuildOptions = struct {
     release: ?[]const u8,
     release_client_min: ?[]const u8,
     config_aof_recovery: bool,
+    config_production_cluster: bool,
 };
 
 // Allow setting build-time config either via `build.zig` `Options`, or via a struct in the root
@@ -273,6 +274,8 @@ pub const configs = struct {
     pub const current = current: {
         var base = if (@hasDecl(root, "tigerbeetle_config"))
             root.tigerbeetle_config
+        else if (build_options.config_production_cluster)
+            default_production // Use production config even in test mode (for integration tests).
         else if (builtin.is_test)
             test_min
         else
