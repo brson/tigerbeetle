@@ -152,6 +152,11 @@ pub fn build(b: *std.Build) !void {
             "print-exe",
             "Build tasks print the path of the executable",
         ) orelse false,
+        .test_streaming = b.option(
+            bool,
+            "test-streaming",
+            "Stream test output to terminal instead of using zig build IPC",
+        ) orelse false,
     };
 
     const target = try resolve_target(b, build_options.target);
@@ -230,6 +235,7 @@ pub fn build(b: *std.Build) !void {
         .tb_client_header = tb_client_header,
         .target = target,
         .mode = mode,
+        .test_streaming = build_options.test_streaming,
     });
 
     // zig build test:jni
@@ -850,8 +856,16 @@ fn build_test(
         tb_client_header: *Generated,
         target: std.Build.ResolvedTarget,
         mode: std.builtin.OptimizeMode,
+        test_streaming: bool,
     },
 ) !void {
+    // When test_streaming is enabled, use the standard test runner in simple mode
+    // to get streaming output instead of zig build's buffered IPC mode.
+    const streaming_test_runner: ?std.Build.Step.Compile.TestRunner = if (options.test_streaming) .{
+        .path = b.path("zig/lib/compiler/test_runner.zig"),
+        .mode = .simple,
+    } else null;
+
     const stdx_unit_tests = b.addTest(.{
         .name = "test-stdx",
         .root_module = b.createModule(.{
@@ -860,6 +874,7 @@ fn build_test(
             .optimize = options.mode,
         }),
         .filters = b.args orelse &.{},
+        .test_runner = streaming_test_runner,
     });
     const unit_tests = b.addTest(.{
         .name = "test-unit",
@@ -869,6 +884,7 @@ fn build_test(
             .optimize = options.mode,
         }),
         .filters = b.args orelse &.{},
+        .test_runner = streaming_test_runner,
     });
     unit_tests.root_module.addImport("stdx", options.stdx_module);
     unit_tests.root_module.addOptions("vsr_options", options.vsr_options);
@@ -898,6 +914,7 @@ fn build_test(
         .stdx_module = options.stdx_module,
         .target = options.target,
         .mode = options.mode,
+        .test_streaming = options.test_streaming,
     });
 
     const run_fmt = b.addFmt(.{ .paths = &.{"."}, .check = true });
@@ -923,6 +940,7 @@ fn build_test_integration(
         stdx_module: *std.Build.Module,
         target: std.Build.ResolvedTarget,
         mode: std.builtin.OptimizeMode,
+        test_streaming: bool,
     },
 ) void {
     // For integration tests, we build an independent copy of TigerBeetle with "real" config and
@@ -958,6 +976,13 @@ fn build_test_integration(
     });
     const vortex_artifact = b.addInstallArtifact(vortex, .{});
 
+    // When test_streaming is enabled, use the standard test runner in simple mode
+    // to get streaming output instead of zig build's buffered IPC mode.
+    const streaming_test_runner: ?std.Build.Step.Compile.TestRunner = if (options.test_streaming) .{
+        .path = b.path("zig/lib/compiler/test_runner.zig"),
+        .mode = .simple,
+    } else null;
+
     const integration_tests_options = b.addOptions();
     integration_tests_options.addOptionPath("tigerbeetle_exe", tigerbeetle);
     integration_tests_options.addOptionPath("tigerbeetle_exe_past", tigerbeetle_previous);
@@ -970,6 +995,7 @@ fn build_test_integration(
             .optimize = options.mode,
         }),
         .filters = b.args orelse &.{},
+        .test_runner = streaming_test_runner,
     });
     integration_tests.root_module.addImport("stdx", options.stdx_module);
     integration_tests.root_module.addOptions("vsr_options", vsr_options);
