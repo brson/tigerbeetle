@@ -11,53 +11,80 @@ const TmpTigerBeetle = @import("../../../testing/tmp_tigerbeetle.zig");
 
 const tigerbeetle_exe: []const u8 = @import("test_options").tigerbeetle_exe;
 
-const Mutex = std.Thread.Mutex;
-const Condition = std.Thread.Condition;
+/// Synchronous blocking wrapper around tb_client for expressive tests.
+const SyncClient = struct {
+    client: *tb_client.ClientInterface,
 
-// Notifies the main thread when all pending requests are completed.
-const Completion = struct {
-    pending: usize,
-    mutex: Mutex = .{},
-    cond: Condition = .{},
+    const Result = union(enum) {
+        ok,
+        err: tb_client.PacketStatus,
+    };
 
-    pub fn complete(self: *Completion) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    /// Blocking lookup_transfers call.
+    pub fn lookup_transfers(self: *SyncClient, ids: []const u128) Result {
+        var ctx = RequestCtx{};
+        ctx.packet = .{
+            .operation = @intFromEnum(tb_client.Operation.lookup_transfers),
+            .user_data = &ctx,
+            .data = @constCast(std.mem.sliceAsBytes(ids).ptr),
+            .data_size = @intCast(ids.len * @sizeOf(u128)),
+            .user_tag = 0,
+            .status = .ok,
+        };
 
-        assert(self.pending > 0);
-        self.pending -= 1;
-        self.cond.signal();
+        self.client.submit(&ctx.packet) catch |err| {
+            assert(err == error.ClientInvalid);
+            return .{ .err = .client_shutdown };
+        };
+
+        ctx.wait();
+
+        return switch (ctx.status.?) {
+            .ok => .ok,
+            else => |status| .{ .err = status },
+        };
     }
 
-    pub fn wait_pending(self: *Completion) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        while (self.pending > 0)
-            self.cond.wait(&self.mutex);
+    pub fn trigger_eviction_for_testing(self: *SyncClient) !void {
+        return self.client.trigger_eviction_for_testing();
     }
+
+    pub fn deinit(self: *SyncClient) !void {
+        return self.client.deinit();
+    }
+
+    const RequestCtx = struct {
+        packet: tb_client.Packet = undefined,
+        status: ?tb_client.PacketStatus = null,
+        mutex: std.Thread.Mutex = .{},
+        cond: std.Thread.Condition = .{},
+        done: bool = false,
+
+        pub fn wait(self: *RequestCtx) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            while (!self.done)
+                self.cond.wait(&self.mutex);
+        }
+
+        pub fn on_complete(
+            _: usize,
+            packet: *tb_client.Packet,
+            _: u64,
+            _: ?[*]const u8,
+            _: u32,
+        ) callconv(.c) void {
+            const self: *RequestCtx = @ptrCast(@alignCast(packet.*.user_data.?));
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.status = packet.*.status;
+            self.done = true;
+            self.cond.signal();
+        }
+    };
 };
 
-// Request context for capturing callback status.
-const RequestContext = struct {
-    completion: *Completion,
-    packet: tb_client.Packet,
-    status: ?tb_client.PacketStatus = null,
-
-    pub fn on_complete(
-        _: usize,
-        tb_packet: *tb_client.Packet,
-        _: u64,
-        _: ?[*]const u8,
-        _: u32,
-    ) callconv(.c) void {
-        const self: *RequestContext = @ptrCast(@alignCast(tb_packet.*.user_data.?));
-        self.status = tb_packet.*.status;
-        self.completion.complete();
-    }
-};
-
-// Barrier for thread synchronization.
+/// Barrier for thread synchronization.
 const Barrier = struct {
     counter: std.atomic.Value(usize),
     target: usize,
@@ -70,122 +97,123 @@ const Barrier = struct {
     }
 };
 
-// Per-thread state for concurrent submission test.
+/// Per-thread state.
 const ThreadState = struct {
     client: *tb_client.ClientInterface,
     barrier: *Barrier,
-    completion: Completion,
-    request: RequestContext,
+    err: ?anyerror = null,
 };
 
 fn thread_fn(state: *ThreadState) void {
-    // Initialize request context.
-    state.request = .{
-        .completion = &state.completion,
-        .packet = undefined,
-        .status = null,
-    };
-
-    const packet = &state.request.packet;
-    packet.operation = @intFromEnum(tb_client.Operation.lookup_transfers);
-    packet.user_data = &state.request;
-    packet.data = null;
-    packet.data_size = 0;
-    packet.user_tag = 0;
-    packet.status = .ok;
+    var sync = SyncClient{ .client = state.client };
 
     // Wait for all threads to be ready.
     state.barrier.wait();
 
-    // Submit request after eviction was triggered.
-    state.client.submit(packet) catch |err| {
-        // If client already shut down, that's expected.
-        assert(err == error.ClientInvalid);
-        state.completion.complete();
+    // First lookup should succeed (empty result).
+    switch (sync.lookup_transfers(&.{0})) {
+        .ok => {},
+        .err => |status| {
+            std.debug.print("thread: first lookup failed with {}\n", .{status});
+            state.err = error.UnexpectedStatus;
+            return;
+        },
+    }
+
+    // Trigger eviction (all threads do this, it's idempotent).
+    sync.trigger_eviction_for_testing() catch |err| {
+        std.debug.print("thread: trigger_eviction failed with {}\n", .{err});
+        state.err = err;
         return;
     };
 
-    // Wait for callback.
-    state.completion.wait_pending();
+    // Subsequent lookups should fail with ClientEvicted.
+    switch (sync.lookup_transfers(&.{0})) {
+        .ok => {
+            std.debug.print("thread: second lookup succeeded, expected ClientEvicted\n", .{});
+            state.err = error.ExpectedEvicted;
+            return;
+        },
+        .err => |status| {
+            if (status != .client_evicted and status != .client_shutdown) {
+                std.debug.print("thread: second lookup got {}, expected client_evicted\n", .{status});
+                state.err = error.UnexpectedStatus;
+                return;
+            }
+        },
+    }
+
+    switch (sync.lookup_transfers(&.{0})) {
+        .ok => {
+            std.debug.print("thread: third lookup succeeded, expected ClientEvicted\n", .{});
+            state.err = error.ExpectedEvicted;
+            return;
+        },
+        .err => |status| {
+            if (status != .client_evicted and status != .client_shutdown) {
+                std.debug.print("thread: third lookup got {}, expected client_evicted\n", .{status});
+                state.err = error.UnexpectedStatus;
+                return;
+            }
+        },
+    }
 }
 
 test "context: eviction with concurrent submissions" {
-    // 1. Start real server.
+    // Start real server (kept alive across all iterations).
     var tmp_tb = try TmpTigerBeetle.init(testing.allocator, .{
         .development = true,
         .prebuilt = tigerbeetle_exe,
     });
     defer tmp_tb.deinit(testing.allocator);
 
-    // 2. Connect real client.
-    var client: tb_client.ClientInterface = undefined;
-    try tb_client.init(
-        testing.allocator,
-        &client,
-        0, // cluster_id
-        tmp_tb.port_str,
-        0, // context
-        RequestContext.on_complete,
-    );
-    errdefer client.deinit() catch {};
-
-    // 3. Baseline request - verify client works.
-    {
-        var completion = Completion{ .pending = 1 };
-        var request = RequestContext{
-            .completion = &completion,
-            .packet = undefined,
-            .status = null,
-        };
-
-        const packet = &request.packet;
-        packet.operation = @intFromEnum(tb_client.Operation.lookup_transfers);
-        packet.user_data = &request;
-        packet.data = null;
-        packet.data_size = 0;
-        packet.user_tag = 0;
-        packet.status = .ok;
-
-        try client.submit(packet);
-        completion.wait_pending();
-
-        // Baseline lookup should succeed with ok status.
-        try testing.expectEqual(tb_client.PacketStatus.ok, request.status.?);
-    }
-
-    // 4. Trigger eviction.
-    try client.trigger_eviction_for_testing();
-
-    // 5. Spawn threads with barrier synchronization.
+    // The crash is easier to reproduce with more iterations.
+    // Client registration is slow, so we keep this small for CI.
+    const tries = 3;
     const num_threads = 8;
-    var barrier = Barrier{ .counter = std.atomic.Value(usize).init(0), .target = num_threads };
 
-    var thread_states: [num_threads]ThreadState = undefined;
-    var threads: [num_threads]std.Thread = undefined;
+    for (0..tries) |i| {
+        std.debug.print("eviction crash try {}\n", .{i});
 
-    for (&thread_states, &threads) |*state, *t| {
-        state.* = .{
-            .client = &client,
-            .barrier = &barrier,
-            .completion = .{ .pending = 1 },
-            .request = undefined,
-        };
-        t.* = try std.Thread.spawn(.{}, thread_fn, .{state});
-    }
+        // Connect new client each iteration.
+        var client: tb_client.ClientInterface = undefined;
+        try tb_client.init(
+            testing.allocator,
+            &client,
+            0, // cluster_id
+            tmp_tb.port_str,
+            0, // context
+            SyncClient.RequestCtx.on_complete,
+        );
+        errdefer client.deinit() catch {};
 
-    // 6. Join all threads.
-    for (threads) |t| {
-        t.join();
-    }
+        // Spawn threads with barrier synchronization.
+        var barrier = Barrier{ .counter = std.atomic.Value(usize).init(0), .target = num_threads };
 
-    // 7. Verify all requests returned ClientEvicted status.
-    for (&thread_states) |*state| {
-        if (state.request.status) |status| {
-            try testing.expectEqual(tb_client.PacketStatus.client_evicted, status);
+        var thread_states: [num_threads]ThreadState = undefined;
+        var threads: [num_threads]std.Thread = undefined;
+
+        for (&thread_states, &threads) |*state, *t| {
+            state.* = .{
+                .client = &client,
+                .barrier = &barrier,
+            };
+            t.* = try std.Thread.spawn(.{}, thread_fn, .{state});
         }
-        // If status is null, the submit returned ClientInvalid (also acceptable).
-    }
 
-    // 8. Cleanup.
-    try client.deinit();
+        // Join all threads.
+        for (threads) |t| {
+            t.join();
+        }
+
+        // Verify no thread errors.
+        for (&thread_states) |*state| {
+            if (state.err) |err| {
+                return err;
+            }
+        }
+
+        // Cleanup client before next iteration.
+        try client.deinit();
+    }
 }

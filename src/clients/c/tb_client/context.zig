@@ -964,7 +964,8 @@ pub fn ContextType(
 
         fn vtable_trigger_eviction_for_testing_fn(context: *anyopaque) void {
             const self: *Context = @ptrCast(@alignCast(context));
-            assert(self.signal.status() == .running);
+            // Idempotent: no-op if client already shutting down.
+            if (self.signal.status() != .running) return;
             self.trigger_eviction_for_testing.store(true, .monotonic);
         }
 
