@@ -1374,7 +1374,7 @@ fn client_eviction_crash() -> anyhow::Result<()> {
 
     // The crash is easier to reproduce if you increase this number,
     // but test much slower because client registration is slow.
-    let tries = 1;
+    let tries = 1000;
 
     for i in 0..tries {
         eprintln!("client eviction crash try {i}");

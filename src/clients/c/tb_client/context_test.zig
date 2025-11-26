@@ -110,35 +110,35 @@ fn thread_fn(state: *ThreadState) void {
     // Wait for all threads to be ready.
     state.barrier.wait();
 
-    // First lookup should succeed (empty result).
-    switch (sync.lookup_transfers(&.{0})) {
-        .ok => {},
-        .err => |status| {
-            std.debug.print("thread: first lookup failed with {}\n", .{status});
-            state.err = error.UnexpectedStatus;
-            return;
-        },
-    }
-
-    // Trigger eviction (all threads do this, it's idempotent).
-    sync.trigger_eviction_for_testing() catch |err| {
-        std.debug.print("thread: trigger_eviction failed with {}\n", .{err});
-        state.err = err;
-        return;
+    // Submit first lookup WITHOUT waiting for completion.
+    // This increases the chance of having multiple in-flight/pending packets
+    // when eviction is triggered, reproducing the data race crash.
+    const ids = [_]u128{0};
+    var ctx1 = SyncClient.RequestCtx{};
+    ctx1.packet = .{
+        .operation = @intFromEnum(tb_client.Operation.lookup_transfers),
+        .user_data = &ctx1,
+        .data = @constCast(std.mem.sliceAsBytes(&ids).ptr),
+        .data_size = @intCast(ids.len * @sizeOf(u128)),
+        .user_tag = 0,
+        .status = .ok,
     };
+    state.client.submit(&ctx1.packet) catch {}; // Fire and forget
 
-    // Subsequent lookups should fail with ClientEvicted.
+    // Immediately trigger eviction - this races with the submission above
+    // and with other threads' submissions.
+    sync.trigger_eviction_for_testing() catch {};
+
+    // Submit more lookups that should fail with ClientEvicted.
     switch (sync.lookup_transfers(&.{0})) {
         .ok => {
             std.debug.print("thread: second lookup succeeded, expected ClientEvicted\n", .{});
             state.err = error.ExpectedEvicted;
-            return;
         },
         .err => |status| {
             if (status != .client_evicted and status != .client_shutdown) {
                 std.debug.print("thread: second lookup got {}, expected client_evicted\n", .{status});
                 state.err = error.UnexpectedStatus;
-                return;
             }
         },
     }
@@ -147,16 +147,17 @@ fn thread_fn(state: *ThreadState) void {
         .ok => {
             std.debug.print("thread: third lookup succeeded, expected ClientEvicted\n", .{});
             state.err = error.ExpectedEvicted;
-            return;
         },
         .err => |status| {
             if (status != .client_evicted and status != .client_shutdown) {
                 std.debug.print("thread: third lookup got {}, expected client_evicted\n", .{status});
                 state.err = error.UnexpectedStatus;
-                return;
             }
         },
     }
+
+    // Wait for first request to complete (it may have succeeded or been cancelled).
+    ctx1.wait();
 }
 
 test "context: eviction with concurrent submissions" {
@@ -169,7 +170,7 @@ test "context: eviction with concurrent submissions" {
 
     // The crash is easier to reproduce with more iterations.
     // Client registration is slow, so we keep this small for CI.
-    const tries = 3;
+    const tries = 1000;
     const num_threads = 8;
 
     for (0..tries) |i| {
