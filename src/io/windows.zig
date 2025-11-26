@@ -295,8 +295,61 @@ pub const IO = struct {
         }
     }
 
-    pub fn cancel_all(_: *IO) void {
-        // TODO Cancel in-flight async IO and wait for all completions.
+    pub fn cancel_all(self: *IO) void {
+        // Drain all pending IO completions before shutdown.
+        // This ensures handles aren't closed while IO is still in-flight.
+        // Use a limited number of attempts to avoid infinite loops.
+        var attempts: u32 = 0;
+        const max_attempts: u32 = 100; // 10 seconds max at 100ms per attempt
+
+        while (self.io_pending > 0 and attempts < max_attempts) {
+            var events: [64]os.windows.OVERLAPPED_ENTRY = undefined;
+            const num_events: u32 = os.windows.GetQueuedCompletionStatusEx(
+                self.iocp,
+                &events,
+                100, // 100ms timeout
+                false,
+            ) catch |err| switch (err) {
+                error.Timeout => {
+                    attempts += 1;
+                    continue;
+                },
+                error.Aborted => break,
+                else => break,
+            };
+
+            if (num_events == 0) {
+                attempts += 1;
+                continue;
+            }
+
+            // Reset attempts on progress.
+            attempts = 0;
+
+            assert(self.io_pending >= num_events);
+            self.io_pending -= num_events;
+
+            for (events[0..num_events]) |event| {
+                const raw_overlapped = event.lpOverlapped;
+                const overlapped: *Completion.Overlapped = @fieldParentPtr(
+                    "raw",
+                    raw_overlapped,
+                );
+                const completion = overlapped.completion;
+                completion.link = .{};
+                self.completed.push(completion);
+            }
+
+            // Process completed callbacks (but don't submit new IO).
+            var completed = self.completed;
+            self.completed.reset();
+            while (completed.pop()) |completion| {
+                (completion.callback)(Completion.Context{
+                    .io = self,
+                    .completion = completion,
+                });
+            }
+        }
     }
 
     pub const CancelError = error{
