@@ -7,6 +7,7 @@ const Query = std.Target.Query;
 
 const VoprStateMachine = enum { testing, accounting };
 const VoprLog = enum { short, full };
+const ConfigBase = enum { production, test_min, default };
 
 // TigerBeetle binary requires certain CPU feature and supports a closed set of CPUs. Here, we
 // specify exactly which features the binary needs.
@@ -157,6 +158,7 @@ pub fn build(b: *std.Build) !void {
             "test-streaming",
             "Stream test output to terminal instead of using zig build IPC",
         ) orelse false,
+        .config_base = .default,
     };
 
     const target = try resolve_target(b, build_options.target);
@@ -170,6 +172,7 @@ pub fn build(b: *std.Build) !void {
         .config_release = build_options.config_release,
         .config_release_client_min = build_options.config_release_client_min,
         .config_aof_recovery = build_options.config_aof_recovery,
+        .config_base = build_options.config_base,
     });
 
     const tb_client_header = blk: {
@@ -364,6 +367,7 @@ fn build_vsr_module(b: *std.Build, options: struct {
     config_release: ?[]const u8,
     config_release_client_min: ?[]const u8,
     config_aof_recovery: bool,
+    config_base: ConfigBase = .default,
 }) struct { *std.Build.Step.Options, *std.Build.Module } {
     // Ideally, we would return _just_ the module here, and keep options an implementation detail.
     // However, currently Zig makes it awkward to provide multiple entry points for a module:
@@ -381,6 +385,7 @@ fn build_vsr_module(b: *std.Build, options: struct {
         options.config_release_client_min,
     );
     vsr_options.addOption(bool, "config_aof_recovery", options.config_aof_recovery);
+    vsr_options.addOption(ConfigBase, "config_base", options.config_base);
 
     const vsr_module = b.createModule(.{
         .root_source_file = b.path("src/vsr.zig"),
@@ -942,7 +947,7 @@ fn build_test_integration(
     },
 ) void {
     // For integration tests, we build an independent copy of TigerBeetle with "real" config and
-    // multiversioning.
+    // multiversioning. Use production config for both the server and test binary to match message sizes.
     const vsr_options, const vsr_module = build_vsr_module(b, .{
         .stdx_module = options.stdx_module,
         .git_commit = "bee71e0000000000000000000000000000bee71e".*, // Beetle-hash!
@@ -950,6 +955,7 @@ fn build_test_integration(
         .config_release = "65535.0.0",
         .config_release_client_min = "0.16.4",
         .config_aof_recovery = false,
+        .config_base = .production,
     });
     const tigerbeetle_previous = download_release(b, "latest", options.target, options.mode);
     const tigerbeetle = build_tigerbeetle_executable_multiversion(b, .{

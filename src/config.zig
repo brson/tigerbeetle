@@ -24,6 +24,7 @@ const BuildOptions = struct {
     release: ?[]const u8,
     release_client_min: ?[]const u8,
     config_aof_recovery: bool,
+    config_base: ConfigBase = .default,
 };
 
 // Allow setting build-time config either via `build.zig` `Options`, or via a struct in the root
@@ -273,10 +274,11 @@ pub const configs = struct {
     pub const current = current: {
         var base = if (@hasDecl(root, "tigerbeetle_config"))
             root.tigerbeetle_config
-        else if (builtin.is_test)
-            test_min
-        else
-            default_production;
+        else switch (build_options.config_base) {
+            .production => default_production,
+            .test_min => test_min,
+            .default => if (builtin.is_test) test_min else default_production,
+        };
 
         if (build_options.release == null and build_options.release_client_min != null) {
             @compileError("must set release if setting release_client_min");
