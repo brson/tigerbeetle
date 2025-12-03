@@ -383,6 +383,8 @@ pub fn ContextType(
                 };
             }
 
+            self.cancel_request_inflight();
+
             while (self.pending.pop()) |packet| {
                 packet.assert_phase(.pending);
                 self.packet_cancel(packet);
@@ -406,10 +408,11 @@ pub fn ContextType(
         /// as it won't be replied anymore.
         fn cancel_request_inflight(self: *Context) void {
             if (self.client.request_inflight) |*inflight| {
-                assert(inflight.message.header.operation != .register);
-                const packet: *Packet = @as(UserData, @bitCast(inflight.user_data)).packet;
-                packet.assert_phase(.sent);
-                self.packet_cancel(packet);
+                if (inflight.message.header.operation != .register) {
+                    const packet: *Packet = @as(UserData, @bitCast(inflight.user_data)).packet;
+                    packet.assert_phase(.sent);
+                    self.packet_cancel(packet);
+                }
             }
         }
 
@@ -580,11 +583,6 @@ pub fn ContextType(
                 return self.packet_cancel(packet_list);
             }
 
-            // On shutdown, cancel this packet as well as any others batched onto it.
-            if (self.eviction_reason != null) {
-                return self.packet_cancel(packet_list);
-            }
-
             const message = self.client.get_message().build(.request);
             defer {
                 self.client.release_message(message.base());
@@ -750,21 +748,11 @@ pub fn ContextType(
                 @intFromEnum(eviction.header.reason),
             });
 
-            // After eviction the io_thread will short-circuit packet_send to packet_cancel.
+            // Now that the client is evicted, no more requests can be submitted to it and we can
+            // safely deinitialize it. First, we stop the IO thread, which then deinitializes the
+            // client before it exits (see `io_thread`).
             self.eviction_reason = eviction.header.reason;
-
-            // This is subtle and ugly - client _does not_ send us a completion callback
-            // for evicted requests, so if we don't do something with it we'll deadlock.
-            // Here we reach into the guts of client and grab the packet to cancel it.
-            // Should be restructured in the future to just hand us the packet as an argument
-            // to this callback, or for client to call both callbacks.
-            self.cancel_request_inflight();
-
-            // Cancel every packet.
-            while (self.pending.pop()) |packet| {
-                packet.assert_phase(.pending);
-                self.packet_cancel(packet);
-            }
+            self.signal.stop();
         }
 
         fn client_result_callback(
@@ -777,7 +765,6 @@ pub fn ContextType(
             const self: *Context = user_data.self;
             const packet_list: *Packet = user_data.packet;
             const operation = operation_vsr.cast(Client.Operation);
-            assert(self.eviction_reason == null);
             assert(packet_list.operation == @intFromEnum(operation));
             assert(timestamp > 0);
             packet_list.assert_phase(.sent);
@@ -909,10 +896,16 @@ pub fn ContextType(
                 .phase = .submitted,
             };
 
-            // Enqueue the packet and notify the IO thread to process it asynchronously.
-            assert(self.signal.status() == .running);
-            self.submitted.push(packet);
-            self.signal.notify();
+            if (self.eviction_reason == null) {
+                // Enqueue the packet and notify the IO thread to process it asynchronously.
+                assert(self.signal.status() == .running);
+                self.submitted.push(packet);
+                self.signal.notify();
+            } else {
+                // Cancel the packet since we stop the IO thread during eviction.
+                assert(self.signal.status() != .running);
+                self.packet_cancel(packet);
+            }
         }
 
         fn vtable_completion_context_fn(context: *anyopaque) usize {
