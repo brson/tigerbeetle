@@ -1226,6 +1226,35 @@ fn example_lookup_accounts() -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
+// Regression test for a deadlock when holding exactly 32 clients open.
+#[test]
+fn many_clients() -> anyhow::Result<()> {
+    const NUM_CLIENTS: usize = 33;
+
+    let mut clients = Vec::with_capacity(NUM_CLIENTS);
+
+    for i in 0..NUM_CLIENTS {
+        eprintln!("XXX client {i}");
+        let client = test_client()?;
+
+        // Submit a lookup to ensure the client is fully registered.
+        block_on(async {
+            let _ = client.lookup_accounts(&[]).await?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        clients.push(client);
+    }
+
+    // Close all clients at once.
+    block_on(async {
+        for client in clients {
+            client.close().await;
+        }
+        Ok(())
+    })
+}
+
 // NB: This is a runnable version of an example in the `lookup_transfers` docs.
 // Try to keep them in sync.
 #[test]
