@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const constants = @import("constants.zig");
-const stdx = @import("stdx.zig");
+const stdx = @import("stdx");
 
 /// An intrusive doubly-linked list.
 /// Currently it is LIFO for simplicity because its consumer (IO.awaiting) doesn't care about order.
@@ -11,13 +11,13 @@ pub fn DoublyLinkedListType(
     comptime field_back_enum: std.meta.FieldEnum(Node),
     comptime field_next_enum: std.meta.FieldEnum(Node),
 ) type {
-    assert(@typeInfo(Node) == .Struct);
+    assert(@typeInfo(Node) == .@"struct");
     assert(field_back_enum != field_next_enum);
-    assert(std.meta.FieldType(Node, field_back_enum) == ?*Node);
-    assert(std.meta.FieldType(Node, field_next_enum) == ?*Node);
 
     const field_back = @tagName(field_back_enum);
     const field_next = @tagName(field_next_enum);
+    assert(@FieldType(Node, field_back) == ?*Node);
+    assert(@FieldType(Node, field_next) == ?*Node);
 
     return struct {
         const DoublyLinkedList = @This();
@@ -164,7 +164,7 @@ test "DoublyLinkedList fuzz" {
 
     const allocator = std.testing.allocator;
 
-    var prng = stdx.PRNG.from_seed(0);
+    var prng = stdx.PRNG.from_seed_testing();
 
     const Node = struct { id: u32, back: ?*@This() = null, next: ?*@This() = null };
     const List = DoublyLinkedListType(Node, .back, .next);
@@ -177,6 +177,7 @@ test "DoublyLinkedList fuzz" {
 
     const nodes = try allocator.alloc(Node, nodes_count);
     defer allocator.free(nodes);
+
     for (nodes, 0..) |*node, i| node.* = .{ .id = @intCast(i) };
 
     var nodes_free = try std.DynamicBitSetUnmanaged.initFull(allocator, nodes_count);
@@ -197,7 +198,7 @@ test "DoublyLinkedList fuzz" {
                 const node = &nodes[node_free];
 
                 list.push(node);
-                list_model.append_assume_capacity(node.id);
+                list_model.push(node.id);
                 nodes_free.unset(node.id);
             },
             .pop => {
@@ -205,7 +206,7 @@ test "DoublyLinkedList fuzz" {
                     assert(node.back == null);
                     assert(node.next == null);
 
-                    const node_id = list_model.pop();
+                    const node_id = list_model.pop().?;
                     assert(node_id == node.id);
                     assert(nodes_free.count() < nodes_count);
                     assert(!nodes_free.isSet(node_id));

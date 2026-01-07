@@ -1,11 +1,12 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const c = @import("src/c.zig");
+const c = @import("src/c.zig").c;
 const translate = @import("src/translate.zig");
 const tb = vsr.tigerbeetle;
 const tb_client = vsr.tb_client;
 
+const Operation = tb.Operation;
 const Account = tb.Account;
 const Transfer = tb.Transfer;
 const AccountFilter = tb.AccountFilter;
@@ -13,10 +14,6 @@ const AccountBalance = tb.AccountBalance;
 const QueryFilter = tb.QueryFilter;
 
 const vsr = @import("vsr");
-const Tracer = vsr.trace.TracerType(vsr.time.Time);
-const Storage = vsr.storage.StorageType(vsr.io.IO, Tracer);
-const StateMachine = vsr.state_machine.StateMachineType(Storage, constants.state_machine_config);
-const Operation = StateMachine.Operation;
 const constants = vsr.constants;
 const stdx = vsr.stdx;
 
@@ -42,7 +39,7 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
 
 // Add-on code
 
-fn init(env: c.napi_env, info: c.napi_callback_info) callconv(.C) c.napi_value {
+fn init(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
     const args = translate.extract_args(env, info, .{
         .count = 1,
         .function = "init",
@@ -58,7 +55,7 @@ fn init(env: c.napi_env, info: c.napi_callback_info) callconv(.C) c.napi_value {
     return create(env, cluster, addresses) catch null;
 }
 
-fn deinit(env: c.napi_env, info: c.napi_callback_info) callconv(.C) c.napi_value {
+fn deinit(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
     const args = translate.extract_args(env, info, .{
         .count = 1,
         .function = "deinit",
@@ -68,14 +65,14 @@ fn deinit(env: c.napi_env, info: c.napi_callback_info) callconv(.C) c.napi_value
     return null;
 }
 
-fn submit(env: c.napi_env, info: c.napi_callback_info) callconv(.C) c.napi_value {
+fn submit(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
     const args = translate.extract_args(env, info, .{
         .count = 4,
         .function = "submit",
     }) catch return null;
 
     const operation_int = translate.u32_from_value(env, args[1], "operation") catch return null;
-    if (!@as(vsr.Operation, @enumFromInt(operation_int)).valid(StateMachine)) {
+    if (!@as(vsr.Operation, @enumFromInt(operation_int)).valid(Operation)) {
         translate.throw(env, "Unknown operation.") catch return null;
     }
 
@@ -217,7 +214,7 @@ fn request(
     const array_length: u32 = try translate.array_length(env, array);
     const packet, const packet_data = switch (operation) {
         inline else => |operation_comptime| blk: {
-            const Event = StateMachine.EventType(operation_comptime);
+            const Event = operation_comptime.EventType();
 
             // Avoid allocating memory for requests that are known to be too large.
             // However, the final validation happens in `tb_client` against the runtime-known
@@ -262,7 +259,7 @@ fn on_completion(
     timestamp: u64,
     result_ptr: ?[*]const u8,
     result_len: u32,
-) callconv(.C) void {
+) callconv(.c) void {
     _ = timestamp;
 
     switch (packet_extern.status) {
@@ -270,8 +267,8 @@ fn on_completion(
             const operation: Operation = @enumFromInt(packet_extern.operation);
             switch (operation) {
                 inline else => |operation_comptime| {
-                    const Event = StateMachine.EventType(operation_comptime);
-                    const Result = StateMachine.ResultType(operation_comptime);
+                    const Event = operation_comptime.EventType();
+                    const Result = operation_comptime.ResultType();
 
                     const packet = packet_extern.cast();
                     const request_buffer: []align(@alignOf(Event)) u8 =
@@ -342,7 +339,7 @@ fn on_completion_js(
     unused_js_cb: c.napi_value,
     unused_context: ?*anyopaque,
     packet_argument: ?*anyopaque,
-) callconv(.C) void {
+) callconv(.c) void {
     _ = unused_js_cb;
     _ = unused_context;
 
@@ -354,7 +351,7 @@ fn on_completion_js(
     const operation: Operation = @enumFromInt(packet_extern.operation);
     const array_or_error = switch (operation) {
         inline else => |operation_comptime| blk: {
-            const Result = StateMachine.ResultType(operation_comptime);
+            const Result = operation_comptime.ResultType();
 
             const packet = packet_extern.cast();
             defer global_allocator.destroy(packet);
@@ -433,7 +430,7 @@ fn decode_array(comptime Event: type, env: c.napi_env, array: c.napi_value, even
             => {
                 inline for (std.meta.fields(Event)) |field| {
                     const value: field.type = switch (@typeInfo(field.type)) {
-                        .Struct => |info| @bitCast(try @field(
+                        .@"struct" => |info| @bitCast(try @field(
                             translate,
                             @typeName(info.backing_integer.?) ++ "_from_object",
                         )(
@@ -441,7 +438,7 @@ fn decode_array(comptime Event: type, env: c.napi_env, array: c.napi_value, even
                             object,
                             add_trailing_null(field.name),
                         )),
-                        .Int => try @field(translate, @typeName(field.type) ++ "_from_object")(
+                        .int => try @field(translate, @typeName(field.type) ++ "_from_object")(
                             env,
                             object,
                             add_trailing_null(field.name),
@@ -449,9 +446,9 @@ fn decode_array(comptime Event: type, env: c.napi_env, array: c.napi_value, even
                         // Arrays are only used for padding/reserved fields,
                         // instead of requiring the user to explicitly set an empty buffer,
                         // we just hide those fields and preserve their default value.
-                        .Array => @as(
+                        .array => @as(
                             *const field.type,
-                            @ptrCast(@alignCast(field.default_value.?)),
+                            @ptrCast(@alignCast(field.default_value_ptr.?)),
                         ).*,
                         else => unreachable,
                     };
@@ -480,16 +477,16 @@ fn encode_array(comptime Result: type, env: c.napi_env, results: []const Result)
 
         inline for (std.meta.fields(Result)) |field| {
             const FieldInt = switch (@typeInfo(field.type)) {
-                .Struct => |info| info.backing_integer.?,
-                .Enum => |info| info.tag_type,
+                .@"struct" => |info| info.backing_integer.?,
+                .@"enum" => |info| info.tag_type,
                 // Arrays are only used for padding/reserved fields.
-                .Array => continue,
+                .array => continue,
                 else => field.type,
             };
 
             const value: FieldInt = switch (@typeInfo(field.type)) {
-                .Struct => @bitCast(@field(result, field.name)),
-                .Enum => @intFromEnum(@field(result, field.name)),
+                .@"struct" => @bitCast(@field(result, field.name)),
+                .@"enum" => @intFromEnum(@field(result, field.name)),
                 else => @field(result, field.name),
             };
 

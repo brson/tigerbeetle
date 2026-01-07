@@ -5,7 +5,7 @@ const mem = std.mem;
 const meta = std.meta;
 const maybe = stdx.maybe;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("../constants.zig");
 const lsm = @import("tree.zig");
 const binary_search = @import("binary_search.zig");
@@ -19,7 +19,7 @@ pub fn ManifestLevelType(
     comptime TableInfo: type,
     comptime table_count_max_tree: u32,
 ) type {
-    comptime assert(@typeInfo(Key) == .Int or @typeInfo(Key) == .ComptimeInt);
+    comptime assert(@typeInfo(Key) == .int or @typeInfo(Key) == .comptime_int);
 
     return struct {
         const ManifestLevel = @This();
@@ -170,17 +170,17 @@ pub fn ManifestLevelType(
         /// TableInfo references.
         generation: u32 = 0,
 
-        pub fn init(level: *ManifestLevel, allocator: mem.Allocator) !void {
+        pub fn init(level: *ManifestLevel, allocator: mem.Allocator, node_pool: *NodePool) !void {
             level.* = .{
                 .keys = undefined,
                 .tables = undefined,
             };
 
             level.keys = try Keys.init(allocator);
-            errdefer level.keys.deinit(allocator, null);
+            errdefer level.keys.deinit(allocator, node_pool);
 
             level.tables = try Tables.init(allocator);
-            errdefer level.tables.deinit(allocator, null);
+            errdefer level.tables.deinit(allocator, node_pool);
         }
 
         pub fn deinit(level: *ManifestLevel, allocator: mem.Allocator, node_pool: *NodePool) void {
@@ -190,9 +190,9 @@ pub fn ManifestLevelType(
             level.* = undefined;
         }
 
-        pub fn reset(level: *ManifestLevel) void {
-            level.keys.reset();
-            level.tables.reset();
+        pub fn reset(level: *ManifestLevel, node_pool: *NodePool) void {
+            level.keys.reset(node_pool);
+            level.tables.reset(node_pool);
 
             level.* = .{
                 .keys = level.keys,
@@ -537,19 +537,30 @@ pub fn ManifestLevelType(
             return adjusted;
         }
 
-        /// The function is only used for verification; it is not performance-critical.
-        pub fn contains(level: ManifestLevel, table: *const TableInfo) bool {
-            comptime assert(constants.verify);
-            var level_tables = level.iterator(.visible, &.{
-                table.snapshot_min,
-            }, .ascending, KeyRange{
-                .key_min = table.key_min,
-                .key_max = table.key_max,
-            });
-            while (level_tables.next()) |level_table| {
-                if (level_table.equal(table)) return true;
+        /// Returns a table which matches the given table *except possibly the snapshot_max*.
+        pub fn find(level: ManifestLevel, table: *const TableInfo) ?TableInfoReference {
+            const table_key =
+                KeyMaxSnapshotMin{ .key_max = table.key_max, .snapshot_min = table.snapshot_min };
+            const table_cursor = level.tables.search(table_key.key_from_value());
+            var level_tables = level.tables.iterator_from_cursor(table_cursor, .ascending);
+            const level_table = level_tables.next() orelse return null;
+            if (level_table.address == table.address and
+                level_table.checksum == table.checksum)
+            {
+                maybe(level_table.snapshot_max != table.snapshot_max);
+                return .{ .table_info = level_table, .generation = level.generation };
+            } else {
+                return null;
             }
-            return false;
+        }
+
+        /// Returns whether the ManifestLevel contains the *exact* table.
+        pub fn contains(level: ManifestLevel, table: *const TableInfo) bool {
+            assert(constants.verify); // Currently only used for testing.
+            const table_found = level.find(table) orelse return false;
+            const table_exact = table.snapshot_max == table_found.table_info.snapshot_max;
+            assert(table_exact == table.equal(table_found.table_info));
+            return table_exact;
         }
 
         /// Given two levels (where A is the level on which this function
@@ -743,7 +754,7 @@ pub fn ManifestLevelType(
                         .table_info = table,
                         .generation = level.generation,
                     };
-                    range.tables.append_assume_capacity(table_info_reference);
+                    range.tables.push(table_info_reference);
                 } else {
                     return null;
                 }
@@ -841,7 +852,7 @@ pub fn TestContextType(
             );
             errdefer context.pool.deinit(testing.allocator);
 
-            try context.level.init(testing.allocator);
+            try context.level.init(testing.allocator, &context.pool);
             errdefer context.level.deinit(testing.allocator, &context.pool);
 
             context.reference = std.ArrayList(TableInfo).init(testing.allocator);
@@ -997,11 +1008,11 @@ pub fn TestContextType(
         fn create_snapshot(context: *TestContext) !void {
             if (context.snapshots.full()) return;
 
-            context.snapshots.append_assume_capacity(context.take_snapshot());
+            context.snapshots.push(context.take_snapshot());
 
-            const tables = context.snapshot_tables.add_one_assume_capacity();
-            tables.* = std.ArrayList(TableInfo).init(testing.allocator);
+            var tables = std.ArrayList(TableInfo).init(testing.allocator);
             try tables.insertSlice(0, context.reference.items);
+            context.snapshot_tables.push(tables);
         }
 
         fn drop_snapshot(context: *TestContext) !void {

@@ -9,7 +9,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const log = std.log;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
+const MiB = stdx.MiB;
 const Shell = @import("../shell.zig");
 const Docs = @import("../clients/docs_types.zig").Docs;
 const Sample = @import("../clients/docs_types.zig").Sample;
@@ -45,7 +46,7 @@ pub fn test_freshness(
     const walkthrough = try shell.cwd.readFileAlloc(
         arena.allocator(),
         walkthrough_path,
-        1024 * 1024,
+        1 * MiB,
     );
 
     var ctx = Context{
@@ -116,8 +117,10 @@ fn readme_root(ctx: *Context) !void {
             ctx.code(project_file_language, ctx.docs.project_file);
         }
 
-        ctx.paragraph("Then, install the TigerBeetle client:");
-        ctx.commands(ctx.docs.install_commands);
+        if (ctx.docs.install_commands.len > 0) {
+            ctx.paragraph("Then, install the TigerBeetle client:");
+            ctx.commands(ctx.docs.install_commands);
+        }
 
         ctx.print("Now, create `{s}{s}.{s}` and copy this into it:\n\n", .{
             ctx.docs.test_source_path,
@@ -169,7 +172,8 @@ fn readme_root(ctx: *Context) !void {
             \\starts the TigerBeetle cluster.
             \\
             \\Clients are thread-safe and a single instance should be shared
-            \\between multiple concurrent tasks.
+            \\between multiple concurrent tasks. This allows events to be 
+            \\[automatically batched](https://docs.tigerbeetle.com/coding/requests/#batching-events).
             \\
             \\Multiple clients are useful when connecting to more than
             \\one TigerBeetle cluster.

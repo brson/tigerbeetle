@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 const maybe = stdx.maybe;
 
 const constants = @import("../constants.zig");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const vsr = @import("../vsr.zig");
 const Command = vsr.Command;
 const Operation = vsr.Operation;
@@ -195,27 +195,24 @@ pub const Header = extern struct {
     /// Some commands such as .request or .prepare may be forwarded on to other replicas so that
     /// Header.replica or Header.client only identifies the ultimate origin, not the latest peer.
     pub fn peer_type(self: *const Header) vsr.Peer {
-        switch (self.into_any()) {
+        return switch (self.into_any()) {
             .reserved => unreachable,
-            // TODO: replicas used to forward requests. They no longer do, and can always return
-            // request.client starting with the next release.
-            .request => |request| {
-                switch (request.operation) {
-                    // However, we do not forward the first .register request sent by a client:
-                    .register => return .{ .client = request.client },
-                    else => return .unknown,
-                }
-            },
-            .prepare => return .unknown,
-            .block => return .unknown,
-            .reply => return .unknown,
-            .deprecated_12 => return .unknown,
-            .deprecated_21 => return .unknown,
-            .deprecated_22 => return .unknown,
-            .deprecated_23 => return .unknown,
-            // These messages identify the peer as either a replica or a client:
-            .ping_client => |ping| return .{ .client = ping.client },
-            // All other messages identify the peer as a replica:
+
+            .reply,
+            .prepare,
+            .block,
+            => .unknown,
+
+            // The peer may be a replica or a client, since replicas forward request messages.
+            // However, we return the client ID, as it is useful for the MessageBus. Specifically,
+            // a replica that receives a request from a client can immediately cache the connection
+            // in its client map, instead of waiting for an infrequent PingClient message to do so.
+            .request => |request| .{ .client_likely = request.client },
+
+            // The peer is certainly a client:
+            .ping_client => |ping| .{ .client = ping.client },
+
+            // The peer is certainly a replica:
             .ping,
             .pong,
             .pong_client,
@@ -231,8 +228,14 @@ pub const Header = extern struct {
             .headers,
             .eviction,
             .request_blocks,
-            => return .{ .replica = self.replica },
-        }
+            => .{ .replica = self.replica },
+
+            .deprecated_12,
+            .deprecated_21,
+            .deprecated_22,
+            .deprecated_23,
+            => .unknown,
+        };
     }
 
     pub fn format(
@@ -242,13 +245,7 @@ pub const Header = extern struct {
         writer: anytype,
     ) !void {
         switch (self.into_any()) {
-            inline else => |header| return try std.fmt.formatType(
-                header,
-                fmt,
-                options,
-                writer,
-                std.options.fmt_max_depth,
-            ),
+            inline else => |header| return try header.format(fmt, options, writer),
         }
     }
 
@@ -289,14 +286,21 @@ pub const Header = extern struct {
             pub fn valid_checksum_body(self: *const CommandHeader, body: []const u8) bool {
                 return self.frame_const().valid_checksum_body(body);
             }
+
+            pub fn format(
+                self: *const CommandHeader,
+                comptime _: []const u8,
+                _: std.fmt.FormatOptions,
+                writer: anytype,
+            ) !void {
+                return format_header(CommandHeader, self, writer);
+            }
         };
     }
 
     /// This type isn't ever actually a constructed, but makes Type() simpler by providing a header
     /// type for each command.
     pub const Reserved = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128,
         checksum_padding: u128 = 0,
         checksum_body: u128,
@@ -312,7 +316,18 @@ pub const Header = extern struct {
         replica: u8 = 0,
         reserved_frame: [12]u8,
 
-        reserved: [128]u8 = [_]u8{0} ** 128,
+        reserved: [128]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .reserved);
@@ -323,8 +338,6 @@ pub const Header = extern struct {
     /// This type isn't ever actually a constructed, but makes Type() simpler by providing a header
     /// type for each command.
     pub const Deprecated = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128,
         checksum_padding: u128 = 0,
         checksum_body: u128,
@@ -340,7 +353,18 @@ pub const Header = extern struct {
         replica: u8 = 0,
         reserved_frame: [12]u8,
 
-        reserved: [128]u8 = [_]u8{0} ** 128,
+        reserved: [128]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(_: *const @This()) ?[]const u8 {
             return "deprecated message type";
@@ -348,8 +372,6 @@ pub const Header = extern struct {
     };
 
     pub const Ping = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -365,7 +387,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// Current checkpoint id.
         checkpoint_id: u128,
@@ -374,10 +396,21 @@ pub const Header = extern struct {
 
         ping_timestamp_monotonic: u64,
         release_count: u16,
-        route_padding: [6]u8 = [_]u8{0} ** 6,
+        route_padding: [6]u8 = @splat(0),
         route: u64,
 
-        reserved: [80]u8 = [_]u8{0} ** 80,
+        reserved: [80]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .ping);
@@ -399,8 +432,6 @@ pub const Header = extern struct {
     };
 
     pub const Pong = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -416,12 +447,23 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         ping_timestamp_monotonic: u64,
         pong_timestamp_wall: u64,
 
-        reserved: [112]u8 = [_]u8{0} ** 112,
+        reserved: [112]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .pong);
@@ -436,8 +478,6 @@ pub const Header = extern struct {
     };
 
     pub const PingClient = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -451,11 +491,22 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8 = 0, // Always 0.
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         client: u128,
         ping_timestamp_monotonic: u64,
-        reserved: [104]u8 = [_]u8{0} ** 104,
+        reserved: [104]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .ping_client);
@@ -471,8 +522,6 @@ pub const Header = extern struct {
     };
 
     pub const PongClient = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -486,10 +535,21 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         ping_timestamp_monotonic: u64,
-        reserved: [120]u8 = [_]u8{0} ** 120,
+        reserved: [120]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .pong_client);
@@ -502,8 +562,6 @@ pub const Header = extern struct {
     };
 
     pub const Request = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -518,7 +576,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8 = 0, // Always 0.
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// Clients hash-chain their requests to verify linearizability:
         /// - A session's first request (operation=register) sets `parent=0`.
@@ -553,7 +611,23 @@ pub const Header = extern struct {
         /// A client is allowed to have at most one request inflight at a time.
         request: u32,
         operation: Operation,
-        reserved: [59]u8 = [_]u8{0} ** 59,
+        previous_request_latency_padding: [3]u8 = @splat(0),
+        /// Nanosecond interval measuring the time between when the client first began to construct
+        /// the previous request's body and the time that the client received the corresponding
+        /// reply.
+        previous_request_latency: u32,
+        reserved: [52]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .request);
@@ -617,14 +691,13 @@ pub const Header = extern struct {
                     // the check requires the StateMachine type.
                 },
             }
+            if (!stdx.zeroed(&self.previous_request_latency_padding)) return "padding != 0";
             if (!stdx.zeroed(&self.reserved)) return "reserved != 0";
             return null;
         }
     };
 
     pub const Prepare = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -639,7 +712,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8 = 0,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// A backpointer to the previous prepare checksum for hash chain verification.
         /// This provides a strong guarantee for linearizability across our distributed log
@@ -675,7 +748,18 @@ pub const Header = extern struct {
         request: u32,
         /// The state machine operation to apply.
         operation: Operation,
-        reserved: [3]u8 = [_]u8{0} ** 3,
+        reserved: [3]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const Prepare) ?[]const u8 {
             assert(self.command == .prepare);
@@ -791,8 +875,6 @@ pub const Header = extern struct {
     };
 
     pub const PrepareOk = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -806,7 +888,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// The previous prepare's checksum.
         /// (Same as the corresponding Prepare's `parent`.)
@@ -819,11 +901,22 @@ pub const Header = extern struct {
         checkpoint_id: u128,
         client: u128,
         op: u64,
-        commit: u64,
+        commit_min: u64,
         timestamp: u64,
         request: u32,
         operation: Operation = .reserved,
-        reserved: [3]u8 = [_]u8{0} ** 3,
+        reserved: [3]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .prepare_ok);
@@ -842,7 +935,6 @@ pub const Header = extern struct {
                     }
                     if (self.request != 0) return "root: request != 0";
                     if (self.op != 0) return "root: op != 0";
-                    if (self.commit != 0) return "root: commit != 0";
                     if (self.timestamp != 0) return "root: timestamp != 0";
                 },
                 else => {
@@ -854,7 +946,6 @@ pub const Header = extern struct {
                         if (self.client == 0) return "client == 0";
                     }
                     if (self.op == 0) return "op == 0";
-                    if (self.op <= self.commit) return "op <= commit";
                     if (self.timestamp == 0) return "timestamp == 0";
                     if (self.operation == .register or
                         self.operation == .upgrade)
@@ -873,8 +964,6 @@ pub const Header = extern struct {
     };
 
     pub const Reply = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -893,7 +982,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// The checksum of the corresponding Request.
         request_checksum: u128,
@@ -913,7 +1002,18 @@ pub const Header = extern struct {
         timestamp: u64,
         request: u32,
         operation: Operation = .reserved,
-        reserved: [19]u8 = [_]u8{0} ** 19,
+        reserved: [19]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .reply);
@@ -942,8 +1042,6 @@ pub const Header = extern struct {
     };
 
     pub const Commit = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -957,7 +1055,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// The latest committed prepare's checksum.
         commit_checksum: u128,
@@ -974,7 +1072,18 @@ pub const Header = extern struct {
 
         timestamp_monotonic: u64,
 
-        reserved: [56]u8 = [_]u8{0} ** 56,
+        reserved: [56]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .commit);
@@ -989,8 +1098,6 @@ pub const Header = extern struct {
     };
 
     pub const StartViewChange = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1004,9 +1111,20 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
-        reserved: [128]u8 = [_]u8{0} ** 128,
+        reserved: [128]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .start_view_change);
@@ -1019,8 +1137,6 @@ pub const Header = extern struct {
     };
 
     pub const DoViewChange = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1034,7 +1150,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// A bitset of "present" prepares. If a bit is set, then the corresponding header is not
         /// "blank", the replica has the prepare, and the prepare is not known to be faulty.
@@ -1049,7 +1165,18 @@ pub const Header = extern struct {
         commit_min: u64,
         checkpoint_op: u64,
         log_view: u32,
-        reserved: [68]u8 = [_]u8{0} ** 68,
+        reserved: [68]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .do_view_change);
@@ -1065,8 +1192,6 @@ pub const Header = extern struct {
     };
 
     pub const StartView = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1080,7 +1205,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// Set to zero for a new view, and to a nonce from an RSV when responding to the RSV.
         nonce: u128,
@@ -1090,10 +1215,27 @@ pub const Header = extern struct {
         commit_max: u64,
         /// The replica's `op_checkpoint`.
         checkpoint_op: u64,
-        reserved: [88]u8 = [_]u8{0} ** 88,
+        reserved: [88]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .start_view);
+            const body_size = self.size - @sizeOf(Header);
+            if (body_size < @sizeOf(vsr.CheckpointState)) return "checkpointstate missing";
+            const headers_size = body_size - @sizeOf(vsr.CheckpointState);
+            if (headers_size % @sizeOf(Header) != 0) {
+                return "headers size multiple invalid";
+            }
             if (self.release.value != 0) return "release != 0";
             if (self.op < self.commit_max) return "op < commit_max";
             if (self.commit_max < self.checkpoint_op) return "commit_max < checkpoint_op";
@@ -1103,8 +1245,6 @@ pub const Header = extern struct {
     };
 
     pub const RequestStartView = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1118,10 +1258,21 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         nonce: u128,
-        reserved: [112]u8 = [_]u8{0} ** 112,
+        reserved: [112]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .request_start_view);
@@ -1135,8 +1286,6 @@ pub const Header = extern struct {
     };
 
     pub const RequestHeaders = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1150,13 +1299,24 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         /// The minimum op requested (inclusive).
         op_min: u64,
         /// The maximum op requested (inclusive).
         op_max: u64,
-        reserved: [112]u8 = [_]u8{0} ** 112,
+        reserved: [112]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .request_headers);
@@ -1171,8 +1331,6 @@ pub const Header = extern struct {
     };
 
     pub const RequestPrepare = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1181,33 +1339,42 @@ pub const Header = extern struct {
         cluster: u128,
         size: u32 = @sizeOf(Header),
         epoch: u32 = 0,
-        view: u32 = 0, // Always 0.
+        view: u32,
         release: vsr.Release = vsr.Release.zero, // Always 0.
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         prepare_checksum: u128,
         prepare_checksum_padding: u128 = 0,
         prepare_op: u64,
-        reserved: [88]u8 = [_]u8{0} ** 88,
+        reserved: [88]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .request_prepare);
             if (self.size != @sizeOf(Header)) return "size != @sizeOf(Header)";
             if (self.checksum_body != checksum_body_empty) return "checksum_body != expected";
+            if (self.view != 0 and self.prepare_checksum != 0) return "view != 0 and checksum != 0";
             if (self.release.value != 0) return "release != 0";
             if (self.prepare_checksum_padding != 0) return "prepare_checksum_padding != 0";
-            if (self.view != 0) return "view == 0";
             if (!stdx.zeroed(&self.reserved)) return "reserved != 0";
             return null;
         }
     };
 
     pub const RequestReply = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1221,13 +1388,24 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         reply_checksum: u128,
         reply_checksum_padding: u128 = 0,
         reply_client: u128,
         reply_op: u64,
-        reserved: [72]u8 = [_]u8{0} ** 72,
+        reserved: [72]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .request_reply);
@@ -1243,8 +1421,6 @@ pub const Header = extern struct {
     };
 
     pub const Headers = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1258,13 +1434,27 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
-        reserved: [128]u8 = [_]u8{0} ** 128,
+        reserved: [128]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .headers);
             if (self.size == @sizeOf(Header)) return "size == @sizeOf(Header)";
+            if ((self.size - @sizeOf(Header)) % @sizeOf(Header) != 0) {
+                return "size multiple invalid";
+            }
             if (self.release.value != 0) return "release != 0";
             if (!stdx.zeroed(&self.reserved)) return "reserved != 0";
             return null;
@@ -1272,8 +1462,6 @@ pub const Header = extern struct {
     };
 
     pub const Eviction = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1287,11 +1475,22 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         client: u128,
-        reserved: [111]u8 = [_]u8{0} ** 111,
+        reserved: [111]u8 = @splat(0),
         reason: Reason,
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .eviction);
@@ -1329,8 +1528,6 @@ pub const Header = extern struct {
     };
 
     pub const RequestBlocks = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
-
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1344,9 +1541,20 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8,
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
-        reserved: [128]u8 = [_]u8{0} ** 128,
+        reserved: [128]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .request_blocks);
@@ -1362,7 +1570,6 @@ pub const Header = extern struct {
     };
 
     pub const Block = extern struct {
-        pub usingnamespace HeaderFunctionsType(@This());
         pub const metadata_size = 96;
 
         checksum: u128 = 0,
@@ -1379,7 +1586,7 @@ pub const Header = extern struct {
         protocol: u16 = vsr.Version,
         command: Command,
         replica: u8 = 0, // Always 0.
-        reserved_frame: [12]u8 = [_]u8{0} ** 12,
+        reserved_frame: [12]u8 = @splat(0),
 
         // Schema is determined by `block_type`.
         metadata_bytes: [metadata_size]u8,
@@ -1388,7 +1595,18 @@ pub const Header = extern struct {
         address: u64,
         snapshot: u64,
         block_type: schema.BlockType,
-        reserved_block: [15]u8 = [_]u8{0} ** 15,
+        reserved_block: [15]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .block);
@@ -1406,6 +1624,83 @@ pub const Header = extern struct {
     };
 };
 
+/// Messages are printed fairly frequently, so we provide a custom formatting function:
+/// - checksums are printed in hex,
+/// - padding and reserved fields are skipped if they are zeroed-out.
+fn format_header(T: type, header: *const T, writer: anytype) !void {
+    const simple_type_name = comptime name_blk: {
+        const type_name = @typeName(T);
+        const last_part_idx = std.mem.lastIndexOf(u8, type_name, ".");
+        break :name_blk if (last_part_idx) |idx| type_name[idx + 1 ..] else type_name;
+    };
+
+    try writer.writeAll(simple_type_name ++ "{");
+    inline for (@typeInfo(T).@"struct".fields, 0..) |field, field_index| {
+        comptime assert((field_index == 0) == std.mem.eql(u8, field.name, "checksum"));
+        try format_header_field(field.name, field.type, &@field(header, field.name), writer);
+    }
+    try writer.writeAll(" }");
+}
+
+fn format_header_field(
+    comptime field_name: []const u8,
+    comptime T: type,
+    field_value: *const T,
+    writer: anytype,
+) !void {
+    if (format_header_field_skip(field_name, T, field_value)) return;
+
+    const separator = comptime if (std.mem.eql(u8, field_name, "checksum")) " " else ", ";
+    try writer.writeAll(separator ++ "." ++ field_name ++ "=");
+
+    if (T == u128) {
+        // Exhaustively list all checksum and non-checksum fields.
+        inline for (.{
+            "checksum",         "checksum_padding",
+            "checksum_body",    "checksum_body_padding",
+            "prepare_checksum", "prepare_checksum_padding",
+            "commit_checksum",  "commit_checksum_padding",
+            "request_checksum", "request_checksum_padding",
+            "reply_checksum",   "reply_checksum_padding",
+            "parent",           "parent_padding",
+            "context",          "context_padding",
+            "checkpoint_id",
+        }) |field_name_checksum| {
+            if (comptime std.mem.eql(u8, field_name, field_name_checksum)) {
+                return try writer.print("{x:0>32}", .{field_value.*});
+            }
+        }
+        inline for (.{
+            "cluster",        "client",
+            "present_bitset", "nack_bitset",
+            "nonce",          "nonce_reserved",
+            "reply_client",
+        }) |field_name_non_checksum| {
+            if (comptime std.mem.eql(u8, field_name, field_name_non_checksum)) {
+                return try writer.print("{d}", .{field_value.*});
+            }
+        }
+        @compileError("unhandled field: " ++ field_name);
+    }
+
+    try writer.print("{any}", .{field_value.*});
+}
+
+fn format_header_field_skip(
+    comptime field_name: []const u8,
+    comptime T: type,
+    field_value: *const T,
+) bool {
+    if (comptime std.mem.startsWith(u8, field_name, "reserved") or
+        std.mem.endsWith(u8, field_name, "reserved") or
+        std.mem.endsWith(u8, field_name, "padding"))
+    {
+        return if (@typeInfo(T) == .int) field_value.* == 0 else stdx.zeroed(field_value);
+    } else {
+        return false;
+    }
+}
+
 // Verify each Command's header type.
 comptime {
     @setEvalBranchQuota(20_000);
@@ -1414,8 +1709,8 @@ comptime {
         const CommandHeader = Header.Type(command);
         assert(@sizeOf(CommandHeader) == @sizeOf(Header));
         assert(@alignOf(CommandHeader) == @alignOf(Header));
-        assert(@typeInfo(CommandHeader) == .Struct);
-        assert(@typeInfo(CommandHeader).Struct.layout == .@"extern");
+        assert(@typeInfo(CommandHeader) == .@"struct");
+        assert(@typeInfo(CommandHeader).@"struct".layout == .@"extern");
         assert(stdx.no_padding(CommandHeader));
 
         // Verify that the command's header's frame is identical to Header's.
@@ -1431,5 +1726,53 @@ comptime {
                     @offsetOf(Header, header_field.name));
             }
         }
+
+        // Verify that the command's header's re-exports all Header's functions.
+        const HeaderFunctions = Header.HeaderFunctionsType(CommandHeader);
+        for (@typeInfo(HeaderFunctions).@"struct".decls) |decl| {
+            assert(@hasDecl(CommandHeader, decl.name));
+
+            const a = @field(CommandHeader, decl.name);
+            const b = @field(HeaderFunctions, decl.name);
+            assert(a == b);
+        }
     }
+}
+
+const Snap = stdx.Snap;
+const module_path = "src";
+const snap = Snap.snap_fn(module_path);
+
+test format_header {
+    var prepare = Header.Prepare{
+        .checksum = 0x0123456789ABCDEF,
+        .checksum_body = 0xFEDCBA9876543210,
+        .cluster = 1,
+        .size = 321,
+        .view = 2,
+        .release = vsr.Release.zero,
+        .command = .prepare,
+        .replica = 3,
+        .parent = 0xABCDEFFEDCBA00123456789,
+        .request_checksum = 0x12345678987654321,
+        .checkpoint_id = 4,
+        .client = 5,
+        .op = 5,
+        .commit = 6,
+        .timestamp = 123456789,
+        .request = 7,
+        .operation = .pulse,
+    };
+
+    try snap(@src(),
+        \\Prepare{ .checksum=00000000000000000123456789abcdef, .checksum_body=0000000000000000fedcba9876543210, .cluster=1, .size=321, .epoch=0, .view=2, .release=0.0.0, .protocol=0, .command=vsr.Command.prepare, .replica=3, .parent=000000000abcdeffedcba00123456789, .request_checksum=00000000000000012345678987654321, .checkpoint_id=00000000000000000000000000000004, .client=5, .op=5, .commit=6, .timestamp=123456789, .request=7, .operation=vsr.Operation.pulse }
+    ).diff_fmt("{}", .{prepare});
+
+    // Check that non-zero padding/reserved fields are printed.
+    prepare.checksum_padding = 1;
+    prepare.reserved_frame[0] = 2;
+    prepare.reserved[0] = 3;
+    try snap(@src(),
+        \\Prepare{ .checksum=00000000000000000123456789abcdef, .checksum_padding=00000000000000000000000000000001, .checksum_body=0000000000000000fedcba9876543210, .cluster=1, .size=321, .epoch=0, .view=2, .release=0.0.0, .protocol=0, .command=vsr.Command.prepare, .replica=3, .reserved_frame={ 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .parent=000000000abcdeffedcba00123456789, .request_checksum=00000000000000012345678987654321, .checkpoint_id=00000000000000000000000000000004, .client=5, .op=5, .commit=6, .timestamp=123456789, .request=7, .operation=vsr.Operation.pulse, .reserved={ 3, 0, 0 } }
+    ).diff_fmt("{}", .{prepare});
 }

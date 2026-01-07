@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("../constants.zig");
 const fuzz = @import("../testing/fuzz.zig");
 
@@ -264,7 +264,7 @@ const Model = struct {
         defer assert(model.undo_log.items.len == 0);
 
         switch (mode) {
-            .discard => while (model.undo_log.popOrNull()) |undo_entry| {
+            .discard => while (model.undo_log.pop()) |undo_entry| {
                 if (undo_entry.value) |value| {
                     try model.map.put(undo_entry.key, value);
                 } else {

@@ -7,8 +7,9 @@ const vsr = @import("vsr.zig");
 const stdx = vsr.stdx;
 const QueueType = vsr.queue.QueueType;
 const constants = vsr.constants;
+const Tracer = vsr.trace.Tracer;
 
-pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
+pub fn StorageType(comptime IO: type) type {
     return struct {
         const Storage = @This();
 
@@ -33,6 +34,9 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
             /// The maximum amount of bytes to read per syscall. We use this to subdivide
             /// troublesome reads into smaller reads to work around latent sector errors (LSEs).
             target_max: u64,
+
+            zone: vsr.Zone,
+            start: ?stdx.Instant,
 
             /// Returns a target slice into `buffer` to read into, capped by `target_max`.
             /// If the previous read was a partial read of physical sectors (e.g. 512 bytes) less
@@ -77,6 +81,9 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
             callback: *const fn (write: *Storage.Write) void,
             buffer: []const u8,
             offset: u64,
+
+            zone: vsr.Zone,
+            start: ?stdx.Instant,
         };
 
         pub const NextTick = struct {
@@ -87,9 +94,9 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
 
         pub const NextTickSource = enum { lsm, vsr };
 
-        pub const Tracer = _Tracer;
-
         io: *IO,
+        tracer: *Tracer,
+        dir_fd: IO.fd_t,
         fd: IO.fd_t,
 
         next_tick_queue: QueueType(NextTick) = QueueType(NextTick).init(.{
@@ -98,9 +105,33 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
         next_tick_completion_scheduled: bool = false,
         next_tick_completion: IO.Completion = undefined,
 
-        pub fn init(io: *IO, fd: IO.fd_t) !Storage {
+        pub fn init(io: *IO, tracer: *Tracer, options: struct {
+            path: []const u8,
+            size_min: u64,
+            purpose: IO.OpenDataFilePurpose,
+            direct_io: vsr.io.DirectIO,
+        }) !Storage {
+            // TODO Resolve the parent directory properly in the presence of .. and symlinks.
+            // TODO Handle physical volumes where there is no directory to fsync.
+            const dirname = std.fs.path.dirname(options.path) orelse ".";
+            const basename = std.fs.path.basename(options.path);
+
+            const dir_fd = try IO.open_dir(dirname);
+            errdefer std.posix.close(dir_fd);
+
+            const fd = try io.open_data_file(
+                dir_fd,
+                basename,
+                options.size_min,
+                options.purpose,
+                options.direct_io,
+            );
+            errdefer std.posix.close(fd);
+
             return .{
                 .io = io,
+                .tracer = tracer,
+                .dir_fd = dir_fd,
                 .fd = fd,
             };
         }
@@ -108,7 +139,13 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
         pub fn deinit(storage: *Storage) void {
             assert(storage.next_tick_queue.empty());
             assert(storage.fd != IO.INVALID_FILE);
+            assert(storage.dir_fd != IO.INVALID_FILE);
+
+            std.posix.close(storage.fd);
             storage.fd = IO.INVALID_FILE;
+
+            std.posix.close(storage.dir_fd);
+            storage.dir_fd = IO.INVALID_FILE;
         }
 
         pub fn run(storage: *Storage) void {
@@ -193,6 +230,8 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
                 .buffer = buffer,
                 .offset = offset_in_storage,
                 .target_max = buffer.len,
+                .zone = zone,
+                .start = self.tracer.time.monotonic(),
             };
 
             self.start_read(read, null);
@@ -215,6 +254,11 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
                 // read_sectors(). If it was, this is a synchronous callback resolution and should
                 // be reported.
                 assert(bytes_read != null);
+
+                self.tracer.timing(
+                    .{ .storage_read = .{ .zone = read.zone } },
+                    self.tracer.time.monotonic().duration_since(read.start.?),
+                );
 
                 read.callback(read);
                 return;
@@ -348,7 +392,7 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
             offset_in_zone: u64,
         ) void {
             zone.verify_iop(buffer, offset_in_zone);
-            maybe(zone == .grid_padding); // Padding is zeroed during format.
+            assert(zone != .grid_padding); // Padding is never touched.
 
             const offset_in_storage = zone.offset(offset_in_zone);
             write.* = .{
@@ -356,6 +400,8 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
                 .callback = callback,
                 .buffer = buffer,
                 .offset = offset_in_storage,
+                .zone = zone,
+                .start = self.tracer.time.monotonic(),
             };
 
             self.start_write(write);
@@ -388,6 +434,8 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
                 // TODO: It seems like it might be possible for some filesystems to return ETIMEDOUT
                 // here. Consider handling this without panicking.
                 error.NoSpaceLeft => {
+                    // NB: Intentionally crash on physical space exhaustion.
+                    // Low space condition is handled logically, via `--limit-storage` argument.
                     vsr.fatal(
                         .no_space_left,
                         "write failed: no space left on device (offset={} size={})",
@@ -418,6 +466,11 @@ pub fn StorageType(comptime IO: type, comptime _Tracer: type) type {
             write.buffer = write.buffer[bytes_written..];
 
             if (write.buffer.len == 0) {
+                self.tracer.timing(
+                    .{ .storage_write = .{ .zone = write.zone } },
+                    self.tracer.time.monotonic().duration_since(write.start.?),
+                );
+
                 write.callback(write);
                 return;
             }

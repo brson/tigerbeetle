@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const vsr = @import("../tb_client.zig").vsr;
-const Time = vsr.time.Time;
+const TimeOS = vsr.time.TimeOS;
 const IO = vsr.io.IO;
 
 const Atomic = std.atomic.Value;
@@ -174,7 +174,8 @@ test "signal" {
             try Signal.init(&self.signal, &self.io, on_signal);
             defer self.signal.deinit();
 
-            var timer = Time{};
+            var time_os = TimeOS{};
+            const timer = time_os.time();
             const start = timer.monotonic();
 
             const thread = try std.Thread.spawn(.{}, Context.notify, .{&self});
@@ -194,8 +195,8 @@ test "signal" {
             assert(self.count == events_count);
 
             // Make sure at least some time has passed.
-            const elapsed = timer.monotonic() - start;
-            assert(elapsed >= delay);
+            const elapsed = timer.monotonic().duration_since(start);
+            assert(elapsed.ns >= delay);
         }
 
         fn notify(self: *Context) void {

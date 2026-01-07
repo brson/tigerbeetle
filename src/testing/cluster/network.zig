@@ -5,7 +5,7 @@ const maybe = stdx.maybe;
 
 const constants = @import("../../constants.zig");
 const vsr = @import("../../vsr.zig");
-const stdx = @import("../../stdx.zig");
+const stdx = @import("stdx");
 const Ratio = stdx.PRNG.Ratio;
 
 const MessagePool = @import("../../message_pool.zig").MessagePool;
@@ -132,6 +132,8 @@ pub const Network = struct {
     pub fn transition_to_liveness_mode(network: *Network, core: Core) void {
         assert(core.count() > 0);
 
+        network.packet_simulator.options.one_way_delay_min = .ms(1);
+        network.packet_simulator.options.one_way_delay_mean = .ms(1);
         network.packet_simulator.options.packet_loss_probability = Ratio.zero();
         network.packet_simulator.options.packet_replay_probability = Ratio.zero();
         network.packet_simulator.options.partition_probability = Ratio.zero();
@@ -233,12 +235,18 @@ pub const Network = struct {
             message.header.command,
         });
 
-        const peer_type = message.header.peer_type();
-        if (peer_type != .unknown) {
-            switch (path.source) {
-                .client => |client_id| assert(std.meta.eql(peer_type, .{ .client = client_id })),
-                .replica => |index| assert(std.meta.eql(peer_type, .{ .replica = index })),
-            }
+        switch (message.header.peer_type()) {
+            .unknown => {},
+            .client_likely => |client_id| {
+                // Requests may be forwarded by replicas, but peer_type always returns client ID,
+                // as it is useful for the production MessageBus. Specifically, a replica that
+                // receives a request from a client can immediately cache the connection in the
+                // client map, instead of waiting for an infrequent PingClient message to do so.
+                assert(message.header.command == .request);
+                if (path.source == .client) assert(path.source.client == client_id);
+            },
+            .client => |client_id| assert(std.meta.eql(path.source, .{ .client = client_id })),
+            .replica => |index| assert(std.meta.eql(path.source, .{ .replica = index })),
         }
 
         const network_message = network.message_pool.get_message(null);
@@ -339,8 +347,6 @@ pub const Network = struct {
         if (target_bus.buffer.?.has_message()) {
             target_bus.suspended = true;
         }
-
-        target_bus.buffer.?.peer = .unknown;
     }
 
     fn raw_process_to_process(raw: u128) Process {

@@ -15,6 +15,7 @@ const MultiBatchDecoder = vsr.multi_batch.MultiBatchDecoder;
 const MultiBatchEncoder = vsr.multi_batch.MultiBatchEncoder;
 
 const IO = vsr.io.IO;
+const TimeOS = vsr.time.TimeOS;
 const message_pool = vsr.message_pool;
 
 const MessagePool = message_pool.MessagePool;
@@ -78,6 +79,7 @@ pub const ClientInterface = extern struct {
 
         client.locker.lock();
         defer client.locker.unlock();
+
         const context = client.context.ptr orelse return Error.ClientInvalid;
         client.vtable.ptr.submit_fn(context, packet);
     }
@@ -88,6 +90,7 @@ pub const ClientInterface = extern struct {
 
         client.locker.lock();
         defer client.locker.unlock();
+
         const context = client.context.ptr orelse return Error.ClientInvalid;
         return client.vtable.ptr.completion_context_fn(context);
     }
@@ -99,9 +102,11 @@ pub const ClientInterface = extern struct {
         const context: *anyopaque = context: {
             client.locker.lock();
             defer client.locker.unlock();
+
             if (client.context.ptr == null) return Error.ClientInvalid;
 
             defer client.context.ptr = null;
+
             break :context client.context.ptr.?;
         };
         client.vtable.ptr.deinit_fn(context);
@@ -113,6 +118,7 @@ pub const ClientInterface = extern struct {
 
         client.locker.lock();
         defer client.locker.unlock();
+
         const context = client.context.ptr orelse return Error.ClientInvalid;
         return client.vtable.ptr.init_parameters_fn(context, out_parameters);
     }
@@ -132,7 +138,7 @@ pub const CompletionCallback = *const fn (
     timestamp: u64,
     result_ptr: ?[*]const u8,
     result_len: u32,
-) callconv(.C) void;
+) callconv(.c) void;
 
 pub const InitError = std.mem.Allocator.Error || error{
     Unexpected,
@@ -152,8 +158,8 @@ pub fn ContextType(
             .thread_safe = true,
         });
 
-        const StateMachine = Client.StateMachine;
-        const allowed_operations = [_]StateMachine.Operation{
+        const Operation = Client.Operation;
+        const allowed_operations = [_]Operation{
             .create_accounts,
             .create_transfers,
             .lookup_accounts,
@@ -162,6 +168,7 @@ pub fn ContextType(
             .get_account_balances,
             .query_accounts,
             .query_transfers,
+            .get_change_events,
         };
 
         const UserData = extern struct {
@@ -184,7 +191,7 @@ pub fn ContextType(
         };
 
         gpa: GPA,
-        allocator: std.mem.Allocator,
+        time_os: TimeOS,
         client_id: u128,
         cluster_id: u128,
         addresses_copy: []const u8,
@@ -205,6 +212,9 @@ pub fn ContextType(
         signal: Signal,
         eviction_reason: ?vsr.Header.Eviction.Reason,
         thread: std.Thread,
+
+        previous_request_instant: ?stdx.Instant = null,
+        previous_request_latency: ?stdx.Duration = null,
 
         pub fn init(
             root_allocator: std.mem.Allocator,
@@ -242,6 +252,9 @@ pub fn ContextType(
             context.cluster_id = cluster_id;
             context.addresses_copy = try allocator.dupe(u8, addresses);
             errdefer allocator.free(context.addresses_copy);
+
+            context.time_os = .{};
+            const time = context.time_os.time();
 
             log.debug("{}: init: parsing vsr addresses: {s}", .{ context.client_id, addresses });
             context.addresses = .{};
@@ -286,12 +299,12 @@ pub fn ContextType(
             });
             context.client = Client.init(
                 allocator,
+                time,
+                &context.message_pool,
                 .{
                     .id = context.client_id,
                     .cluster = cluster_id,
                     .replica_count = context.addresses.count_as(u8),
-                    .time = .{},
-                    .message_pool = &context.message_pool,
                     .message_bus_options = .{
                         .configuration = context.addresses.const_slice(),
                         .io = &context.io,
@@ -304,9 +317,7 @@ pub fn ContextType(
                     @errorName(err),
                 });
                 return switch (err) {
-                    error.TimerUnsupported => error.Unexpected,
                     error.OutOfMemory => error.OutOfMemory,
-                    else => unreachable,
                 };
             };
             errdefer context.client.deinit(allocator);
@@ -443,7 +454,7 @@ pub fn ContextType(
                 return self.packet_cancel(packet);
             }
 
-            const operation: StateMachine.Operation = operation_from_int(packet.operation) orelse {
+            const operation: Operation = operation_from_int(packet.operation) orelse {
                 return self.notify_completion(packet, error.InvalidOperation);
             };
 
@@ -455,10 +466,10 @@ pub fn ContextType(
                 event_count: u32,
                 result_count_expected: u32,
             } = batch: {
-                const event_size: u32 = StateMachine.event_size_bytes(operation);
+                const event_size: u32 = operation.event_size();
                 assert(event_size > 0);
 
-                const result_size: u32 = StateMachine.result_size_bytes(operation);
+                const result_size: u32 = operation.result_size();
                 assert(result_size > 0);
 
                 const slice: []const u8 = packet.slice();
@@ -469,21 +480,12 @@ pub fn ContextType(
                 }
 
                 const event_count: u32 = @intCast(@divExact(slice.len, event_size));
-                const event_max: u32 = StateMachine.operation_event_max(
-                    operation,
-                    self.batch_size_limit.?,
-                );
+                const event_max: u32 = operation.event_max(self.batch_size_limit.?);
                 if (event_count > event_max) {
                     return self.notify_completion(packet, error.TooMuchData);
                 }
-                const result_max: u32 = StateMachine.operation_result_max(
-                    operation,
-                    self.batch_size_limit.?,
-                );
-                const result_count_expected: u32 = StateMachine.operation_result_count_expected(
-                    operation,
-                    slice,
-                );
+                const result_max: u32 = operation.result_max(self.batch_size_limit.?);
+                const result_count_expected: u32 = operation.result_count_expected(slice);
                 if (result_count_expected > result_max) {
                     return self.notify_completion(packet, error.TooMuchData);
                 }
@@ -509,6 +511,7 @@ pub fn ContextType(
             if (self.client.request_inflight == null) {
                 assert(self.pending.count() == 0);
                 packet.phase = .pending;
+                packet.multi_batch_time_monotonic = self.client.time.monotonic().ns;
                 packet.multi_batch_count = 1;
                 packet.multi_batch_event_count = @intCast(batch.event_count);
                 packet.multi_batch_result_count_expected = @intCast(batch.result_count_expected);
@@ -566,6 +569,7 @@ pub fn ContextType(
 
             // Couldn't batch with existing packet so push to pending directly.
             packet.phase = .pending;
+            packet.multi_batch_time_monotonic = self.client.time.monotonic().ns;
             packet.multi_batch_count = 1;
             packet.multi_batch_event_count = @intCast(batch.event_count);
             packet.multi_batch_result_count_expected = @intCast(batch.result_count_expected);
@@ -590,10 +594,22 @@ pub fn ContextType(
                 packet_list.assert_phase(.sent);
             }
 
-            const operation: StateMachine.Operation = operation_from_int(packet_list.operation).?;
-            const event_size: u32 = StateMachine.event_size_bytes(operation);
-            const result_size: u32 = StateMachine.result_size_bytes(operation);
+            const operation: Operation = operation_from_int(packet_list.operation).?;
+            const event_size: u32 = operation.event_size();
             const request_size: u32 = request_size: {
+                if (!operation.is_multi_batch()) {
+                    assert(packet_list.multi_batch_next == null);
+                    const source: []const u8 = packet_list.slice();
+                    stdx.copy_disjoint(
+                        .inexact,
+                        u8,
+                        message.buffer[@sizeOf(Header)..],
+                        source,
+                    );
+                    break :request_size @intCast(source.len);
+                }
+                assert(operation.is_multi_batch());
+
                 var message_encoder = MultiBatchEncoder.init(message.buffer[@sizeOf(Header)..], .{
                     .element_size = event_size,
                 });
@@ -621,33 +637,42 @@ pub fn ContextType(
                 assert(multi_batch_events_count == packet_list.multi_batch_event_count);
                 assert(message_encoder.batch_count == packet_list.multi_batch_count);
 
+                // Check if the reply has enough space for the maximum expected number of results.
+                const result_size: u32 = operation.result_size();
+                const trailer_size = vsr.multi_batch.trailer_total_size(.{
+                    .element_size = result_size,
+                    .batch_count = packet_list.multi_batch_count,
+                });
+                const reply_size_max: u32 = (result_size *
+                    packet_list.multi_batch_result_count_expected) + trailer_size;
+                assert(reply_size_max % result_size == 0);
+                assert(reply_size_max <= constants.message_body_size_max);
+
                 break :request_size message_encoder.finish();
             };
             assert(request_size % event_size == 0);
             assert(request_size <= self.batch_size_limit.?);
 
-            // Check if the reply has enough space for the maximum expected number of results.
-            const reply_size_max: u32 = reply_size: {
-                const trailer_size = vsr.multi_batch.trailer_total_size(.{
-                    .element_size = result_size,
-                    .batch_count = packet_list.multi_batch_count,
-                });
-                break :reply_size (packet_list.multi_batch_result_count_expected * result_size) +
-                    trailer_size;
-            };
-            assert(reply_size_max % result_size == 0);
-            assert(reply_size_max <= constants.message_body_size_max);
-
             // Sending the request.
+            const previous_request_latency =
+                self.previous_request_latency orelse stdx.Duration{ .ns = 0 };
             message.header.* = .{
                 .release = self.client.release,
                 .client = self.client.id,
                 .request = 0, // Set by client.raw_request.
                 .cluster = self.client.cluster,
                 .command = .request,
-                .operation = vsr.Operation.from(StateMachine, operation),
+                .operation = operation.to_vsr(),
                 .size = @sizeOf(vsr.Header) + request_size,
+                .previous_request_latency = @intCast(@min(
+                    previous_request_latency.ns,
+                    std.math.maxInt(u32),
+                )),
             };
+
+            assert((self.previous_request_instant == null) ==
+                (self.previous_request_latency == null));
+            self.previous_request_instant = .{ .ns = packet_list.multi_batch_time_monotonic };
 
             packet_list.phase = .sent;
             self.client.raw_request(
@@ -680,6 +705,7 @@ pub fn ContextType(
                 const packet: *Packet = pop: {
                     self.interface.locker.lock();
                     defer self.interface.locker.unlock();
+
                     break :pop self.submitted.pop() orelse return;
                 };
                 self.packet_enqueue(packet);
@@ -697,6 +723,7 @@ pub fn ContextType(
             const empty: bool = empty: {
                 self.interface.locker.lock();
                 defer self.interface.locker.unlock();
+
                 break :empty self.submitted.empty();
             };
             if (!empty) {
@@ -744,10 +771,14 @@ pub fn ContextType(
             const user_data: UserData = @bitCast(raw_user_data);
             const self: *Context = user_data.self;
             const packet_list: *Packet = user_data.packet;
-            const operation = operation_vsr.cast(Client.StateMachine);
+            const operation = operation_vsr.cast(Client.Operation);
             assert(packet_list.operation == @intFromEnum(operation));
             assert(timestamp > 0);
             packet_list.assert_phase(.sent);
+
+            const current_timestamp = self.client.time.monotonic();
+            self.previous_request_latency =
+                current_timestamp.duration_since(self.previous_request_instant.?);
 
             // Submit the next pending packet (if any) now that VSR has completed this one.
             assert(self.client.request_inflight == null);
@@ -760,7 +791,16 @@ pub fn ContextType(
             // This also guards from sending an unsupported operation.
             assert(operation_from_int(@intFromEnum(operation)) != null);
 
-            const result_size: u32 = StateMachine.result_size_bytes(operation);
+            if (!operation.is_multi_batch()) {
+                assert(packet_list.multi_batch_next == null);
+                return self.notify_completion(packet_list, .{
+                    .timestamp = timestamp,
+                    .reply = reply,
+                });
+            }
+            assert(operation.is_multi_batch());
+
+            const result_size: u32 = operation.result_size();
             assert(result_size > 0);
             var reply_decoder = MultiBatchDecoder.init(reply, .{
                 .element_size = result_size,
@@ -854,6 +894,7 @@ pub fn ContextType(
                 .user_tag = packet_extern.user_tag,
                 .status = .ok,
                 .link = .{},
+                .multi_batch_time_monotonic = 0,
                 .multi_batch_next = null,
                 .multi_batch_tail = null,
                 .multi_batch_count = 0,
@@ -906,7 +947,7 @@ pub fn ContextType(
             out_parameters.addresses_len = self.addresses_copy.len;
         }
 
-        fn operation_from_int(op: u8) ?StateMachine.Operation {
+        fn operation_from_int(op: u8) ?Operation {
             inline for (allowed_operations) |operation| {
                 if (op == @intFromEnum(operation)) {
                     return operation;
@@ -948,7 +989,7 @@ const Locker = extern struct {
     }
 
     fn lock_slow(self: *Locker) void {
-        @setCold(true);
+        @branchHint(.cold);
 
         // Avoid doing an atomic swap below if we already know the state is contended.
         // An atomic swap unconditionally stores which marks the cache-line as modified
@@ -1020,6 +1061,7 @@ test "Locker: contended" {
             while (true) {
                 self.state.locker.lock();
                 defer self.state.locker.unlock();
+
                 if (self.state.counter == increments) break;
                 self.state.counter += 1;
             }

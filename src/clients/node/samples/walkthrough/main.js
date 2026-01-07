@@ -379,7 +379,7 @@ async function main() {
       id: 9n,
       debit_account_id: 102n,
       credit_account_id: 103n,
-      amount: 10n,
+      amount: 0n,
       pending_id: 8n,
       user_data_128: 0n,
       user_data_64: 0n,
@@ -412,7 +412,7 @@ async function main() {
       code: 0, // No filter by Code.
       timestamp_min: 0n, // No filter by Timestamp.
       timestamp_max: 0n, // No filter by Timestamp.
-      limit: 10, // Limit to ten balances at most.
+      limit: 10, // Limit to ten transfers at most.
       flags: AccountFilterFlags.debits | // Include transfer from the debit side.
         AccountFilterFlags.credits | // Include transfer from the credit side.
         AccountFilterFlags.reversed, // Sort by timestamp in reverse-chronological order.
@@ -452,7 +452,7 @@ async function main() {
       ledger: 0, // No filter by Ledger.
       timestamp_min: 0n, // No filter by Timestamp.
       timestamp_max: 0n, // No filter by Timestamp.
-      limit: 10, // Limit to ten balances at most.
+      limit: 10, // Limit to ten accounts at most.
       flags: QueryFilterFlags.reversed, // Sort by timestamp in reverse-chronological order.
     };
 
@@ -470,7 +470,7 @@ async function main() {
       ledger: 0, // No filter by Ledger.
       timestamp_min: 0n, // No filter by Timestamp.
       timestamp_max: 0n, // No filter by Timestamp.
-      limit: 10, // Limit to ten balances at most.
+      limit: 10, // Limit to ten transfers at most.
       flags: QueryFilterFlags.reversed, // Sort by timestamp in reverse-chronological order.
     };
 

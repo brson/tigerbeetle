@@ -4,18 +4,19 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const vsr = @import("vsr.zig");
-const stdx = @import("stdx.zig");
+const constants = vsr.constants;
+const stdx = @import("stdx");
 
 const tb = @import("tigerbeetle.zig");
-const TestContext = @import("state_machine.zig").TestContext;
+const TestContext = @import("state_machine_tests.zig").TestContext;
 const fuzz = @import("./testing/fuzz.zig");
 
 /// Generate a random number, biased towards all bit 'edges' of T. That is, given a u64, it's very
 /// likely to not only get 0 or maxInt(u64), but also values around maxInt(u63), maxInt(u62), ...,
 /// maxInt(u1).
 pub fn int_edge_biased(prng: *stdx.PRNG, T: anytype) T {
-    const bits = @typeInfo(T).Int.bits;
-    comptime assert(@typeInfo(T).Int.signedness == .unsigned);
+    const bits = @typeInfo(T).int.bits;
+    comptime assert(@typeInfo(T).int.signedness == .unsigned);
 
     // With bits * 2, there's a ~50% chance of generating a uniform integer within the full range,
     // and a ~50% chance of generating an integer biased towards an edge.
@@ -43,14 +44,14 @@ pub fn main(allocator: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
     const request_buffer = try allocator.alignedAlloc(
         u8,
         16,
-        TestContext.message_body_size_max,
+        vsr.constants.message_body_size_max,
     );
     defer allocator.free(request_buffer);
 
     const reply_buffer = try allocator.alignedAlloc(
         u8,
         16,
-        TestContext.message_body_size_max,
+        vsr.constants.message_body_size_max,
     );
     defer allocator.free(reply_buffer);
 
@@ -61,13 +62,13 @@ pub fn main(allocator: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
     for (0..args.events_max orelse 50_000) |_| {
         const operation = prng.enum_uniform(TestContext.StateMachine.Operation);
         const size: usize = size: {
-            if (!TestContext.StateMachine.operation_is_multi_batch(operation)) {
+            if (!operation.is_multi_batch()) {
                 break :size build_batch(&prng, operation, request_buffer);
             }
-            assert(TestContext.StateMachine.operation_is_multi_batch(operation));
+            assert(operation.is_multi_batch());
 
             var body_encoder = vsr.multi_batch.MultiBatchEncoder.init(request_buffer, .{
-                .element_size = TestContext.StateMachine.event_size_bytes(operation),
+                .element_size = operation.event_size(),
             });
 
             const batch_count = prng.enum_uniform(enum { one, random, max });
@@ -97,11 +98,13 @@ pub fn main(allocator: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
                 @ptrCast(reply_buffer),
             );
             stdx.maybe(reply_size == 0);
-            if (TestContext.StateMachine.operation_is_multi_batch(operation)) {
+            if (operation.is_multi_batch()) {
                 assert(reply_size > 0);
-                assert(vsr.multi_batch.MultiBatchDecoder.init(reply_buffer[0..reply_size], .{
-                    .element_size = TestContext.StateMachine.result_size_bytes(operation),
-                }) != error.MultiBatchInvalid);
+                _ = vsr.multi_batch.MultiBatchDecoder.init(reply_buffer[0..reply_size], .{
+                    .element_size = operation.result_size(),
+                }) catch |err| switch (err) {
+                    error.MultiBatchInvalid => unreachable,
+                };
             }
         }
         op += 1;
@@ -126,16 +129,18 @@ fn build_batch(
         .get_change_events => build_get_change_events_filter(prng, buffer),
 
         // No payload, `create_*` require compaction to be hooked up.
-        .deprecated_create_accounts, .deprecated_create_transfers => 0,
+        .deprecated_create_accounts_unbatched,
+        .deprecated_create_transfers_unbatched,
+        => 0,
 
-        .deprecated_lookup_accounts,
-        .deprecated_lookup_transfers,
+        .deprecated_lookup_accounts_unbatched,
+        .deprecated_lookup_transfers_unbatched,
         => build_lookup(prng, buffer),
-        .deprecated_get_account_transfers,
-        .deprecated_get_account_balances,
+        .deprecated_get_account_transfers_unbatched,
+        .deprecated_get_account_balances_unbatched,
         => build_account_filter(prng, buffer),
-        .deprecated_query_accounts,
-        .deprecated_query_transfers,
+        .deprecated_query_accounts_unbatched,
+        .deprecated_query_transfers_unbatched,
         => build_query_filter(prng, buffer),
     };
 }
@@ -159,7 +164,7 @@ fn build_account_filter(prng: *stdx.PRNG, buffer: []u8) u32 {
         if (slice.len == 0) return 0;
         break :filter &slice[0];
     };
-    var reserved = std.mem.zeroes([58]u8);
+    var reserved: [58]u8 = @splat(0);
     if (prng.chance(.{ .numerator = 1, .denominator = 1000 })) {
         prng.fill(&reserved);
     }
@@ -198,7 +203,7 @@ fn build_query_filter(prng: *stdx.PRNG, buffer: []u8) u32 {
         if (slice.len == 0) return 0;
         break :filter &slice[0];
     };
-    var reserved = std.mem.zeroes([6]u8);
+    var reserved: [6]u8 = @splat(0);
     if (prng.chance(.{ .numerator = 1, .denominator = 1000 })) {
         prng.fill(&reserved);
     }
@@ -235,7 +240,7 @@ fn build_get_change_events_filter(prng: *stdx.PRNG, buffer: []u8) u32 {
         if (slice.len == 0) return 0;
         break :filter &slice[0];
     };
-    var reserved = std.mem.zeroes([44]u8);
+    var reserved: [44]u8 = @splat(0);
     if (prng.chance(.{ .numerator = 1, .denominator = 1000 })) {
         prng.fill(&reserved);
     }
@@ -268,7 +273,7 @@ test "int_edge_biased" {
         }
 
         inline for (1..129) |bits| {
-            const IntType = @Type(.{ .Int = .{
+            const IntType = @Type(.{ .int = .{
                 .signedness = .unsigned,
                 .bits = bits,
             } });

@@ -62,19 +62,31 @@ In the default configuration, the maximum batch sizes for each request type are:
 | `lookup_transfers`      |                        8189 |                       8189 |
 | `create_accounts`       |                        8189 |                       8189 |
 | `create_transfers`      |                        8189 |                       8189 |
-| `get_account_transfers` |                           1 |                       8189 |
-| `get_account_balances`  |                           1 |                       8189 |
-| `query_accounts`        |                           1 |                       8189 |
-| `query_transfers`       |                           1 |                       8189 |
+| `get_account_transfers` |                          1† |                       8189 |
+| `get_account_balances`  |                          1† |                       8189 |
+| `query_accounts`        |                          1† |                       8189 |
+| `query_transfers`       |                          1† |                       8189 |
 
-TigerBeetle clients automatically batch events. Therefore, it is recommended to share the client
-instances between multiple threads or tasks to have events batched transparently.
-
-- [Node](/src/clients/node/README.md#batching)
+- [Node.js](/src/clients/node/README.md#batching)
 - [Go](/src/clients/go/README.md#batching)
 - [Java](/src/clients/java/README.md#batching)
 - [.NET](/src/clients/dotnet/README.md#batching)
 - [Python](/src/clients/python/README.md#batching)
+
+### Automatic Batching
+
+TigerBeetle clients automatically batch operations. There may be instances where your application logic 
+makes it hard to fill up the batches that you send to TigerBeetle, for example a multi-threaded web 
+server where each HTTP request is handled on a different thread. 
+
+The TigerBeetle client should be shared across threads (or tasks, depending on your paradigm), since 
+it automatically groups together batches of small sizes into one request. Since  TigerBeetle clients 
+can have [**at most one in-flight request**](../reference/sessions.md), the client 
+accumulates smaller batches together while waiting for a reply to the last request.
+
+†: For queries (e.g. `get_account_transfers`, etc) TigerBeetle clients use the query `limit` to
+automatically batch queries of the same type together into requests when it knows for sure that all
+of their results will fit in a single reply.
 
 ## Guarantees
 

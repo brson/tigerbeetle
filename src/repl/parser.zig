@@ -4,12 +4,8 @@ const assert = std.debug.assert;
 const vsr = @import("../vsr.zig");
 const constants = vsr.constants;
 const IO = vsr.io.IO;
-const Tracer = vsr.trace.TracerType(vsr.time.Time);
-const Storage = vsr.storage.StorageType(IO, Tracer);
-const StateMachine = vsr.state_machine.StateMachineType(
-    Storage,
-    constants.state_machine_config,
-);
+const Storage = vsr.storage.StorageType(IO);
+const StateMachine = vsr.state_machine.StateMachineType(Storage);
 const tb = vsr.tigerbeetle;
 
 const Terminal = @import("terminal.zig").Terminal;
@@ -188,12 +184,12 @@ pub const Parser = struct {
         key_to_validate: []const u8,
         value_to_validate: []const u8,
     ) !void {
-        inline for (@typeInfo(ObjectSyntaxTree).Union.fields) |object_syntax_tree_field| {
+        inline for (@typeInfo(ObjectSyntaxTree).@"union".fields) |object_syntax_tree_field| {
             if (std.mem.eql(u8, @tagName(out.*), object_syntax_tree_field.name)) {
                 const active_value = @field(out, object_syntax_tree_field.name);
                 const ActiveValue = @TypeOf(active_value);
 
-                inline for (@typeInfo(ActiveValue).Struct.fields) |active_value_field| {
+                inline for (@typeInfo(ActiveValue).@"struct".fields) |active_value_field| {
                     if (std.mem.eql(u8, active_value_field.name, key_to_validate)) {
                         // Handle everything but flags, and skip reserved.
                         if (comptime (!std.mem.eql(u8, active_value_field.name, "flags") and
@@ -223,7 +219,7 @@ pub const Parser = struct {
                                 );
                                 inline for (@typeInfo(
                                     active_value_field.type,
-                                ).Struct.fields) |known_flag_field| {
+                                ).@"struct".fields) |known_flag_field| {
                                     if (std.mem.eql(
                                         u8,
                                         known_flag_field.name,
@@ -252,7 +248,7 @@ pub const Parser = struct {
 
     fn parse_int(comptime T: type, input: []const u8) !T {
         const info = @typeInfo(T);
-        comptime assert(info == .Int);
+        comptime assert(info == .int);
 
         // When base is zero the string prefix is examined to detect the true base:
         // "0b", "0o" or "0x", otherwise base=10 is assumed.
@@ -261,7 +257,7 @@ pub const Parser = struct {
         assert(input.len > 0);
         const input_negative = input[0] == '-';
 
-        if (info.Int.signedness == .unsigned and input_negative) {
+        if (info.int.signedness == .unsigned and input_negative) {
             // Negative input means `maxInt - input`.
             // Useful for representing sentinels such as `AMOUNT_MAX`, as `-0`.
             const max = std.math.maxInt(T);
@@ -291,9 +287,8 @@ pub const Parser = struct {
                 .code = 0,
                 .timestamp_min = 0,
                 .timestamp_max = 0,
-                .limit = StateMachine.operation_result_max(
-                    operation_comptime.state_machine_op(),
-                    StateMachine.constants.message_body_size_max,
+                .limit = operation_comptime.state_machine_op().result_max(
+                    constants.message_body_size_max,
                 ),
                 .flags = .{
                     .credits = true,
@@ -311,9 +306,8 @@ pub const Parser = struct {
                 .code = 0,
                 .timestamp_min = 0,
                 .timestamp_max = 0,
-                .limit = StateMachine.operation_result_max(
-                    operation_comptime.state_machine_op(),
-                    StateMachine.constants.message_body_size_max,
+                .limit = operation_comptime.state_machine_op().result_max(
+                    constants.message_body_size_max,
                 ),
                 .flags = .{
                     .reversed = false,
@@ -333,7 +327,7 @@ pub const Parser = struct {
             // Expect comma separating objects.
             if (parser.offset < parser.input.len and parser.input[parser.offset] == ',') {
                 parser.offset += 1;
-                inline for (@typeInfo(ObjectSyntaxTree).Union.fields) |object_tree_field| {
+                inline for (@typeInfo(ObjectSyntaxTree).@"union".fields) |object_tree_field| {
                     if (std.mem.eql(u8, @tagName(object), object_tree_field.name)) {
                         const unwrapped_field = @field(object, object_tree_field.name);
                         arguments.appendSliceAssumeCapacity(std.mem.asBytes(&unwrapped_field));
@@ -341,7 +335,7 @@ pub const Parser = struct {
                 }
 
                 const state_machine_op = operation.state_machine_op();
-                if (!StateMachine.operation_is_batchable(state_machine_op)) {
+                if (!state_machine_op.is_batchable()) {
                     try parser.print_current_position();
                     try parser.terminal.print_error(
                         "{s} expects a single {s} but received multiple.\n",
@@ -405,7 +399,7 @@ pub const Parser = struct {
 
         // Add final object.
         if (object_has_fields) {
-            inline for (@typeInfo(ObjectSyntaxTree).Union.fields) |object_tree_field| {
+            inline for (@typeInfo(ObjectSyntaxTree).@"union".fields) |object_tree_field| {
                 if (std.mem.eql(u8, @tagName(object), object_tree_field.name)) {
                     const unwrapped_field = @field(object, object_tree_field.name);
                     arguments.appendSliceAssumeCapacity(std.mem.asBytes(&unwrapped_field));
@@ -452,16 +446,16 @@ pub const Parser = struct {
             try parser.terminal.print_error(
                 "Operation must be " ++
                     comptime operations: {
-                    var names: []const u8 = "";
-                    for (std.enums.values(Operation), 0..) |operation, index| {
-                        if (operation == .none) continue;
-                        names = names ++
-                            (if (names.len > 0) ", " else "") ++
-                            (if (index == std.enums.values(Operation).len - 1) "or " else "") ++
-                            @tagName(operation);
-                    }
-                    break :operations names;
-                } ++ ". Got: '{s}'.\n",
+                        var names: []const u8 = "";
+                        for (std.enums.values(Operation), 0..) |operation, index| {
+                            if (operation == .none) continue;
+                            names = names ++
+                                (if (names.len > 0) ", " else "") ++
+                                (if (index == std.enums.values(Operation).len - 1) "or " else "") ++
+                                @tagName(operation);
+                        }
+                        break :operations names;
+                    } ++ ". Got: '{s}'.\n",
                 .{operation_identifier},
             );
             return Error.OperationBad;
@@ -481,7 +475,6 @@ const null_terminal = Terminal{
     .stdin = undefined,
     .stderr = null,
     .stdout = null,
-    .buffer_in = undefined,
 };
 
 test "parser.zig: Parser single transfer successfully" {
@@ -685,6 +678,7 @@ test "parser.zig: Parser single transfer successfully" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -753,6 +747,7 @@ test "parser.zig: Parser multiple transfers successfully" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -851,6 +846,7 @@ test "parser.zig: Parser single account successfully" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -887,9 +883,8 @@ test "parser.zig: Parser account filter successfully" {
                 .code = 0,
                 .timestamp_min = 0,
                 .timestamp_max = 0,
-                .limit = StateMachine.operation_result_max(
-                    .get_account_transfers,
-                    StateMachine.constants.message_body_size_max,
+                .limit = StateMachine.Operation.get_account_transfers.result_max(
+                    constants.message_body_size_max,
                 ),
                 .flags = .{
                     .credits = true,
@@ -929,6 +924,7 @@ test "parser.zig: Parser account filter successfully" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -965,9 +961,8 @@ test "parser.zig: Parser query filter successfully" {
                 .code = 0,
                 .timestamp_min = 0,
                 .timestamp_max = 0,
-                .limit = StateMachine.operation_result_max(
-                    .query_transfers,
-                    StateMachine.constants.message_body_size_max,
+                .limit = StateMachine.Operation.query_transfers.result_max(
+                    constants.message_body_size_max,
                 ),
                 .flags = .{
                     .reversed = false,
@@ -1003,6 +998,7 @@ test "parser.zig: Parser query filter successfully" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -1071,6 +1067,7 @@ test "parser.zig: Parser multiple accounts successfully" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -1209,6 +1206,7 @@ test "parser.zig: Parser odd but correct formatting" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -1294,6 +1292,7 @@ test "parser.zig: Handle parsing errors" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(
@@ -1337,6 +1336,7 @@ test "parser.zig: Parser fails for operations not supporting multiple objects" {
     for (vectors) |vector| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var arguments = try std.ArrayListUnmanaged(u8).initCapacity(

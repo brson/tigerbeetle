@@ -18,12 +18,23 @@ const net = std.net;
 
 const vsr = @import("vsr");
 const stdx = vsr.stdx;
-const flags = vsr.flags;
 const constants = vsr.constants;
 const tigerbeetle = vsr.tigerbeetle;
 const data_file_size_min = vsr.superblock.data_file_size_min;
 const StateMachine = @import("./main.zig").StateMachine;
 const Grid = @import("./main.zig").Grid;
+const Ratio = stdx.PRNG.Ratio;
+const ByteSize = stdx.ByteSize;
+const Operation = tigerbeetle.Operation;
+const Duration = stdx.Duration;
+
+comptime {
+    // Make sure we are running the Accounting StateMachine.
+    assert(StateMachine.Operation == tigerbeetle.Operation);
+}
+
+const KiB = stdx.KiB;
+const GiB = stdx.GiB;
 
 const CLIArgs = union(enum) {
     const Format = struct {
@@ -35,9 +46,8 @@ const CLIArgs = union(enum) {
         development: bool = false,
         log_debug: bool = false,
 
-        positional: struct {
-            path: [:0]const u8,
-        },
+        @"--": void,
+        path: []const u8,
     };
 
     const Recover = struct {
@@ -48,51 +58,55 @@ const CLIArgs = union(enum) {
         development: bool = false,
         log_debug: bool = false,
 
-        positional: struct {
-            path: [:0]const u8,
-        },
+        @"--": void,
+        path: []const u8,
     };
 
     const Start = struct {
         // Stable CLI arguments.
         addresses: []const u8,
-        cache_grid: ?flags.ByteSize = null,
+        cache_grid: ?ByteSize = null,
         development: bool = false,
-        positional: struct {
-            path: [:0]const u8,
-        },
 
-        // Everything below here is considered experimental, and requires `--experimental` to be
-        // set. Experimental flags disable automatic upgrades with multiversion binaries; each
-        // replica has to be manually restarted.
-        // Experimental flags must default to null, except for bools which must be false.
+        // Everything from here until positional arguments is considered experimental, and requires
+        // `--experimental` to be set. Experimental flags disable automatic upgrades with
+        // multiversion binaries; each replica has to be manually restarted. Experimental flags must
+        // default to null, except for bools which must be false.
         experimental: bool = false,
 
-        limit_storage: ?flags.ByteSize = null,
+        limit_storage: ?ByteSize = null,
         limit_pipeline_requests: ?u32 = null,
-        limit_request: ?flags.ByteSize = null,
-        cache_accounts: ?flags.ByteSize = null,
-        cache_transfers: ?flags.ByteSize = null,
-        cache_transfers_pending: ?flags.ByteSize = null,
-        memory_lsm_manifest: ?flags.ByteSize = null,
-        memory_lsm_compaction: ?flags.ByteSize = null,
-        trace: ?[:0]const u8 = null,
+        limit_request: ?ByteSize = null,
+        cache_accounts: ?ByteSize = null,
+        cache_transfers: ?ByteSize = null,
+        cache_transfers_pending: ?ByteSize = null,
+        memory_lsm_manifest: ?ByteSize = null,
+        memory_lsm_compaction: ?ByteSize = null,
+        trace: ?[]const u8 = null,
         log_debug: bool = false,
+        log_trace: bool = false,
         timeout_prepare_ms: ?u64 = null,
         timeout_grid_repair_message_ms: ?u64 = null,
+        commit_stall_probability: ?Ratio = null,
 
         // Highly experimental options that will be removed in a future release:
-        replicate_closed_loop: bool = false,
         replicate_star: bool = false,
 
-        statsd: ?[:0]const u8 = null,
+        statsd: ?[]const u8 = null,
 
         /// AOF (Append Only File) logs all transactions synchronously to disk before replying
         /// to the client. The logic behind this code has been kept as simple as possible -
         /// io_uring or kqueue aren't used, there aren't any fancy data structures. Just a simple
         /// log consisting of logged requests. Much like a redis AOF with fsync=on.
         /// Enabling this will have performance implications.
+        aof_file: ?[]const u8 = null,
+
+        /// Legacy AOF option. Mutually exclusive with aof_file, and will have the same effect as
+        /// setting aof_file to '<data file path>.aof'.
         aof: bool = false,
+
+        @"--": void,
+        path: []const u8,
     };
 
     const Version = struct {
@@ -113,34 +127,32 @@ const CLIArgs = union(enum) {
         cache_transfers: ?[]const u8 = null,
         cache_transfers_pending: ?[]const u8 = null,
         cache_grid: ?[]const u8 = null,
-        account_count: usize = 10_000,
-        account_count_hot: usize = 0,
+        account_count: u32 = 10_000,
+        account_count_hot: u32 = 0,
         log_debug: bool = false,
         log_debug_replica: bool = false,
         /// The probability distribution used to select accounts when making transfers or queries.
         account_distribution: Command.Benchmark.Distribution = .uniform,
         flag_history: bool = false,
         flag_imported: bool = false,
-        account_batch_size: usize = StateMachine.operation_event_max(
-            .create_accounts,
+        account_batch_size: u32 = Operation.create_accounts.event_max(
             constants.message_body_size_max,
         ),
-        transfer_count: usize = 10_000_000,
-        transfer_hot_percent: usize = 100,
+        transfer_count: u64 = 10_000_000,
+        transfer_hot_percent: u32 = 100,
         transfer_pending: bool = false,
-        transfer_batch_size: usize = StateMachine.operation_event_max(
-            .create_transfers,
+        transfer_batch_size: u32 = Operation.create_transfers.event_max(
             constants.message_body_size_max,
         ),
-        transfer_batch_delay_us: usize = 0,
+        transfer_batch_delay: Duration = .ms(0),
         validate: bool = false,
         checksum_performance: bool = false,
-        query_count: usize = 100,
+        query_count: u32 = 100,
         print_batch_timings: bool = false,
         id_order: Command.Benchmark.IdOrder = .sequential,
         clients: u32 = 1,
         statsd: ?[]const u8 = null,
-        trace: ?[:0]const u8 = null,
+        trace: ?[]const u8 = null,
         /// When set, don't delete the data file when the benchmark completes.
         file: ?[]const u8 = null,
         addresses: ?[]const u8 = null,
@@ -152,34 +164,57 @@ const CLIArgs = union(enum) {
         constants,
         metrics,
         op: struct {
-            positional: struct { op: u64 },
+            @"--": void,
+            op: u64,
         },
         superblock: struct {
-            positional: struct { path: []const u8 },
+            @"--": void,
+            path: []const u8,
         },
         wal: struct {
             slot: ?usize = null,
-            positional: struct { path: []const u8 },
+
+            @"--": void,
+            path: []const u8,
         },
         replies: struct {
             slot: ?usize = null,
             superblock_copy: ?u8 = null,
-            positional: struct { path: []const u8 },
+
+            @"--": void,
+            path: []const u8,
         },
         grid: struct {
             block: ?u64 = null,
             superblock_copy: ?u8 = null,
-            positional: struct { path: []const u8 },
+
+            @"--": void,
+            path: []const u8,
         },
         manifest: struct {
             superblock_copy: ?u8 = null,
-            positional: struct { path: []const u8 },
+
+            @"--": void,
+            path: []const u8,
         },
         tables: struct {
             superblock_copy: ?u8 = null,
             tree: []const u8,
             level: ?u6 = null,
-            positional: struct { path: []const u8 },
+
+            @"--": void,
+            path: []const u8,
+        },
+        integrity: struct {
+            log_debug: bool = false,
+            seed: ?[]const u8 = null,
+            memory_lsm_manifest: ?ByteSize = null,
+            skip_wal: bool = false,
+            skip_client_replies: bool = false,
+            skip_grid: bool = false,
+
+            @"--": void,
+            path: [:0]const u8,
         },
 
         pub const help =
@@ -204,6 +239,11 @@ const CLIArgs = union(enum) {
             \\  tigerbeetle inspect manifest <path>
             \\
             \\  tigerbeetle inspect tables --tree=<name|id> [--level=<integer>] <path>
+            \\
+            \\  tigerbeetle inspect integrity [--log-debug] [--seed=<seed>]
+            \\                                [--memory-lsm-manifest=<size>]
+            \\                                [--skip-wal] [--skip-client-replies] [--skip-grid]
+            \\                                <path>
             \\
             \\Options:
             \\
@@ -250,15 +290,19 @@ const CLIArgs = union(enum) {
             \\        List the tables matching the given tree/level.
             \\        Example tree names: "transfers" (object table), "transfers.amount" (index table).
             \\
+            \\  integrity
+            \\        Scans the data file and checks all internal checksums to verify internal
+            \\        integrity.
+            \\
         ;
     };
 
     // Internal: used to validate multiversion binaries.
     const Multiversion = struct {
         log_debug: bool = false,
-        positional: struct {
-            path: [:0]const u8,
-        },
+
+        @"--": void,
+        path: []const u8,
     };
 
     // CDC connector for AMQP targets.
@@ -273,6 +317,7 @@ const CLIArgs = union(enum) {
         publish_routing_key: ?[]const u8 = null,
         event_count_max: ?u32 = null,
         idle_interval_ms: ?u32 = null,
+        requests_per_second_limit: ?u32 = null,
         timestamp_last: ?u64 = null,
         verbose: bool = false,
     };
@@ -402,19 +447,19 @@ const CLIArgs = union(enum) {
         .default_port = constants.port,
         .default_cache_grid_gb = @divExact(
             constants.grid_cache_size_default,
-            1024 * 1024 * 1024,
+            GiB,
         ),
     });
 };
 
 const StartDefaults = struct {
     limit_pipeline_requests: u32,
-    limit_request: flags.ByteSize,
-    cache_accounts: flags.ByteSize,
-    cache_transfers: flags.ByteSize,
-    cache_transfers_pending: flags.ByteSize,
-    cache_grid: flags.ByteSize,
-    memory_lsm_compaction: flags.ByteSize,
+    limit_request: ByteSize,
+    cache_accounts: ByteSize,
+    cache_transfers: ByteSize,
+    cache_transfers_pending: ByteSize,
+    cache_grid: ByteSize,
+    memory_lsm_compaction: ByteSize,
 };
 
 const start_defaults_production = StartDefaults{
@@ -433,7 +478,7 @@ const start_defaults_production = StartDefaults{
 
 const start_defaults_development = StartDefaults{
     .limit_pipeline_requests = 0,
-    .limit_request = .{ .value = 32 * 1024 }, // 32KiB
+    .limit_request = .{ .value = 32 * KiB },
     .cache_accounts = .{ .value = 0 },
     .cache_transfers = .{ .value = 0 },
     .cache_transfers_pending = .{ .value = 0 },
@@ -444,18 +489,18 @@ const start_defaults_development = StartDefaults{
 const lsm_compaction_block_count_min = StateMachine.Forest.Options.compaction_block_count_min;
 const lsm_compaction_block_memory_min = lsm_compaction_block_count_min * constants.block_size;
 
-/// While CLIArgs store raw arguments as passed on the command line, Command ensures that
-/// arguments are properly validated and desugared (e.g, sizes converted to counts where
-///  appropriate).
+/// While CLIArgs store raw arguments as passed on the command line, Command ensures that arguments
+/// are properly validated and desugared (e.g, sizes converted to counts where appropriate).
 pub const Command = union(enum) {
     const Addresses = stdx.BoundedArrayType(std.net.Address, constants.members_max);
+    const Path = stdx.BoundedArrayType(u8, std.fs.max_path_bytes);
 
     pub const Format = struct {
         cluster: u128,
         replica: u8,
         replica_count: u8,
         development: bool,
-        path: [:0]const u8,
+        path: []const u8,
         log_debug: bool,
     };
 
@@ -465,7 +510,7 @@ pub const Command = union(enum) {
         replica: u8,
         replica_count: u8,
         development: bool,
-        path: [:0]const u8,
+        path: []const u8,
         log_debug: bool,
     };
 
@@ -486,14 +531,15 @@ pub const Command = union(enum) {
         lsm_forest_node_count: u32,
         timeout_prepare_ticks: ?u64,
         timeout_grid_repair_message_ticks: ?u64,
-        trace: ?[:0]const u8,
+        commit_stall_probability: ?Ratio,
+        trace: ?[]const u8,
         development: bool,
         experimental: bool,
-        replicate_closed_loop: bool,
         replicate_star: bool,
-        aof: bool,
-        path: [:0]const u8,
+        aof_file: ?Path,
+        path: []const u8,
         log_debug: bool,
+        log_trace: bool,
         statsd: ?std.net.Address,
     };
 
@@ -530,25 +576,25 @@ pub const Command = union(enum) {
         cache_grid: ?[]const u8,
         log_debug: bool,
         log_debug_replica: bool,
-        account_count: usize,
-        account_count_hot: usize,
+        account_count: u32,
+        account_count_hot: u32,
         account_distribution: Distribution,
         flag_history: bool,
         flag_imported: bool,
-        account_batch_size: usize,
-        transfer_count: usize,
-        transfer_hot_percent: usize,
+        account_batch_size: u32,
+        transfer_count: u64,
+        transfer_hot_percent: u32,
         transfer_pending: bool,
-        transfer_batch_size: usize,
-        transfer_batch_delay_us: usize,
+        transfer_batch_size: u32,
+        transfer_batch_delay: Duration,
         validate: bool,
         checksum_performance: bool,
-        query_count: usize,
+        query_count: u32,
         print_batch_timings: bool,
         id_order: IdOrder,
         clients: u32,
         statsd: ?[]const u8,
-        trace: ?[:0]const u8,
+        trace: ?[]const u8,
         file: ?[]const u8,
         addresses: ?Addresses,
         seed: ?[]const u8,
@@ -559,6 +605,7 @@ pub const Command = union(enum) {
         metrics,
         op: u64,
         data_file: DataFile,
+        integrity: Integrity,
 
         pub const DataFile = struct {
             path: []const u8,
@@ -585,10 +632,20 @@ pub const Command = union(enum) {
                 },
             },
         };
+
+        pub const Integrity = struct {
+            log_debug: bool,
+            seed: ?[]const u8,
+            lsm_forest_node_count: u32,
+            skip_wal: bool,
+            skip_client_replies: bool,
+            skip_grid: bool,
+            path: [:0]const u8,
+        };
     };
 
     pub const Multiversion = struct {
-        path: [:0]const u8,
+        path: []const u8,
         log_debug: bool,
     };
 
@@ -603,6 +660,7 @@ pub const Command = union(enum) {
         publish_routing_key: ?[]const u8,
         event_count_max: ?u32,
         idle_interval_ms: ?u32,
+        requests_per_second_limit: ?u32,
         timestamp_last: ?u64,
         log_debug: bool,
     };
@@ -621,7 +679,7 @@ pub const Command = union(enum) {
 /// Parse the command line arguments passed to the `tigerbeetle` binary.
 /// Exits the program with a non-zero exit code if an error is found.
 pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
-    const cli_args = flags.parse(args_iterator, CLIArgs);
+    const cli_args = stdx.flags(args_iterator, CLIArgs);
 
     return switch (cli_args) {
         .format => |format| .{ .format = parse_args_format(format) },
@@ -699,7 +757,7 @@ fn parse_args_format(format: CLIArgs.Format) Command.Format {
         .replica = replica,
         .replica_count = format.replica_count,
         .development = format.development,
-        .path = format.positional.path,
+        .path = format.path,
         .log_debug = format.log_debug,
     };
 }
@@ -735,7 +793,7 @@ fn parse_args_recover(recover: CLIArgs.Recover) Command.Recover {
         .replica = replica,
         .replica_count = recover.replica_count,
         .development = recover.development,
-        .path = recover.positional.path,
+        .path = recover.path,
         .log_debug = recover.log_debug,
     };
 }
@@ -744,10 +802,14 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
     // Allowlist of stable flags. --development will disable automatic multiversion
     // upgrades too, but the flag itself is stable.
     const stable_args = .{
-        "addresses",   "cache_grid",   "positional",
+        "addresses",   "cache_grid",
         "development", "experimental",
     };
     inline for (std.meta.fields(@TypeOf(start))) |field| {
+        @setEvalBranchQuota(4_000);
+        // Positional arguments can't be experimental.
+        comptime if (std.mem.eql(u8, field.name, "--")) break;
+
         const stable_field = comptime for (stable_args) |stable_arg| {
             assert(std.meta.fieldIndex(@TypeOf(start), stable_arg) != null);
             if (std.mem.eql(u8, field.name, stable_arg)) {
@@ -756,12 +818,16 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
         } else false;
         if (stable_field) continue;
 
-        const flag_name = flags.flag_name(field);
+        const flag_name = comptime blk: {
+            var result: [2 + field.name.len]u8 = ("--" ++ field.name).*;
+            std.mem.replaceScalar(u8, &result, '_', '-');
+            break :blk result;
+        };
 
         // If you've added a flag and get a comptime error here, it's likely because
         // we require experimental flags to default to null.
         const required_default = if (field.type == bool) false else null;
-        assert(flags.default_value(field).? == required_default);
+        assert(field.defaultValue().? == required_default);
 
         if (@field(start, field.name) != required_default and !start.experimental) {
             vsr.fatal(
@@ -770,7 +836,7 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
                 .{flag_name},
             );
         }
-    }
+    } else unreachable;
 
     const groove_config = StateMachine.Forest.groove_config;
     const AccountsValuesCache = groove_config.accounts.ObjectsCache.Cache;
@@ -781,9 +847,9 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
     const defaults =
         if (start.development) start_defaults_development else start_defaults_production;
 
-    const start_limit_storage: flags.ByteSize = start.limit_storage orelse
+    const start_limit_storage: ByteSize = start.limit_storage orelse
         .{ .value = constants.storage_size_limit_default };
-    const start_memory_lsm_manifest: flags.ByteSize = start.memory_lsm_manifest orelse
+    const start_memory_lsm_manifest: ByteSize = start.memory_lsm_manifest orelse
         .{ .value = constants.lsm_manifest_memory_size_default };
 
     const storage_size_limit = start_limit_storage.bytes();
@@ -915,6 +981,42 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
     const lsm_forest_node_count: u32 =
         @intCast(@divExact(lsm_manifest_memory, constants.lsm_manifest_node_size));
 
+    const aof_file: ?Command.Path = if (start.aof) blk: {
+        if (start.aof_file != null) {
+            vsr.fatal(.cli, "--aof is mutually exclusive with --aof-file", .{});
+        }
+
+        var aof_file: Command.Path = .{};
+        if (aof_file.capacity() < start.path.len + 4) {
+            vsr.fatal(.cli, "data file path is too long for --aof. use --aof-file", .{});
+        }
+        aof_file.push_slice(start.path);
+        aof_file.push_slice(".aof");
+
+        std.log.warn(
+            "--aof is deprecated. consider switching to '--aof-file={s}'",
+            .{aof_file.const_slice()},
+        );
+
+        break :blk aof_file;
+    } else if (start.aof_file) |start_aof_file| blk: {
+        if (!std.mem.endsWith(u8, start_aof_file, ".aof")) {
+            vsr.fatal(.cli, "--aof-file must end with .aof: '{s}'", .{start_aof_file});
+        }
+
+        var aof_file: Command.Path = .{};
+        if (aof_file.capacity() < start.path.len) {
+            vsr.fatal(.cli, "--aof-file path is too long", .{});
+        }
+        aof_file.push_slice(start_aof_file);
+
+        break :blk aof_file;
+    } else null;
+
+    if (start.log_trace and !start.log_debug) {
+        vsr.fatal(.cli, "--log-debug must be provided when using --log-trace", .{});
+    }
+
     return .{
         .addresses = addresses,
         .addresses_zero = std.mem.eql(u8, start.addresses, "0"),
@@ -934,7 +1036,7 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
             "--cache-transfers",
         ),
         .cache_transfers_pending = parse_cache_size_to_count(
-            StateMachine.TransferPending,
+            vsr.state_machine.TransferPending,
             TransfersPendingValuesCache,
             start.cache_transfers_pending orelse defaults.cache_transfers_pending,
             "--cache-transfers-pending",
@@ -955,20 +1057,17 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
             start.timeout_grid_repair_message_ms,
             "--timeout-grid-repair-message-ms",
         ),
+        .commit_stall_probability = start.commit_stall_probability,
         .development = start.development,
         .experimental = start.experimental,
         .trace = start.trace,
-        .replicate_closed_loop = start.replicate_closed_loop,
         .replicate_star = start.replicate_star,
-        .aof = start.aof,
-        .path = start.positional.path,
+        .aof_file = aof_file,
+        .path = start.path,
         .log_debug = start.log_debug,
+        .log_trace = start.log_trace,
         .statsd = if (start.statsd) |statsd_address|
-            parse_addresses(
-                statsd_address,
-                "--statsd",
-                stdx.BoundedArrayType(std.net.Address, 1),
-            ).get(0)
+            parse_address_and_port(statsd_address, "--statsd", 8125)
         else
             null,
     };
@@ -1053,7 +1152,7 @@ fn parse_args_benchmark(benchmark: CLIArgs.Benchmark) Command.Benchmark {
         .transfer_hot_percent = benchmark.transfer_hot_percent,
         .transfer_pending = benchmark.transfer_pending,
         .transfer_batch_size = benchmark.transfer_batch_size,
-        .transfer_batch_delay_us = benchmark.transfer_batch_delay_us,
+        .transfer_batch_delay = benchmark.transfer_batch_delay,
         .validate = benchmark.validate,
         .checksum_performance = benchmark.checksum_performance,
         .query_count = benchmark.query_count,
@@ -1068,12 +1167,63 @@ fn parse_args_benchmark(benchmark: CLIArgs.Benchmark) Command.Benchmark {
     };
 }
 
+fn parse_args_inspect_integrity(args: CLIArgs.Inspect) Command.Inspect.Integrity {
+    const integrity = args.integrity;
+
+    const scrub_memory_lsm_manifest: ByteSize = integrity.memory_lsm_manifest orelse
+        .{ .value = constants.lsm_manifest_memory_size_default };
+
+    const lsm_manifest_memory = scrub_memory_lsm_manifest.bytes();
+    const lsm_manifest_memory_max = constants.lsm_manifest_memory_size_max;
+    const lsm_manifest_memory_min = constants.lsm_manifest_memory_size_min;
+    const lsm_manifest_memory_multiplier = constants.lsm_manifest_memory_size_multiplier;
+    if (lsm_manifest_memory > lsm_manifest_memory_max) {
+        vsr.fatal(.cli, "--memory-lsm-manifest: size {}{s} exceeds maximum: {}", .{
+            scrub_memory_lsm_manifest.value,
+            scrub_memory_lsm_manifest.suffix(),
+            vsr.stdx.fmt_int_size_bin_exact(lsm_manifest_memory_max),
+        });
+    }
+    if (lsm_manifest_memory < lsm_manifest_memory_min) {
+        vsr.fatal(.cli, "--memory-lsm-manifest: size {}{s} is below minimum: {}", .{
+            scrub_memory_lsm_manifest.value,
+            scrub_memory_lsm_manifest.suffix(),
+            vsr.stdx.fmt_int_size_bin_exact(lsm_manifest_memory_min),
+        });
+    }
+    if (lsm_manifest_memory % lsm_manifest_memory_multiplier != 0) {
+        vsr.fatal(
+            .cli,
+            "--memory-lsm-manifest: size {}{s} must be a multiple of {}",
+            .{
+                scrub_memory_lsm_manifest.value,
+                scrub_memory_lsm_manifest.suffix(),
+                vsr.stdx.fmt_int_size_bin_exact(lsm_manifest_memory_multiplier),
+            },
+        );
+    }
+
+    const lsm_forest_node_count: u32 =
+        @intCast(@divExact(lsm_manifest_memory, constants.lsm_manifest_node_size));
+
+    return .{
+        .path = integrity.path,
+        .log_debug = integrity.log_debug,
+        .seed = integrity.seed,
+        .skip_wal = integrity.skip_wal,
+        .skip_client_replies = integrity.skip_client_replies,
+        .skip_grid = integrity.skip_grid,
+        .lsm_forest_node_count = lsm_forest_node_count,
+    };
+}
+
 fn parse_args_inspect(inspect: CLIArgs.Inspect) Command.Inspect {
     const path = switch (inspect) {
         .constants => return .constants,
         .metrics => return .metrics,
-        .op => |args| return .{ .op = args.positional.op },
-        inline else => |args| args.positional.path,
+        .op => |args| return .{ .op = args.op },
+        .integrity => return .{ .integrity = parse_args_inspect_integrity(inspect) },
+        inline else => |args| args.path,
     };
 
     return .{ .data_file = .{
@@ -1082,6 +1232,7 @@ fn parse_args_inspect(inspect: CLIArgs.Inspect) Command.Inspect {
             .constants,
             .metrics,
             .op,
+            .integrity,
             => unreachable,
             .superblock => .superblock,
             .wal => |args| .{ .wal = .{ .slot = args.slot } },
@@ -1107,7 +1258,7 @@ fn parse_args_inspect(inspect: CLIArgs.Inspect) Command.Inspect {
 
 fn parse_args_multiversion(multiversion: CLIArgs.Multiversion) Command.Multiversion {
     return .{
-        .path = multiversion.positional.path,
+        .path = multiversion.path,
         .log_debug = multiversion.log_debug,
     };
 }
@@ -1128,6 +1279,16 @@ fn parse_args_amqp(amqp: CLIArgs.AMQP) Command.AMQP {
         );
     }
 
+    if (amqp.requests_per_second_limit) |requests_per_second_limit| {
+        if (requests_per_second_limit == 0) {
+            vsr.fatal(
+                .cli,
+                "--requests-per-second-limit must not be zero.",
+                .{},
+            );
+        }
+    }
+
     return .{
         .addresses = addresses,
         .cluster = amqp.cluster,
@@ -1139,6 +1300,7 @@ fn parse_args_amqp(amqp: CLIArgs.AMQP) Command.AMQP {
         .publish_routing_key = amqp.publish_routing_key,
         .event_count_max = amqp.event_count_max,
         .idle_interval_ms = amqp.idle_interval_ms,
+        .requests_per_second_limit = amqp.requests_per_second_limit,
         .timestamp_last = amqp.timestamp_last,
         .log_debug = amqp.verbose,
     };
@@ -1204,7 +1366,7 @@ fn parse_address_and_port(
 fn parse_cache_size_to_count(
     comptime T: type,
     comptime SetAssociativeCache: type,
-    size: flags.ByteSize,
+    size: ByteSize,
     cli_flag: []const u8,
 ) u32 {
     const value_count_max_multiple = SetAssociativeCache.value_count_max_multiple;

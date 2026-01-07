@@ -1,5 +1,5 @@
 const std = @import("std");
-const stdx = @import("./stdx.zig");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 
 const constants = @import("./constants.zig");
@@ -124,7 +124,7 @@ test "Stack: fuzz" {
 
     const allocator = std.testing.allocator;
 
-    var prng = stdx.PRNG.from_seed(0);
+    var prng = stdx.PRNG.from_seed_testing();
 
     const Item = struct {
         id: u32,
@@ -144,6 +144,7 @@ test "Stack: fuzz" {
     // Allocate a pool of nodes.
     var items = try allocator.alloc(Item, item_count_max);
     defer allocator.free(items);
+
     for (items, 0..) |*item, i| {
         item.* = Item{ .id = @intCast(i), .link = .{} };
     }
@@ -195,7 +196,7 @@ test "Stack: fuzz" {
         // Verify that peek() returns the same as the last element in our model.
         if (model.items.len > 0) {
             const top = stack.peek() orelse unreachable;
-            const top_ref = model.pop();
+            const top_ref = model.pop().?;
             assert(top.id == top_ref);
             try model.append(top_ref);
         } else {

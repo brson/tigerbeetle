@@ -1,8 +1,10 @@
 const std = @import("std");
-const stdx = @import("../stdx.zig");
-
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 
+const constants = @import("../constants.zig");
+
+const ProcessID = @import("../trace.zig").ProcessID;
 const IO = @import("../io.zig").IO;
 
 const EventMetric = @import("event.zig").EventMetric;
@@ -46,10 +48,10 @@ const statsd_line_size_max = line_size_max: {
                 struct_size_max(EventTimingInner.type),
             ),
             .values = .{
-                .duration_min_us = std.math.maxInt(EventTimingAggregate.ValueType),
-                .duration_max_us = std.math.maxInt(EventTimingAggregate.ValueType),
-                .duration_sum_us = std.math.maxInt(EventTimingAggregate.ValueType),
-                .count = std.math.maxInt(EventTimingAggregate.ValueType),
+                .duration_min = .{ .ns = std.math.maxInt(u64) },
+                .duration_max = .{ .ns = std.math.maxInt(u64) },
+                .duration_sum = .{ .ns = std.math.maxInt(u64) },
+                .count = std.math.maxInt(u64),
             },
         };
     }
@@ -64,7 +66,7 @@ const statsd_line_size_max = line_size_max: {
         format_metric(
             buffer_writer,
             .{ .metric = .{ .aggregate = event } },
-            .{ .cluster = 0, .replica = 0 },
+            .{ .cluster = std.math.maxInt(u128), .replica = constants.members_max - 1 },
         ) catch unreachable;
         line_size_max = @max(line_size_max, buffer_stream.getPos() catch unreachable);
     }
@@ -74,7 +76,7 @@ const statsd_line_size_max = line_size_max: {
             format_metric(
                 buffer_writer,
                 .{ .timing = .{ .aggregate = event, .stat = stat } },
-                .{ .cluster = 0, .replica = 0 },
+                .{ .cluster = std.math.maxInt(u128), .replica = constants.members_max - 1 },
             ) catch unreachable;
             line_size_max = @max(line_size_max, buffer_stream.getPos() catch unreachable);
         }
@@ -102,12 +104,11 @@ const packet_count_max = stdx.div_ceil(
 comptime {
     // Sanity-check:
     assert(packet_count_max > 0);
-    assert(packet_count_max < 512);
+    assert(packet_count_max < 256);
 }
 
 pub const StatsD = struct {
-    cluster: u128,
-    replica: u8,
+    process_id: ProcessID,
     implementation: union(enum) {
         udp: struct {
             socket: std.posix.socket_t,
@@ -124,8 +125,7 @@ pub const StatsD = struct {
     /// Creates a statsd instance, which will send UDP packets via the IO instance provided.
     pub fn init_udp(
         allocator: std.mem.Allocator,
-        cluster: u128,
-        replica: u8,
+        process_id: ProcessID,
         io: *IO,
         address: std.net.Address,
     ) !StatsD {
@@ -138,11 +138,10 @@ pub const StatsD = struct {
         // 'Connect' the UDP socket, so we can just send() to it normally.
         try std.posix.connect(socket, &address.any, address.getOsSockLen());
 
-        log.info("{}: sending statsd metrics to {}", .{ replica, address });
+        log.info("{}: sending statsd metrics to {}", .{ process_id, address });
 
         return .{
-            .cluster = cluster,
-            .replica = replica,
+            .process_id = process_id,
             .implementation = .{
                 .udp = .{
                     .socket = socket,
@@ -157,15 +156,13 @@ pub const StatsD = struct {
     // so that all of the other code can run and be tested in the simulator.
     pub fn init_log(
         allocator: std.mem.Allocator,
-        cluster: u128,
-        replica: u8,
+        process_id: ProcessID,
     ) !StatsD {
         const send_buffer = try allocator.create([packet_count_max * packet_size_max]u8);
         errdefer allocator.destroy(send_buffer);
 
         return .{
-            .cluster = cluster,
-            .replica = replica,
+            .process_id = process_id,
             .implementation = .log,
             .send_buffer = send_buffer,
         };
@@ -184,7 +181,15 @@ pub const StatsD = struct {
         self: *StatsD,
         events_metric: []const ?EventMetricAggregate,
         events_timing: []const ?EventTimingAggregate,
-    ) error{Busy}!void {
+    ) error{ Busy, UnknownProcess }!u32 {
+        const cluster, const replica = switch (self.process_id) {
+            .unknown => {
+                log.err("{}: process id unknown; skipping emit", .{self.process_id});
+                return error.UnknownProcess;
+            },
+            .replica => |replica| .{ replica.cluster, replica.replica },
+        };
+
         // This really should not happen; it means we're emitting so many packets, on a short
         // enough emit timeout, that the kernel hasn't been able to process them all (UDP doesn't
         // block or provide back-pressure like a TCP socket).
@@ -195,7 +200,7 @@ pub const StatsD = struct {
         // This is also a load-bearing check: see send_callback().
         if (self.send_in_flight_count != 0) {
             log.err("{}: {} / {} packets still in flight; skipping emit", .{
-                self.replica,
+                self.process_id,
                 self.send_in_flight_count,
                 packet_count_max,
             });
@@ -205,7 +210,7 @@ pub const StatsD = struct {
         if (self.implementation == .udp and self.implementation.udp.send_callback_error_count > 0) {
             log.warn(
                 "{}: failed to send {} packets",
-                .{ self.replica, self.implementation.udp.send_callback_error_count },
+                .{ self.process_id, self.implementation.udp.send_callback_error_count },
             );
             self.implementation.udp.send_callback_error_count = 0;
         }
@@ -232,13 +237,14 @@ pub const StatsD = struct {
                 for (stats) |stat| {
                     const send_position_before = send_stream.getPos() catch unreachable;
                     format_metric(send_writer, stat, .{
-                        .cluster = self.cluster,
-                        .replica = self.replica,
-                    }) catch |err| {
+                        .cluster = cluster,
+                        .replica = replica,
+                    }) catch |err| switch (err) {
                         // This shouldn't ever happen, but don't allow metrics to kill the system.
-                        assert(err == error.NoSpaceLeft);
-                        log.err("{}: insufficient buffer space", .{self.replica});
-                        break;
+                        error.NoSpaceLeft => {
+                            log.err("{}: insufficient buffer space", .{self.process_id});
+                            break;
+                        },
                     };
 
                     const send_position_after = send_stream.getPos() catch unreachable;
@@ -246,11 +252,12 @@ pub const StatsD = struct {
                     assert(send_size > 0);
                     if (send_ready + send_size > packet_size_max) {
                         assert(send_ready > 0);
-
-                        send_sizes.append(send_ready) catch {
-                            log.err("{}: insufficient packet count", .{self.replica});
+                        if (send_sizes.full()) {
+                            log.err("{}: insufficient packet count", .{self.process_id});
                             break;
-                        };
+                        } else {
+                            send_sizes.push(send_ready);
+                        }
                         send_ready = send_size;
                     } else {
                         send_ready += send_size;
@@ -259,23 +266,27 @@ pub const StatsD = struct {
             }
         }
         if (send_ready > 0) {
-            send_sizes.append(send_ready) catch {
-                log.err("{}: insufficient packet count", .{self.replica});
-            };
+            if (send_sizes.full()) {
+                log.err("{}: insufficient packet count", .{self.process_id});
+            } else {
+                send_sizes.push(send_ready);
+            }
         }
 
         var send_offset: u32 = 0;
         for (send_sizes.const_slice()) |send_size| {
             if (self.send_in_flight_count >= self.send_completions.len) {
                 // This shouldn't ever happen, but don't allow metrics to kill the system.
-                log.err("{}: insufficient packets to emit any metrics", .{self.replica});
-                return;
+                log.err("{}: insufficient packets to emit any metrics", .{self.process_id});
+                return 0;
             }
             const completion = &self.send_completions[self.send_in_flight_count];
             self.send_in_flight_count += 1;
             self.emit_buffer(completion, self.send_buffer[send_offset..][0..send_size]);
             send_offset += send_size;
         }
+
+        return @intCast(send_sizes.count());
     }
 
     fn emit_buffer(self: *StatsD, send_completion: *IO.Completion, send_buffer: []const u8) void {
@@ -291,7 +302,7 @@ pub const StatsD = struct {
                 );
             },
             .log => {
-                log.debug("{}: statsd packet: {s}", .{ self.replica, send_buffer });
+                log.debug("{}: statsd packet: {s}", .{ self.process_id, send_buffer });
                 StatsD.send_callback(self, send_completion, send_buffer.len);
             },
         }
@@ -331,11 +342,11 @@ fn format_metric(
         .metric => |data| .{ "", "g", data.aggregate.value },
         .timing => |data| switch (data.stat) {
             .count => .{ "_us.count", "c", data.aggregate.values.count },
-            .sum => .{ "_us.sum", "c", data.aggregate.values.duration_sum_us },
-            .min => .{ "_us.min", "g", data.aggregate.values.duration_min_us },
-            .max => .{ "_us.max", "g", data.aggregate.values.duration_max_us },
+            .sum => .{ "_us.sum", "c", data.aggregate.values.duration_sum.to_us() },
+            .min => .{ "_us.min", "g", data.aggregate.values.duration_min.to_us() },
+            .max => .{ "_us.max", "g", data.aggregate.values.duration_max.to_us() },
             .avg => .{ "_us.avg", "g", @divFloor(
-                data.aggregate.values.duration_sum_us,
+                data.aggregate.values.duration_sum.to_us(),
                 data.aggregate.values.count,
             ) },
         },
@@ -356,22 +367,22 @@ fn format_metric(
             switch (stat_data.aggregate.event) {
                 inline else => |data| {
                     const Tags = @TypeOf(data);
-                    if (@typeInfo(Tags) == .Struct) {
+                    if (@typeInfo(Tags) == .@"struct") {
                         const fields = std.meta.fields(@TypeOf(data));
                         inline for (fields) |data_field| {
                             comptime assert(!std.mem.eql(u8, data_field.name, "cluster"));
                             comptime assert(!std.mem.eql(u8, data_field.name, "replica"));
-                            comptime assert(@typeInfo(data_field.type) == .Int or
-                                @typeInfo(data_field.type) == .Enum or
-                                @typeInfo(data_field.type) == .Union);
+                            comptime assert(@typeInfo(data_field.type) == .int or
+                                @typeInfo(data_field.type) == .@"enum" or
+                                @typeInfo(data_field.type) == .@"union");
 
                             const data_field_value = @field(data, data_field.name);
                             try writer.writeByte(',');
                             try writer.writeAll(data_field.name);
                             try writer.writeByte(':');
 
-                            if (@typeInfo(data_field.type) == .Enum or
-                                @typeInfo(data_field.type) == .Union)
+                            if (@typeInfo(data_field.type) == .@"enum" or
+                                @typeInfo(data_field.type) == .@"union")
                             {
                                 try writer.print("{s}", .{@tagName(data_field_value)});
                             } else {
@@ -393,20 +404,20 @@ fn format_metric(
 ///
 /// Integers get maxInt, and Enums get a value corresponding to `enum_size_max()`.
 fn struct_size_max(StructOrVoid: type) StructOrVoid {
-    if (@typeInfo(StructOrVoid) == .Void) return {};
+    if (@typeInfo(StructOrVoid) == .void) return {};
 
-    assert(@typeInfo(StructOrVoid) == .Struct);
+    assert(@typeInfo(StructOrVoid) == .@"struct");
     const Struct = StructOrVoid;
 
     var output: Struct = undefined;
 
     for (std.meta.fields(Struct)) |field| {
         const type_info = @typeInfo(field.type);
-        assert(type_info == .Int or type_info == .Enum);
-        assert(type_info != .Int or type_info.Int.signedness == .unsigned);
+        assert(type_info == .int or type_info == .@"enum");
+        assert(type_info != .int or type_info.Int.signedness == .unsigned);
         switch (type_info) {
-            .Int => @field(output, field.name) = std.math.maxInt(field.type),
-            .Enum => @field(output, field.name) =
+            .int => @field(output, field.name) = std.math.maxInt(field.type),
+            .@"enum" => @field(output, field.name) =
                 std.enums.nameCast(field.type, enum_size_max(field.type)),
             else => @compileError("unsupported type"),
         }
@@ -417,6 +428,7 @@ fn struct_size_max(StructOrVoid: type) StructOrVoid {
 
 /// Returns the longest @tagName for a given Enum.
 fn enum_size_max(Enum: type) []const u8 {
+    @setEvalBranchQuota(10_000);
     var tag_longest: []const u8 = "";
     for (std.meta.fieldNames(Enum)) |field_name| {
         if (tag_longest.len < field_name.len) {

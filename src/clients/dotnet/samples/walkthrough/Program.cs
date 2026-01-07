@@ -316,7 +316,6 @@ using (var client = new Client(clusterID, addresses))
         var transfer1 = new Transfer
         {
             Id = 9,
-            // Post the entire pending amount.
             Amount = 0,
             PendingId = 8,
             Flags = TransferFlags.VoidPendingTransfer,
@@ -394,7 +393,7 @@ using (var client = new Client(clusterID, addresses))
             Ledger = 0, // No filter by Ledger.
             TimestampMin = 0, // No filter by Timestamp.
             TimestampMax = 0, // No filter by Timestamp.
-            Limit = 10, // Limit to ten balances at most.
+            Limit = 10, // Limit to ten accounts at most.
             Flags = QueryFilterFlags.Reversed, // Sort by timestamp in reverse-chronological order.
         };
 
@@ -415,7 +414,7 @@ using (var client = new Client(clusterID, addresses))
             Ledger = 0, // No filter by Ledger
             TimestampMin = 0, // No filter by Timestamp.
             TimestampMax = 0, // No filter by Timestamp.
-            Limit = 10, // Limit to ten balances at most.
+            Limit = 10, // Limit to ten transfers at most.
             Flags = QueryFilterFlags.Reversed, // Sort by timestamp in reverse-chronological order.
         };
 

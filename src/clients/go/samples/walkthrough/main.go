@@ -279,8 +279,7 @@ func main() {
 		// Error handling omitted.
 
 		transfer1 := Transfer{
-			ID: ToUint128(9),
-			// Post the entire pending amount.
+			ID:        ToUint128(9),
 			Amount:    ToUint128(0),
 			PendingID: ToUint128(8),
 			Flags:     TransferFlags{VoidPendingTransfer: true}.ToUint16(),
@@ -355,7 +354,7 @@ func main() {
 			Ledger:       0,  // No filter by Ledger
 			TimestampMin: 0,  // No filter by Timestamp.
 			TimestampMax: 0,  // No filter by Timestamp.
-			Limit:        10, // Limit to ten balances at most.
+			Limit:        10, // Limit to ten accounts at most.
 			Flags: QueryFilterFlags{
 				Reversed: true, // Sort by timestamp in reverse-chronological order.
 			}.ToUint32(),
@@ -376,7 +375,7 @@ func main() {
 			Ledger:       0,  // No filter by Ledger.
 			TimestampMin: 0,  // No filter by Timestamp.
 			TimestampMax: 0,  // No filter by Timestamp.
-			Limit:        10, // Limit to ten balances at most.
+			Limit:        10, // Limit to ten transfers at most.
 			Flags: QueryFilterFlags{
 				Reversed: true, // Sort by timestamp in reverse-chronological order.
 			}.ToUint32(),

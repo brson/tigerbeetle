@@ -35,7 +35,7 @@ pub const JNIThreadCleaner = struct {
     }
 
     // Will be called by the OS with the JVM handler when the thread finalizes.
-    fn destructor_callback(jvm: *anyopaque) callconv(.C) void {
+    fn destructor_callback(jvm: *anyopaque) callconv(.c) void {
         assert(tls_key != null);
         detach_current_thread(@ptrCast(jvm));
     }
@@ -71,22 +71,11 @@ pub const JNIThreadCleaner = struct {
     /// based on `pthread_key_create` for Linux/MacOS and `FlsAlloc` for Windows.
     const tls = switch (builtin.os.tag) {
         .linux, .macos => struct {
-            /// TODO(zig) Should use `std.c` instead, redeclaring because of macos.
-            /// https://github.com/ziglang/zig/issues/13950.
-            const c = struct {
-                const pthread_key_t = c_uint;
-                extern "c" fn pthread_key_create(
-                    key: *pthread_key_t,
-                    destructor: ?*const fn (value: *anyopaque) callconv(.C) void,
-                ) std.c.E;
-                extern "c" fn pthread_setspecific(key: pthread_key_t, value: ?*anyopaque) c_int;
-            };
+            const Key = std.c.pthread_key_t;
 
-            const Key = c.pthread_key_t;
-
-            fn create_key(destructor: ?*const fn (value: *anyopaque) callconv(.C) void) Key {
+            fn create_key(destructor: ?*const fn (value: *anyopaque) callconv(.c) void) Key {
                 var key: Key = undefined;
-                const ret = c.pthread_key_create(&key, destructor);
+                const ret = std.c.pthread_key_create(&key, destructor);
                 if (ret != .SUCCESS) {
                     const message = "Unexpected result calling pthread_key_create";
                     log.err(message ++ "; Error = {} ({s})", .{
@@ -100,7 +89,7 @@ pub const JNIThreadCleaner = struct {
             }
 
             fn set_key(key: Key, value: *anyopaque) void {
-                const ret = c.pthread_setspecific(key, value);
+                const ret = std.c.pthread_setspecific(key, value);
                 if (ret != 0) {
                     const message = "Unexpected result calling pthread_setspecific";
                     log.err(message ++ "; Error = {}", .{ret});
@@ -111,37 +100,21 @@ pub const JNIThreadCleaner = struct {
         .windows => struct {
             const windows = struct {
                 const FLS_OUT_OF_INDEXES: std.os.windows.DWORD = 0xffffffff;
-
-                // Declaring the function with an alternative name because `CamelCase` functions are
-                // by convention, used for building generic types.
-                const fls_alloc = @extern(
-                    *const fn (
-                        ?*const fn (value: *anyopaque) callconv(.C) void,
-                    ) callconv(.C) std.os.windows.DWORD,
-                    .{
-                        .library_name = "kernel32",
-                        // https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flsalloc
-                        .name = "FlsAlloc",
-                    },
-                );
-
-                const fls_set_value = @extern(
-                    *const fn (
-                        std.os.windows.DWORD,
-                        *anyopaque,
-                    ) callconv(.C) std.os.windows.BOOL,
-                    .{
-                        .library_name = "kernel32",
-                        // https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flssetvalue
-                        .name = "FlsSetValue",
-                    },
-                );
+                // https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flsalloc
+                extern "kernel32" fn FlsAlloc(
+                    ?*const fn (value: *anyopaque) callconv(.c) void,
+                ) callconv(.c) std.os.windows.DWORD;
+                // https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flssetvalue
+                extern "kernel32" fn FlsSetValue(
+                    std.os.windows.DWORD,
+                    *anyopaque,
+                ) callconv(.c) std.os.windows.BOOL;
             };
 
             const Key = std.os.windows.DWORD;
 
-            fn create_key(destructor: ?*const fn (value: *anyopaque) callconv(.C) void) Key {
-                const key = windows.fls_alloc(destructor);
+            fn create_key(destructor: ?*const fn (value: *anyopaque) callconv(.c) void) Key {
+                const key = windows.FlsAlloc(destructor);
                 if (key == windows.FLS_OUT_OF_INDEXES) {
                     const message = "Unexpected result calling FlsAlloc";
                     log.err(message ++ "; Error = {}", .{key});
@@ -152,7 +125,7 @@ pub const JNIThreadCleaner = struct {
             }
 
             fn set_key(key: Key, value: *anyopaque) void {
-                const ret = windows.fls_set_value(key, value);
+                const ret = windows.FlsSetValue(key, value);
                 if (ret == std.os.windows.FALSE) {
                     const message = "Unexpected result calling FlsSetValue";
                     log.err(message ++ "; Error = {}", .{ret});
@@ -189,10 +162,10 @@ test "JNIThreadCleaner:tls" {
             event.wait();
         }
 
-        fn destructor_callback(tls_value: *anyopaque) callconv(.C) void {
+        fn destructor_callback(tls_value: *anyopaque) callconv(.c) void {
             assert(tls_key != null);
 
-            const self: *TestContext = @alignCast(@ptrCast(tls_value));
+            const self: *TestContext = @ptrCast(@alignCast(tls_value));
             _ = self.counter.fetchAdd(1, .monotonic);
         }
     };

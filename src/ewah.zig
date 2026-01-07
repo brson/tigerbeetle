@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const math = std.math;
 const mem = std.mem;
-const stdx = @import("stdx.zig");
+const stdx = @import("stdx");
 const div_ceil = stdx.div_ceil;
 const disjoint_slices = stdx.disjoint_slices;
 const maybe = stdx.maybe;
@@ -35,7 +35,7 @@ pub fn ewah(comptime Word: type) type {
         pub const MarkerUniformCount = std.meta.Int(.unsigned, word_bits / 2 - 1); // Word=u64 → u31
         pub const MarkerLiteralCount = std.meta.Int(.unsigned, word_bits / 2); // Word=u64 → u32
 
-        const Marker = packed struct(Word) {
+        pub const Marker = packed struct(Word) {
             // Whether the uniform word is all 0s or all 1s.
             uniform_bit: u1,
             // 31-bit number of uniform words following the marker.
@@ -46,7 +46,7 @@ pub fn ewah(comptime Word: type) type {
 
         comptime {
             assert(@import("builtin").target.cpu.arch.endian() == std.builtin.Endian.little);
-            assert(@typeInfo(Word).Int.signedness == .unsigned);
+            assert(@typeInfo(Word).int.signedness == .unsigned);
             assert(word_bits % 8 == 0); // A multiple of a byte, so that words can be cast to bytes.
             assert(@bitSizeOf(Marker) == word_bits);
             assert(@sizeOf(Marker) == @sizeOf(Word));
@@ -173,6 +173,8 @@ pub fn ewah(comptime Word: type) type {
             /// be copied.
             literal_word_count: usize = 0,
 
+            trailing_zero_runs_count: usize = 0,
+
             /// Returns the number of bytes written to `target_chunk` by this invocation.
             pub fn encode_chunk(encoder: *Encoder, target_chunk: []align(@alignOf(Word)) u8) usize {
                 const source_words = encoder.source_words;
@@ -257,6 +259,13 @@ pub fn ewah(comptime Word: type) type {
                     target_index += literal_word_count_chunk;
 
                     encoder.literal_word_count = literal_word_count - literal_word_count_chunk;
+
+                    if (uniform_bit == 0 and literal_word_count == 0) {
+                        assert(uniform_word_count > 0);
+                        encoder.trailing_zero_runs_count += 1;
+                    } else {
+                        encoder.trailing_zero_runs_count = 0;
+                    }
                 }
                 assert(source_index <= source_words.len);
 
@@ -283,6 +292,7 @@ pub fn ewah(comptime Word: type) type {
 
             var encoder = encode_chunks(source_words);
             defer assert(encoder.done());
+
             return encoder.encode_chunk(target);
         }
 
@@ -301,7 +311,7 @@ pub fn ewah(comptime Word: type) type {
 
 test "ewah encode→decode cycle" {
     const fuzz = @import("./ewah_fuzz.zig");
-    var prng = stdx.PRNG.from_seed(123);
+    var prng = stdx.PRNG.from_seed_testing();
 
     inline for (.{ u8, u16, u32, u64, usize }) |Word| {
         const Context = fuzz.ContextType(Word);

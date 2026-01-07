@@ -8,13 +8,18 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 
 const root = @import("root");
 
+const KiB = stdx.KiB;
+const MiB = stdx.MiB;
+const GiB = stdx.GiB;
+const TiB = stdx.TiB;
+
 const BuildOptions = struct {
     config_verify: bool,
-    hash_log_mode: HashLogMode,
     git_commit: ?[40]u8,
     release: ?[]const u8,
     release_client_min: ?[]const u8,
@@ -24,21 +29,22 @@ const BuildOptions = struct {
 // Allow setting build-time config either via `build.zig` `Options`, or via a struct in the root
 // file.
 const build_options: BuildOptions = blk: {
-    if (@hasDecl(root, "vsr_options")) {
-        break :blk root.vsr_options;
-    } else {
-        const vsr_options = @import("vsr_options");
-        // Zig's `addOptions` reuses the type, but redeclares it — identical structurally,
-        // but a different type from a nominal typing perspective.
-        var result: BuildOptions = undefined;
-        for (std.meta.fields(BuildOptions)) |field| {
-            @field(result, field.name) = launder_type(
-                field.type,
-                @field(vsr_options, field.name),
-            );
-        }
-        break :blk result;
+    const vsr_options =
+        if (@hasDecl(root, "vsr_options"))
+            root.vsr_options
+        else
+            @import("vsr_options");
+
+    // Both the root file and Zig's `addOptions` expose the struct as identical structurally,
+    // but a different type from a nominal typing perspective.
+    var result: BuildOptions = undefined;
+    for (std.meta.fields(BuildOptions)) |field| {
+        @field(result, field.name) = launder_type(
+            field.type,
+            @field(vsr_options, field.name),
+        );
     }
+    break :blk result;
 };
 
 fn launder_type(comptime T: type, comptime value: anytype) T {
@@ -49,8 +55,8 @@ fn launder_type(comptime T: type, comptime value: anytype) T {
     {
         return value;
     }
-    if (@typeInfo(T) == .Enum) {
-        assert(@typeInfo(@TypeOf(value)) == .Enum);
+    if (@typeInfo(T) == .@"enum") {
+        assert(@typeInfo(@TypeOf(value)) == .@"enum" or @typeInfo(@TypeOf(value)) == .enum_literal);
         return @field(T, @tagName(value));
     }
     unreachable;
@@ -84,35 +90,34 @@ pub const Config = struct {
 // TODO: Some of these could be runtime parameters (e.g. grid_scrubber_cycle_ms).
 const ConfigProcess = struct {
     log_level: std.log.Level = .info,
-    hash_log_mode: HashLogMode = .none,
     verify: bool,
     release: vsr.Release = vsr.Release.minimum,
     release_client_min: vsr.Release = vsr.Release.minimum,
     git_commit: ?[40]u8 = null,
     port: u16 = 3001,
     address: []const u8 = "127.0.0.1",
-    storage_size_limit_default: u64 = 16 * 1024 * 1024 * 1024 * 1024,
-    storage_size_limit_max: u64 = 64 * 1024 * 1024 * 1024 * 1024,
-    memory_size_max_default: u64 = 1024 * 1024 * 1024,
-    cache_accounts_size_default: usize,
-    cache_transfers_size_default: usize,
-    cache_transfers_pending_size_default: usize,
-    client_request_queue_max: usize = 2,
-    lsm_manifest_node_size: usize = 16 * 1024,
+    storage_size_limit_default: u64 = 16 * TiB,
+    storage_size_limit_max: u64 = 64 * TiB,
+    memory_size_max_default: u64 = GiB,
+    cache_accounts_size_default: u64,
+    cache_transfers_size_default: u64,
+    cache_transfers_pending_size_default: u64,
+    client_request_queue_max: u32 = 2,
+    lsm_manifest_node_size: u64 = 16 * KiB,
     connection_delay_min_ms: u64 = 50,
     connection_delay_max_ms: u64 = 1000,
     tcp_backlog: u31 = 64,
-    tcp_rcvbuf: c_int = 4 * 1024 * 1024,
+    tcp_rcvbuf: c_int = 4 * MiB,
     tcp_keepalive: bool = true,
     tcp_keepidle: c_int = 5,
     tcp_keepintvl: c_int = 4,
     tcp_keepcnt: c_int = 3,
     tcp_nodelay: bool = true,
     direct_io: bool,
-    journal_iops_read_max: usize = 8,
-    journal_iops_write_max: usize = 32,
-    client_replies_iops_read_max: usize = 1,
-    client_replies_iops_write_max: usize = 2,
+    journal_iops_read_max: u32 = 8,
+    journal_iops_write_max: u32 = 32,
+    client_replies_iops_read_max: u32 = 1,
+    client_replies_iops_write_max: u32 = 2,
     client_request_completion_warn_ms: u64 = 200,
     tick_ms: u63 = 10,
     rtt_ms: u64 = 300,
@@ -124,19 +129,19 @@ const ConfigProcess = struct {
     clock_epoch_max_ms: u64 = 60000,
     clock_synchronization_window_min_ms: u64 = 2000,
     clock_synchronization_window_max_ms: u64 = 20000,
-    grid_iops_read_max: u64 = 16,
-    grid_iops_write_max: u64 = 16,
-    grid_cache_size_default: u64 = 1024 * 1024 * 1024,
-    grid_repair_request_max: usize = 4,
-    grid_repair_reads_max: usize = 4,
-    grid_missing_blocks_max: usize = 30,
-    grid_missing_tables_max: usize = 6,
-    grid_scrubber_reads_max: usize = 1,
-    grid_scrubber_cycle_ms: usize = std.time.ms_per_day * 180,
-    grid_scrubber_interval_ms_min: usize = std.time.ms_per_s / 20,
-    grid_scrubber_interval_ms_max: usize = std.time.ms_per_s * 10,
+    grid_iops_read_max: u64 = 32,
+    grid_iops_write_max: u64 = 32,
+    grid_cache_size_default: u64 = GiB,
+    grid_repair_request_max: u32 = 4,
+    grid_repair_reads_max: u32 = 4,
+    grid_missing_blocks_max: u32 = 30,
+    grid_missing_tables_max: u32 = 6,
+    grid_scrubber_reads_max: u32 = 1,
+    grid_scrubber_cycle_ms: u64 = std.time.ms_per_day * 180,
+    grid_scrubber_interval_ms_min: u64 = std.time.ms_per_s / 20,
+    grid_scrubber_interval_ms_max: u64 = std.time.ms_per_s * 10,
     aof_recovery: bool = false,
-    multiversion_binary_platform_size_max: u64 = 64 * 1024 * 1024,
+    multiversion_binary_platform_size_max: u64 = 64 * MiB,
     multiversion_poll_interval_ms: u64 = 1000,
 };
 
@@ -149,21 +154,21 @@ const ConfigProcess = struct {
 /// Fields are documented within constants.zig.
 const ConfigCluster = struct {
     cache_line_size: comptime_int = 64,
-    clients_max: usize,
-    pipeline_prepare_queue_max: usize = 8,
-    view_change_headers_suffix_max: usize = 8 + 1,
+    clients_max: u32,
+    pipeline_prepare_queue_max: u32 = 8,
+    view_change_headers_suffix_max: u32 = 8 + 1,
     quorum_replication_max: u8 = 3,
-    journal_slot_count: usize = 1024,
-    message_size_max: usize = 1 * 1024 * 1024,
+    journal_slot_count: u32 = 1024,
+    message_size_max: u32 = 1 * MiB,
     superblock_copies: comptime_int = 4,
-    block_size: comptime_int = 512 * 1024,
+    block_size: comptime_int = 512 * KiB,
     lsm_levels: u6 = 7,
     lsm_growth_factor: u32 = 8,
     lsm_compaction_ops: comptime_int = 32,
-    lsm_snapshots_max: usize = 32,
+    lsm_snapshots_max: u32 = 32,
     lsm_manifest_compact_extra_blocks: comptime_int = 1,
     lsm_table_coalescing_threshold_percent: comptime_int = 50,
-    vsr_releases_max: usize = 64,
+    vsr_releases_max: u32 = 64,
 
     /// Minimal value.
     // TODO(batiati): Maybe this constant should be derived from `grid_iops_read_max`,
@@ -180,11 +185,11 @@ const ConfigCluster = struct {
 
     /// The smallest possible message_size_max (for use in the simulator to improve performance).
     /// The message body must have room for pipeline_prepare_queue_max headers in the DVC.
-    pub fn message_size_max_min(clients_max: usize) usize {
+    pub fn message_size_max_min(clients_max: u32) u32 {
         return @max(
             sector_size,
             std.mem.alignForward(
-                usize,
+                u32,
                 @sizeOf(vsr.Header) + clients_max * @sizeOf(vsr.Header),
                 sector_size,
             ),
@@ -212,18 +217,12 @@ pub const ConfigBase = enum {
     default,
 };
 
-pub const HashLogMode = enum {
-    none,
-    create,
-    check,
-};
-
 pub const configs = struct {
     /// A good default config for production.
     pub const default_production = Config{
         .process = .{
             .direct_io = true,
-            .cache_accounts_size_default = @sizeOf(vsr.tigerbeetle.Account) * 1024 * 1024,
+            .cache_accounts_size_default = @sizeOf(vsr.tigerbeetle.Account) * MiB,
             .cache_transfers_size_default = 0,
             .cache_transfers_pending_size_default = 0,
             .verify = true,
@@ -238,8 +237,8 @@ pub const configs = struct {
     /// reach.
     pub const test_min = Config{
         .process = .{
-            .storage_size_limit_default = 1 * 1024 * 1024 * 1024,
-            .storage_size_limit_max = 1 * 1024 * 1024 * 1024,
+            .storage_size_limit_default = 1 * GiB,
+            .storage_size_limit_max = 1 * GiB,
             .direct_io = false,
             .cache_accounts_size_default = @sizeOf(vsr.tigerbeetle.Account) * 256,
             .cache_transfers_size_default = 0,
@@ -301,8 +300,6 @@ pub const configs = struct {
         else
             vsr.Release.minimum;
 
-        // TODO Use additional build options to overwrite other fields.
-        base.process.hash_log_mode = build_options.hash_log_mode;
         base.process.release = release;
         base.process.release_client_min = release_client_min;
         base.process.git_commit = build_options.git_commit;

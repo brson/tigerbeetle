@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck ./zig/download.sh
+      - shell: pwsh
+        run: Invoke-ScriptAnalyzer -Path zig/download.win.ps1 -Severity Error,Warning,Information -EnableExit
       - run: ./zig/download.ps1 && ./zig/zig build ci -- smoke
 
   test:
@@ -30,7 +32,7 @@ jobs:
           - { os: 'ubuntu-latest-arm64' }
           - { os: 'windows-latest' }
           - { os: 'macos-latest' }
-          - { os: 'macos-13' }
+          - { os: 'macos-15-intel' }
     runs-on: ${{ matrix.os }}
     steps:
       - run: git config --global core.autocrlf false
@@ -55,11 +57,12 @@ jobs:
         include:
           - { os: 'ubuntu-latest',  language: 'dotnet',  language_version: '8.0.x' }
           - { os: 'ubuntu-latest',  language: 'go',      language_version: '1.21'  }
-          - { os: 'ubuntu-latest',  language: 'rust',    language_version: '1.84'  }
+          - { os: 'ubuntu-latest',  language: 'rust',    language_version: '1.68'  }
+          - { os: 'ubuntu-latest',  language: 'rust',    language_version: 'stable' }
           - { os: 'ubuntu-latest',  language: 'java',    language_version: '11'    }
           - { os: 'ubuntu-latest',  language: 'java',    language_version: '21'    }
           - { os: 'ubuntu-latest',  language: 'node',    language_version: '18.x'  }
-          - { os: 'ubuntu-latest',  language: 'node',    language_version: '20.x'  }
+          - { os: 'ubuntu-latest',  language: 'node',    language_version: '24.x'  }
 
           # Support Python 3.7 explicitly, even though it's EOL.
           - { os: 'ubuntu-22.04',  language: 'python',  language_version: '3.7'    }
@@ -79,9 +82,9 @@ jobs:
           - { os: 'macos-latest',   language: 'node',    language_version: '20.x'  }
           - { os: 'macos-latest',   language: 'python',  language_version: '3.13'  }
 
-          - { os: 'macos-13',       language: 'go',      language_version: '1.21'  }
-          - { os: 'macos-13',       language: 'node',    language_version: '20.x'  }
-          - { os: 'macos-13',       language: 'python',  language_version: '3.13'  }
+          - { os: 'macos-15-intel',       language: 'go',      language_version: '1.21'  }
+          - { os: 'macos-15-intel',       language: 'node',    language_version: '20.x'  }
+          - { os: 'macos-15-intel',       language: 'python',  language_version: '3.13'  }
 
           # Limited matrix for Ubuntu ARM - runners are paid and we're not sure of the cost yet.
           - { os: 'ubuntu-latest-arm64',  language: 'dotnet',  language_version: '8.0.x' }
@@ -93,6 +96,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - run: git config --global core.autocrlf false
+      - if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-latest-arm64'
+        run: | # Allow unshare for vortex.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v4
 
       - if: matrix.language == 'dotnet'
@@ -108,7 +115,7 @@ jobs:
 
       - if: matrix.language == 'java'
         uses: actions/setup-java@v4
-        with: { java-version: "${{ matrix.language_version }}", distribution: 'temurin' }
+        with: { java-version: "${{ matrix.language_version }}", distribution: 'temurin', cache: 'maven'}
 
       - if: matrix.language == 'node'
         uses: actions/setup-node@v4
@@ -118,7 +125,7 @@ jobs:
         uses: actions/setup-python@v4
         with: { python-version: "${{ matrix.language_version }}" }
       - if: matrix.language == 'python'
-        run: pip install build hatch pytest
+        run: pip install build hatch pytest 'mypy<=1.18.2'
 
       - run: ./zig/download.ps1 && ./zig/zig build ci -- ${{ matrix.language }}
 
@@ -133,6 +140,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 2147483647 }
       - run: sudo apt-get update && sudo apt-get install -y kcov
+      - run: sudo rm -rf /usr/local/lib/android # Free up disk space for benchmarking.
       - run: ./zig/download.ps1
 
       # Dummy devhub run - checks that all the devhub tests pass in CI. They are run again, in main
@@ -174,35 +182,3 @@ jobs:
         run: exit 0
       - if: ${{  (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
         run: exit 1
-
-  antithesis:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: antithesis
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2147483647
-      - name: Install dependencies
-        run: sudo apt-get install -y jq curl
-      - uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "21"
-      - name: Login to Container Registry
-        run: docker login -u "$ANTITHESIS_DOCKER_USER" -p "$ANTITHESIS_DOCKER_PASS" us-central1-docker.pkg.dev
-        env:
-          ANTITHESIS_DOCKER_USER: ${{ secrets.ANTITHESIS_DOCKER_USER }}
-          ANTITHESIS_DOCKER_PASS: ${{ secrets.ANTITHESIS_DOCKER_PASS }}
-      - name: Download Zig
-        run: ./zig/download.ps1
-      - name: Build and push
-        run: |
-          ./zig/zig build scripts -- antithesis \
-            --tag='antithesis-latest' \
-            --push --trigger-test \
-            --antithesis-user="$ANTITHESIS_USER" --antithesis-password="$ANTITHESIS_PASS"
-        env:
-          ANTITHESIS_USER: ${{ secrets.ANTITHESIS_USER }}
-          ANTITHESIS_PASS: ${{ secrets.ANTITHESIS_PASS }}

@@ -27,7 +27,7 @@ const log = std.log.scoped(.manifest_log);
 
 const constants = @import("../constants.zig");
 const vsr = @import("../vsr.zig");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 
 const SuperBlockType = vsr.SuperBlockType;
 const GridType = @import("../vsr/grid.zig").GridType;
@@ -394,7 +394,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
                 }
             }
 
-            log.debug("{}: opened: checksum={} address={} entries={}", .{
+            log.debug("{}: opened: checksum={x:0>32} address={} entries={}", .{
                 manifest_log.superblock.replica_index.?,
                 block_checksum,
                 block_address,
@@ -496,7 +496,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
             assert(manifest_log.blocks.count - manifest_log.blocks_closed == 1);
 
             log.debug(
-                "{}: {s}: level={} tree={} checksum={} address={} snapshot={}..{}",
+                "{}: {s}: level={} tree={} checksum={x:0>32} address={} snapshot={}..{}",
                 .{
                     manifest_log.superblock.replica_index.?,
                     @tagName(table.label.event),
@@ -621,7 +621,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
                 assert(block_schema.entry_count == schema.ManifestNode.entry_count_max);
             }
 
-            log.debug("{}: write_block: checksum={} address={} entries={}", .{
+            log.debug("{}: write_block: checksum={x:0>32} address={} entries={}", .{
                 manifest_log.superblock.replica_index.?,
                 header.checksum,
                 header.address,
@@ -806,7 +806,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
                 }
             }
 
-            log.debug("{}: compacted: checksum={} address={} free={}/{}", .{
+            log.debug("{}: compacted: checksum={x:0>32} address={} free={}/{}", .{
                 manifest_log.superblock.replica_index.?,
                 oldest_checksum,
                 oldest_address,
@@ -851,8 +851,8 @@ pub fn ManifestLogType(comptime Storage: type) type {
             assert(manifest_log.read_callback == null);
             assert(manifest_log.write_callback == null);
 
-            if (manifest_log.grid_reservation) |grid_reservation| {
-                manifest_log.grid.forfeit(grid_reservation);
+            if (manifest_log.grid_reservation) |reservation| {
+                manifest_log.grid.forfeit(reservation);
                 manifest_log.grid_reservation = null;
             } else {
                 // Compaction was skipped for this half-bar.
@@ -975,7 +975,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
             manifest_log.log_block_checksums.push_assume_capacity(header.checksum);
             manifest_log.log_block_addresses.push_assume_capacity(header.address);
 
-            log.debug("{}: close_block: checksum={} address={} entries={}/{}", .{
+            log.debug("{}: close_block: checksum={x:0>32} address={} entries={}/{}", .{
                 manifest_log.superblock.replica_index.?,
                 header.checksum,
                 header.address,
@@ -989,7 +989,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
         }
 
         fn verify_block(block: BlockPtrConst, checksum: ?u128, address: ?u64) void {
-            if (constants.verify) {
+            {
                 const frame = std.mem.bytesAsValue(vsr.Header, block[0..@sizeOf(vsr.Header)]);
                 assert(frame.valid_checksum());
                 assert(frame.valid_checksum_body(block[@sizeOf(vsr.Header)..frame.size]));
@@ -1166,8 +1166,8 @@ pub const Pace = struct {
         const half_bar_append_entries_max = options.tree_count *
             stdx.div_ceil(constants.lsm_levels, 2) * // Maximum number of compactions/half-bar.
             (compaction.compaction_tables_input_max + // Update snapshot_max.
-            compaction.compaction_tables_input_max + // Remove.
-            compaction.compaction_tables_output_max); // Insert.
+                compaction.compaction_tables_input_max + // Remove.
+                compaction.compaction_tables_output_max); // Insert.
 
         // "A":
         const half_bar_append_blocks_max =
@@ -1193,7 +1193,7 @@ pub const Pace = struct {
             const log_blocks_after =
                 log_blocks_full_max +
                 half_bar_append_blocks_max *
-                stdx.div_ceil(log_blocks_before, half_bar_compact_blocks_max);
+                    stdx.div_ceil(log_blocks_before, half_bar_compact_blocks_max);
 
             if (log_blocks_before == log_blocks_after) {
                 break log_blocks_after;

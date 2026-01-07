@@ -10,7 +10,7 @@ support. But for ease of development we also support macOS and Windows.
 * Go >= 1.21
 
 **Additionally on Windows**: you must install [Zig
-0.13.0](https://ziglang.org/download/#release-0.13.0) and set the
+0.14.1](https://ziglang.org/download/#release-0.14.1) and set the
 `CC` environment variable to `zig.exe cc`. Use the full path for
 `zig.exe`.
 
@@ -89,8 +89,8 @@ that the second transfer had (and still has) a
 
 ## 6. Fetch and validate final account balances
 
-Finally, it fetches both accounts, validates they both exist,
-and checks that credits and debits for both account are now
+Finally, it fetches both accounts, validates that both exist,
+and checks that credits and debits for both accounts are now
 *posted*, not pending.
 
 Specifically, that **account `1`** has:

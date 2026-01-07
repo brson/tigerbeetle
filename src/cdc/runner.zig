@@ -7,18 +7,14 @@ const maybe = vsr.stdx.maybe;
 const fatal = @import("amqp/protocol.zig").fatal;
 
 const stdx = vsr.stdx;
-const IO = vsr.io.IO;
-const Tracer = vsr.trace.TracerType(vsr.time.Time);
-const Storage = vsr.storage.StorageType(IO, Tracer);
-const MessagePool = vsr.message_pool.MessagePool;
-const MessageBus = vsr.message_bus.MessageBusClient;
-const StateMachine = vsr.state_machine.StateMachineType(
-    Storage,
-    vsr.constants.state_machine_config,
-);
-const Client = vsr.ClientType(StateMachine, MessageBus, vsr.time.Time);
-const TimestampRange = vsr.lsm.TimestampRange;
 const tb = vsr.tigerbeetle;
+const IO = vsr.io.IO;
+const Time = vsr.time.Time;
+const MessagePool = vsr.message_pool.MessagePool;
+const MessageBus = vsr.message_bus.MessageBusType(IO);
+const Operation = vsr.tigerbeetle.Operation;
+const Client = vsr.ClientType(Operation, MessageBus);
+const TimestampRange = vsr.lsm.TimestampRange;
 
 pub const amqp = @import("amqp.zig");
 
@@ -43,8 +39,7 @@ pub const Runner = struct {
         const app_id = "tigerbeetle";
         const progress_tracker_queue = "tigerbeetle.internal.progress";
         const locker_queue = "tigerbeetle.internal.locker";
-        const event_count_max: u32 = Client.StateMachine.operation_result_max(
-            .get_change_events,
+        const event_count_max: u32 = Operation.get_change_events.result_max(
             vsr.constants.message_body_size_max,
         );
     };
@@ -73,9 +68,12 @@ pub const Runner = struct {
     /// The producer is responsible for reading events from TigerBeetle.
     producer: enum {
         idle,
+        // Waiting for the rate limit to allow more requests.
+        rate_limit,
+        // Calling the VSR client.
         request,
-        /// No events to publish,
-        /// waiting for the timeout to check for new events.
+        /// No events to publish.
+        /// Waiting for the idle timeout to check for new events.
         waiting,
     },
 
@@ -86,6 +84,7 @@ pub const Runner = struct {
         progress_update,
     },
 
+    rate_limit: RateLimit,
     metrics: Metrics,
 
     state: union(enum) {
@@ -113,6 +112,7 @@ pub const Runner = struct {
     pub fn init(
         self: *Runner,
         allocator: std.mem.Allocator,
+        time: Time,
         options: struct {
             /// TigerBeetle cluster ID.
             cluster_id: u128,
@@ -136,6 +136,9 @@ pub const Runner = struct {
             /// process.
             /// Must be greater than zero.
             idle_interval_ms: ?u32,
+            /// Limits the number of requests per second.
+            /// Must be greater than zero.
+            requests_per_second_limit: ?u32,
             /// Indicates whether to recover the last timestamp published on the state
             /// tracker queue, or override it with a user-defined value.
             recovery_mode: StateRecoveryMode,
@@ -195,6 +198,7 @@ pub const Runner = struct {
             .io = undefined,
             .producer = .idle,
             .consumer = .idle,
+            .rate_limit = undefined,
             .metrics = undefined,
             .state = .{ .unknown = options.recovery_mode },
             .buffer = dual_buffer,
@@ -203,12 +207,18 @@ pub const Runner = struct {
             .amqp_client = undefined,
         };
 
+        self.rate_limit = RateLimit.init(time, .{
+            .limit = options.requests_per_second_limit orelse std.math.maxInt(u32),
+            // The rate limit is expressed in "requests per second".
+            .period = .seconds(1),
+        });
+
         self.metrics = .{
             .producer = .{
-                .timer = try std.time.Timer.start(),
+                .timer = .init(time),
             },
             .consumer = .{
-                .timer = try std.time.Timer.start(),
+                .timer = .init(time),
             },
             .flush_ticks = 0,
             .flush_timeout_ticks = @divExact(30 * std.time.ms_per_s, constants.tick_ms),
@@ -220,14 +230,17 @@ pub const Runner = struct {
         self.message_pool = try MessagePool.init(allocator, .client);
         errdefer self.message_pool.deinit(allocator);
 
-        self.vsr_client = try Client.init(allocator, .{
-            .id = stdx.unique_u128(),
-            .cluster = options.cluster_id,
-            .replica_count = @intCast(options.addresses.len),
-            .time = .{},
-            .message_pool = &self.message_pool,
-            .message_bus_options = .{ .configuration = options.addresses, .io = &self.io },
-        });
+        self.vsr_client = try Client.init(
+            allocator,
+            time,
+            &self.message_pool,
+            .{
+                .id = stdx.unique_u128(),
+                .cluster = options.cluster_id,
+                .replica_count = @intCast(options.addresses.len),
+                .message_bus_options = .{ .configuration = options.addresses, .io = &self.io },
+            },
+        );
         errdefer self.vsr_client.deinit(allocator);
 
         self.amqp_client = try amqp.Client.init(allocator, .{
@@ -261,12 +274,13 @@ pub const Runner = struct {
     }
 
     pub fn deinit(self: *Runner, allocator: std.mem.Allocator) void {
+        self.amqp_client.deinit(allocator);
         self.vsr_client.deinit(allocator);
         self.message_pool.deinit(allocator);
-        self.amqp_client.deinit(allocator);
+        self.io.deinit();
         self.buffer.deinit(allocator);
-        allocator.free(self.progress_tracker_queue);
         allocator.free(self.locker_queue);
+        allocator.free(self.progress_tracker_queue);
     }
 
     /// To make the CDC stateless, internal queues are used to store the state:
@@ -472,13 +486,13 @@ pub const Runner = struct {
                                         assert(TimestampRange.valid(progress_tracker.timestamp));
 
                                         // Downgrading the CDC job is not allowed.
-                                        if (vsr.constants.state_machine_config.release.value <
+                                        if (vsr.constants.config.process.release.value <
                                             progress_tracker.release.value)
                                         {
                                             fatal("The last event was published using a newer " ++
                                                 "release (event={} current={}).", .{
                                                 progress_tracker.release,
-                                                vsr.constants.state_machine_config.release,
+                                                vsr.constants.config.process.release,
                                             });
                                         }
 
@@ -601,7 +615,7 @@ pub const Runner = struct {
                     assert(self.buffer.find(.consuming) != null);
                     return;
                 }
-                self.producer = .request;
+                self.producer = .rate_limit;
                 self.metrics.producer.timer.reset();
                 self.produce_dispatch();
             },
@@ -617,10 +631,44 @@ pub const Runner = struct {
         assert(self.state.last.consumer_timestamp == 0 or
             TimestampRange.valid(self.state.last.consumer_timestamp));
         assert(self.state.last.producer_timestamp > self.state.last.consumer_timestamp);
-        switch (self.producer) {
+        dispatch: switch (self.producer) {
             .idle => unreachable,
+            // Check the configured rate limit.
+            .rate_limit => switch (self.rate_limit.attempt()) {
+                .ok => {
+                    self.producer = .request;
+                    continue :dispatch self.producer;
+                },
+                .wait => |duration| {
+                    assert(duration.ns > 0);
+                    self.io.timeout(
+                        *Runner,
+                        self,
+                        struct {
+                            fn callback(
+                                runner: *Runner,
+                                completion: *IO.Completion,
+                                result: IO.TimeoutError!void,
+                            ) void {
+                                result catch unreachable;
+                                _ = completion;
+                                assert(runner.producer == .rate_limit);
+                                assert(runner.buffer.find(.producing) != null);
+                                maybe(runner.consumer == .idle);
+
+                                runner.producer = .request;
+                                runner.produce_dispatch();
+                            }
+                        }.callback,
+                        &self.idle_completion,
+                        @intCast(duration.ns),
+                    );
+                },
+            },
             // Submitting the request through the VSR client.
             .request => {
+                assert(self.buffer.find(.producing) != null);
+
                 const filter: tb.ChangeEventsFilter = .{
                     .limit = self.event_count_max,
                     .timestamp_min = self.state.last.producer_timestamp,
@@ -654,7 +702,7 @@ pub const Runner = struct {
 
                             const producer_begin = runner.buffer.producer_begin();
                             assert(producer_begin);
-                            runner.producer = .request;
+                            runner.producer = .rate_limit;
                             runner.produce_dispatch();
                         }
                     }.callback,
@@ -671,7 +719,7 @@ pub const Runner = struct {
         timestamp: u64,
         result: []u8,
     ) void {
-        const operation = operation_vsr.cast(Client.StateMachine);
+        const operation = operation_vsr.cast(tb.Operation);
         assert(operation == .get_change_events);
         assert(timestamp != 0);
         const runner: *Runner = @ptrFromInt(@as(usize, @intCast(context)));
@@ -733,7 +781,7 @@ pub const Runner = struct {
                     if (self.buffer.all_free()) {
                         assert(self.producer == .idle);
                     } else {
-                        assert(self.producer == .request);
+                        assert(self.producer == .rate_limit or self.producer == .request);
                         assert(self.buffer.find(.free) != null);
                         assert(self.buffer.find(.producing) != null);
                     }
@@ -808,7 +856,7 @@ pub const Runner = struct {
                     assert(events.len > 0);
                     break :progress .{
                         .timestamp = events[events.len - 1].timestamp,
-                        .release = vsr.constants.state_machine_config.release,
+                        .release = vsr.constants.config.process.release,
                     };
                 };
                 self.amqp_client.publish_enqueue(.{
@@ -863,15 +911,78 @@ pub const Runner = struct {
     }
 };
 
+/// Rate limit to throttle the maximum number of requests to TigerBeetle within a time period.
+pub const RateLimit = struct {
+    const Options = struct {
+        /// The rate limit expressed as "requests per second".
+        /// Must be greater than zero. Inclusive.
+        limit: u32,
+        /// Time interval used to enforce the request limit.
+        period: stdx.Duration,
+    };
+
+    count: u32,
+    timer: vsr.time.Timer,
+    options: Options,
+
+    pub fn init(time: vsr.time.Time, options: Options) RateLimit {
+        assert(options.limit > 0);
+        assert(options.period.ns > 0);
+
+        return .{
+            .count = 0,
+            .timer = .init(time),
+            .options = options,
+        };
+    }
+
+    /// Attempt to increment the counter.
+    /// Return `.ok` if it succeed within the configured `limit` per second,
+    /// or `.wait` with the required amount of time to wait.
+    pub fn attempt(self: *RateLimit) union(enum) {
+        ok,
+        wait: stdx.Duration,
+    } {
+        assert(self.options.limit > 0);
+        assert(self.options.period.ns > 0);
+        assert(self.count <= self.options.limit);
+
+        if (self.count == 0) {
+            self.timer.reset();
+            self.count = 1;
+            return .ok;
+        }
+        assert(self.count > 0);
+
+        const duration = self.timer.read();
+        maybe(duration.ns == 0);
+
+        if (duration.ns >= self.options.period.ns) {
+            self.timer.reset();
+            self.count = 0;
+        } else if (self.count == self.options.limit) {
+            assert(duration.ns < self.options.period.ns);
+            return .{ .wait = .{
+                .ns = self.options.period.ns - duration.ns,
+            } };
+        }
+
+        self.count += 1;
+        assert(self.count <= self.options.limit);
+
+        return .ok;
+    }
+};
+
 /// Inspired by the StateMachine metrics,
 /// though the current method of shipping the metrics is a temporary solution.
 const Metrics = struct {
     const TimingSummary = struct {
-        timer: std.time.Timer,
+        timer: vsr.time.Timer,
 
-        duration_min_ms: ?u64 = null,
-        duration_max_ms: ?u64 = null,
-        duration_sum_ms: u64 = 0,
+        duration_min: ?stdx.Duration = null,
+        duration_max: ?stdx.Duration = null,
+        duration_sum: stdx.Duration = .{ .ns = 0 },
         event_count: u64 = 0,
         count: u64 = 0,
 
@@ -879,14 +990,25 @@ const Metrics = struct {
             metrics: *TimingSummary,
             event_count: u64,
         ) void {
-            const duration_ms: u64 = @divFloor(metrics.timer.read(), std.time.ns_per_ms);
+            metrics.timing(
+                event_count,
+                metrics.timer.read(),
+            );
+        }
 
-            metrics.duration_min_ms =
-                @min(duration_ms, metrics.duration_min_ms orelse std.math.maxInt(u64));
-            metrics.duration_max_ms = @max(duration_ms, metrics.duration_max_ms orelse 0);
-            metrics.duration_sum_ms += duration_ms;
+        fn timing(
+            metrics: *TimingSummary,
+            event_count: u64,
+            duration: stdx.Duration,
+        ) void {
+            maybe(duration.ns == 0);
+            maybe(event_count == 0);
+
             metrics.count += 1;
             metrics.event_count += event_count;
+            metrics.duration_min = if (metrics.duration_min) |min| duration.min(min) else duration;
+            metrics.duration_max = if (metrics.duration_max) |max| duration.max(max) else duration;
+            metrics.duration_sum.ns += duration.ns;
         }
     };
 
@@ -909,28 +1031,31 @@ const Metrics = struct {
         const runner: *const Runner = @alignCast(@fieldParentPtr("metrics", metrics));
         inline for (comptime std.enums.values(Fields)) |field| {
             const summary: *TimingSummary = &@field(metrics, @tagName(field));
-            if (summary.count > 0) {
+            if (summary.count > 0 and summary.duration_sum.ns > 0) {
                 assert(runner.state == .last);
+                assert(summary.duration_min != null);
+                assert(summary.duration_max != null);
+
                 const timestamp_last = switch (field) {
                     .consumer => runner.state.last.consumer_timestamp,
                     .producer => runner.state.last.producer_timestamp,
                 };
                 const event_rate = @divTrunc(
-                    summary.event_count * std.time.ms_per_s,
-                    summary.duration_sum_ms,
+                    summary.event_count * std.time.ns_per_s,
+                    summary.duration_sum.ns,
                 );
-                log.info("{s}: p0={?}ms mean={}ms p100={?}ms " ++
+                log.info("{s}: p0={}ms mean={}ms p100={}ms " ++
                     "event_count={} throughput={} op/s " ++
                     "last timestamp={} ({})", .{
                     @tagName(field),
-                    summary.duration_min_ms,
-                    @divFloor(summary.duration_sum_ms, summary.count),
-                    summary.duration_max_ms,
+                    summary.duration_min.?.to_ms(),
+                    @divFloor(summary.duration_sum.to_ms(), summary.count),
+                    summary.duration_max.?.to_ms(),
                     summary.event_count,
                     event_rate,
                     timestamp_last,
                     stdx.DateTimeUTC.from_timestamp_ms(
-                        timestamp_last / std.time.ns_per_ms,
+                        @divTrunc(timestamp_last, std.time.ns_per_ms),
                     ),
                 });
             }
@@ -1284,8 +1409,8 @@ pub const Message = struct {
         var value: T = undefined;
         for (std.meta.fields(T)) |field| {
             @field(value, field.name) = switch (@typeInfo(field.type)) {
-                .Int => std.math.maxInt(field.type),
-                .Enum => max: {
+                .int => std.math.maxInt(field.type),
+                .@"enum" => max: {
                     var name: []const u8 = "";
                     for (std.enums.values(tb.ChangeEventType)) |tag| {
                         if (@tagName(tag).len > name.len) {
@@ -1294,7 +1419,7 @@ pub const Message = struct {
                     }
                     break :max @field(field.type, name);
                 },
-                .Struct => worse_case(field.type),
+                .@"struct" => worse_case(field.type),
                 else => unreachable,
             };
         }
@@ -1303,11 +1428,65 @@ pub const Message = struct {
 };
 
 const testing = std.testing;
+const fixtures = @import("../testing/fixtures.zig");
+
+test "amqp: RateLimit" {
+    // Simulated clock with 300ms resolution,
+    // to force an uneven ratio of 3.333 requests per second.
+    const resolution: u64 = 300 * std.time.ns_per_ms;
+    var time_sim = fixtures.init_time(.{ .resolution = resolution });
+    const time = time_sim.time();
+    var rate_limit = RateLimit.init(
+        time,
+        .{
+            .limit = 3,
+            .period = .seconds(1),
+        },
+    );
+
+    try testing.expect(rate_limit.attempt() == .ok);
+    time.tick();
+
+    try testing.expect(rate_limit.attempt() == .ok);
+    time.tick();
+
+    try testing.expect(rate_limit.attempt() == .ok);
+    try switch (rate_limit.attempt()) {
+        .ok => testing.expect(false),
+        .wait => |duration| testing.expectEqual(
+            // 3 requests in 600ms, needs to wait 400ms.
+            std.time.ns_per_s - (2 * resolution),
+            duration.ns,
+        ),
+    };
+    time.tick();
+
+    try switch (rate_limit.attempt()) {
+        .ok => testing.expect(false),
+        .wait => |duration| testing.expectEqual(
+            // 3 requests in 900ms, needs to wait 100ms.
+            std.time.ns_per_s - (3 * resolution),
+            duration.ns,
+        ),
+    };
+    time.tick();
+
+    try testing.expect(rate_limit.attempt() == .ok);
+    time.tick();
+
+    try testing.expect(rate_limit.attempt() == .ok);
+    time.tick();
+
+    try testing.expect(rate_limit.attempt() == .ok);
+    time.tick();
+
+    try testing.expect(rate_limit.attempt() == .wait);
+}
 
 test "amqp: DualBuffer" {
     const event_count_max = Runner.constants.event_count_max;
 
-    var prng = stdx.PRNG.from_seed(42);
+    var prng = stdx.PRNG.from_seed_testing();
     var dual_buffer = try DualBuffer.init(testing.allocator, event_count_max);
     defer dual_buffer.deinit(testing.allocator);
 
@@ -1325,7 +1504,7 @@ test "amqp: DualBuffer" {
         try testing.expectEqual(@as(usize, event_count_max), producer1_buffer.len);
 
         const producer1_count = prng.range_inclusive(u32, 1, event_count_max);
-        prng.fill(std.mem.asBytes(producer1_buffer[0..producer1_count]));
+        prng.fill(std.mem.sliceAsBytes(producer1_buffer[0..producer1_count]));
         dual_buffer.producer_finish(producer1_count);
 
         // Starts a consumer after the producer has finished:
@@ -1343,7 +1522,7 @@ test "amqp: DualBuffer" {
 
         const producer2_count = prng.range_inclusive(u32, 0, event_count_max);
         maybe(producer2_count == 0); // Testing zeroed producers.
-        prng.fill(std.mem.asBytes(producer2_buffer[0..producer2_count]));
+        prng.fill(std.mem.sliceAsBytes(producer2_buffer[0..producer2_count]));
         dual_buffer.producer_finish(producer2_count);
 
         // Consuming the first producer:
@@ -1408,8 +1587,8 @@ test "amqp: ProgressTrackerMessage" {
 }
 
 test "amqp: JSON message" {
-    const Snap = @import("../testing/snaptest.zig").Snap;
-    const snap = Snap.snap;
+    const Snap = stdx.Snap;
+    const snap = Snap.snap_fn("src");
 
     const buffer = try testing.allocator.alloc(u8, Message.json_string_size_max);
     defer testing.allocator.free(buffer);
@@ -1434,4 +1613,44 @@ test "amqp: JSON message" {
             \\{"timestamp":"18446744073709551615","type":"two_phase_pending","ledger":4294967295,"transfer":{"id":"340282366920938463463374607431768211455","amount":"340282366920938463463374607431768211455","pending_id":"340282366920938463463374607431768211455","user_data_128":"340282366920938463463374607431768211455","user_data_64":"18446744073709551615","user_data_32":4294967295,"timeout":4294967295,"code":65535,"flags":65535,"timestamp":"18446744073709551615"},"debit_account":{"id":"340282366920938463463374607431768211455","debits_pending":"340282366920938463463374607431768211455","debits_posted":"340282366920938463463374607431768211455","credits_pending":"340282366920938463463374607431768211455","credits_posted":"340282366920938463463374607431768211455","user_data_128":"340282366920938463463374607431768211455","user_data_64":"18446744073709551615","user_data_32":4294967295,"code":65535,"flags":65535,"timestamp":"18446744073709551615"},"credit_account":{"id":"340282366920938463463374607431768211455","debits_pending":"340282366920938463463374607431768211455","debits_posted":"340282366920938463463374607431768211455","credits_pending":"340282366920938463463374607431768211455","credits_posted":"340282366920938463463374607431768211455","user_data_128":"340282366920938463463374607431768211455","user_data_64":"18446744073709551615","user_data_32":4294967295,"code":65535,"flags":65535,"timestamp":"18446744073709551615"}}
         ).diff(buffer);
     }
+}
+
+test "amqp: metrics" {
+    var time_sim = fixtures.init_time(.{});
+    var summary: Metrics.TimingSummary = .{
+        .timer = .init(time_sim.time()),
+    };
+
+    try testing.expectEqual(@as(u64, 0), summary.count);
+    try testing.expectEqual(@as(u64, 0), summary.event_count);
+    try testing.expectEqual(@as(u64, 0), summary.duration_sum.ns);
+    try testing.expect(summary.duration_max == null);
+    try testing.expect(summary.duration_min == null);
+
+    summary.timing(10, .{ .ns = 50 });
+    try testing.expectEqual(@as(u64, 1), summary.count);
+    try testing.expectEqual(@as(u64, 10), summary.event_count);
+    try testing.expectEqual(@as(u64, 50), summary.duration_sum.ns);
+    try testing.expect(summary.duration_min != null);
+    try testing.expect(summary.duration_max != null);
+    try testing.expectEqual(@as(u64, 50), summary.duration_min.?.ns);
+    try testing.expectEqual(@as(u64, 50), summary.duration_max.?.ns);
+
+    summary.timing(5, .{ .ns = 100 });
+    try testing.expectEqual(@as(u64, 2), summary.count);
+    try testing.expectEqual(@as(u64, 15), summary.event_count);
+    try testing.expectEqual(@as(u64, 150), summary.duration_sum.ns);
+    try testing.expect(summary.duration_min != null);
+    try testing.expect(summary.duration_max != null);
+    try testing.expectEqual(@as(u64, 50), summary.duration_min.?.ns);
+    try testing.expectEqual(@as(u64, 100), summary.duration_max.?.ns);
+
+    summary.timing(0, .{ .ns = 10 });
+    try testing.expectEqual(@as(u64, 3), summary.count);
+    try testing.expectEqual(@as(u64, 15), summary.event_count);
+    try testing.expectEqual(@as(u64, 160), summary.duration_sum.ns);
+    try testing.expect(summary.duration_min != null);
+    try testing.expect(summary.duration_max != null);
+    try testing.expectEqual(@as(u64, 10), summary.duration_min.?.ns);
+    try testing.expectEqual(@as(u64, 100), summary.duration_max.?.ns);
 }

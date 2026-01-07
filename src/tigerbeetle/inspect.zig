@@ -17,6 +17,8 @@ const vsr = @import("vsr");
 const stdx = vsr.stdx;
 const schema = vsr.lsm.schema;
 const constants = vsr.constants;
+const IO = vsr.io.IO;
+const Tracer = vsr.trace.Tracer;
 const Storage = @import("main.zig").Storage;
 const SuperBlockHeader = vsr.superblock.SuperBlockHeader;
 const SuperBlockVersion = vsr.superblock.SuperBlockVersion;
@@ -24,8 +26,6 @@ const SuperBlockQuorums = vsr.superblock.Quorums;
 const StateMachine = @import("main.zig").StateMachine;
 const BlockPtr = vsr.grid.BlockPtr;
 const BlockPtrConst = vsr.grid.BlockPtrConst;
-const CheckpointTrailer = vsr.CheckpointTrailerType(Storage);
-const Grid = vsr.GridType(Storage);
 const allocate_block = vsr.grid.allocate_block;
 const is_composite_key = vsr.lsm.composite_key.is_composite_key;
 
@@ -33,19 +33,33 @@ const EventMetric = vsr.trace.EventMetric;
 const EventMetricAggregate = vsr.trace.EventMetricAggregate;
 const EventTiming = vsr.trace.EventTiming;
 const EventTimingAggregate = vsr.trace.EventTimingAggregate;
+const command_inspect_integrity = @import("inspect_integrity.zig").command_inspect_integrity;
 
-pub fn main(allocator: std.mem.Allocator, cli_args: *const cli.Command.Inspect) !void {
+pub fn command_inspect(
+    allocator: std.mem.Allocator,
+    io: *IO,
+    tracer: *Tracer,
+    cli_args: *const cli.Command.Inspect,
+) !void {
     var stdout_buffer = std.io.bufferedWriter(std.io.getStdOut().writer());
     var stdout_writer = stdout_buffer.writer();
 
-    const inspect_result = main_inspect(allocator, cli_args, stdout_writer.any());
+    const inspect_result = run_inspect(allocator, io, tracer, cli_args, stdout_writer.any());
     const flush_result = stdout_buffer.flush();
-    try inspect_result;
-    try flush_result;
+
+    inline for (.{ inspect_result, flush_result }) |result| {
+        result catch |err| switch (err) {
+            // Ignore BrokenPipe so that e.g. "tigerbeetle inspect ... | head -n12" succeeds.
+            error.BrokenPipe => {},
+            else => return err,
+        };
+    }
 }
 
-fn main_inspect(
+fn run_inspect(
     allocator: std.mem.Allocator,
+    io: *IO,
+    tracer: *Tracer,
     cli_args: *const cli.Command.Inspect,
     stdout: std.io.AnyWriter,
 ) !void {
@@ -53,10 +67,11 @@ fn main_inspect(
         .constants => return try inspect_constants(stdout),
         .metrics => return try inspect_metrics(stdout),
         .op => |op| return try inspect_op(stdout, op),
+        .integrity => |*args| return try command_inspect_integrity(allocator, io, tracer, args),
         .data_file => |data_file| data_file,
     };
 
-    var inspector = try Inspector.create(allocator, data_file.path);
+    const inspector = try Inspector.create(allocator, io, tracer, data_file.path);
     defer inspector.destroy();
 
     switch (data_file.query) {
@@ -138,6 +153,26 @@ fn main_inspect(
 }
 
 fn inspect_constants(output: std.io.AnyWriter) !void {
+    try output.print("VSR:\n", .{});
+    try print_header(output, 0, "prepare_queue");
+    try output.print("{}\n", .{constants.pipeline_prepare_queue_max});
+    try print_header(output, 0, "request_queue");
+    try output.print("{}\n", .{constants.pipeline_request_queue_max});
+    try print_header(output, 0, "prepare_cache");
+    try output.print("{}\n", .{
+        constants.pipeline_prepare_queue_max + constants.pipeline_request_queue_max,
+    });
+    try output.print("\n", .{});
+
+    try output.print("LSM:\n", .{});
+    try print_header(output, 0, "compaction_ops");
+    try output.print("{}\n", .{constants.lsm_compaction_ops});
+    try print_header(output, 0, "checkpoint_ops");
+    try output.print("{}\n", .{constants.vsr_checkpoint_ops});
+    try print_header(output, 0, "journal_slot_count");
+    try output.print("{}\n", .{constants.journal_slot_count});
+    try output.print("\n", .{});
+
     try output.print("Data File Layout:\n", .{});
     inline for (comptime std.enums.values(vsr.Zone)) |zone| {
         try print_header(output, 0, @tagName(zone));
@@ -216,18 +251,27 @@ fn inspect_constants(output: std.io.AnyWriter) !void {
     });
 
     {
+        const grid_size_limit = datafile_size - vsr.superblock.data_file_size_min;
+        const blocks_count = vsr.FreeSet.block_count_max(grid_size_limit);
+        const ewah = vsr.ewah(vsr.FreeSet.Word);
+
+        // 2x since both `blocks_acquired` and `blocks_released` are encoded.
+        const free_set_encoded_blocks_max = 2 *
+            vsr.checkpoint_trailer.block_count_for_trailer_size(ewah.encode_size_max(blocks_count));
+
+        const client_sessions_encoded_blocks_max =
+            vsr.checkpoint_trailer.block_count_for_trailer_size(vsr.ClientSessions.encode_size);
+
         try print_header(output, 0, "free_set");
         const hashmap_entries = stdx.div_ceil(
             100 * (StateMachine.Forest.compaction_blocks_released_per_pipeline_max() +
-                Grid.free_set_checkpoints_blocks_max(datafile_size) +
-                CheckpointTrailer.block_count_for_trailer_size(vsr.ClientSessions.encode_size)),
+                free_set_encoded_blocks_max + client_sessions_encoded_blocks_max),
             std.hash_map.default_max_load_percentage,
         );
+
         try output.print("{:.2}\n", .{std.fmt.fmtIntSizeBin(
-            // HashMap of block addresses.
-            hashmap_entries * @sizeOf(u64) +
-                // Two bitsets with bit per block.
-                2 * stdx.div_ceil(vsr.block_count_max(datafile_size), 8),
+            // HashMap of block addresses plus two bitsets with bit per block.
+            hashmap_entries * @sizeOf(u64) + 2 * stdx.div_ceil(blocks_count, 8),
         )});
     }
 }
@@ -388,9 +432,7 @@ fn print_objects(output: std.io.AnyWriter) !void {
 
 const Inspector = struct {
     allocator: std.mem.Allocator,
-    dir_fd: std.posix.fd_t,
-    fd: std.posix.fd_t,
-    io: vsr.io.IO,
+    io: *IO,
     storage: Storage,
 
     superblock_buffer: []align(constants.sector_size) u8,
@@ -399,38 +441,29 @@ const Inspector = struct {
     busy: bool = false,
     read: Storage.Read = undefined,
 
-    fn create(allocator: std.mem.Allocator, path: []const u8) !*Inspector {
+    fn create(
+        allocator: std.mem.Allocator,
+        io: *IO,
+        tracer: *Tracer,
+        path: []const u8,
+    ) !*Inspector {
         var inspector = try allocator.create(Inspector);
         errdefer allocator.destroy(inspector);
 
         inspector.* = .{
             .allocator = allocator,
-            .dir_fd = undefined,
-            .fd = undefined,
-            .io = undefined,
+            .io = io,
             .storage = undefined,
             .superblock_buffer = undefined,
             .superblock_headers = undefined,
         };
 
-        inspector.io = try vsr.io.IO.init(128, 0);
-        errdefer inspector.io.deinit();
-
-        const dirname = std.fs.path.dirname(path) orelse ".";
-        inspector.dir_fd = try vsr.io.IO.open_dir(dirname);
-        errdefer std.posix.close(inspector.dir_fd);
-
-        const basename = std.fs.path.basename(path);
-        inspector.fd = try inspector.io.open_data_file(
-            inspector.dir_fd,
-            basename,
-            vsr.superblock.data_file_size_min,
-            .open_read_only,
-            .direct_io_optional,
-        );
-        errdefer std.posix.close(inspector.fd);
-
-        inspector.storage = try Storage.init(&inspector.io, inspector.fd);
+        inspector.storage = try Storage.init(io, tracer, .{
+            .path = path,
+            .size_min = vsr.superblock.data_file_size_min,
+            .purpose = .inspect,
+            .direct_io = .direct_io_optional,
+        });
         errdefer inspector.storage.deinit();
 
         inspector.superblock_buffer = try allocator.alignedAlloc(
@@ -457,7 +490,7 @@ const Inspector = struct {
                 "invalid superblock version; inspector supports version={}, version in {s}={}",
                 .{
                     SuperBlockVersion,
-                    basename,
+                    path,
                     superblock.version,
                 },
             );
@@ -468,9 +501,6 @@ const Inspector = struct {
     fn destroy(inspector: *Inspector) void {
         inspector.allocator.free(inspector.superblock_buffer);
         inspector.storage.deinit();
-        inspector.io.deinit();
-        std.posix.close(inspector.fd);
-        std.posix.close(inspector.dir_fd);
         inspector.allocator.destroy(inspector);
     }
 
@@ -484,7 +514,7 @@ const Inspector = struct {
     }
 
     fn inspector_read_callback(read: *Storage.Read) void {
-        const inspector: *Inspector = @fieldParentPtr("read", read);
+        const inspector: *Inspector = @alignCast(@fieldParentPtr("read", read));
         assert(inspector.busy);
 
         inspector.busy = false;
@@ -561,8 +591,8 @@ const Inspector = struct {
             const wal_prepare_body_valid =
                 wal_prepare.valid_checksum() and
                 wal_prepare.valid_checksum_body(
-                prepare_buffer[@sizeOf(vsr.Header)..wal_prepare.size],
-            );
+                    prepare_buffer[@sizeOf(vsr.Header)..wal_prepare.size],
+                );
 
             const header_pair = [_]*const vsr.Header.Prepare{ wal_header, wal_prepare };
 
@@ -621,8 +651,8 @@ const Inspector = struct {
         const prepare_body_valid =
             prepare_header.valid_checksum() and
             prepare_header.valid_checksum_body(
-            prepare_buffer[@sizeOf(vsr.Header)..prepare_header.size],
-        );
+                prepare_buffer[@sizeOf(vsr.Header)..prepare_header.size],
+            );
 
         const copies: [2]*const vsr.Header.Prepare = .{ &headers[slot], prepare_header };
 
@@ -753,38 +783,38 @@ const Inspector = struct {
 
         const free_set_blocks_acquired_buffer =
             try inspector.allocator.alignedAlloc(
-            u8,
-            @alignOf(vsr.FreeSet.Word),
-            free_set_blocks_acquired_size,
-        );
+                u8,
+                @alignOf(vsr.FreeSet.Word),
+                free_set_blocks_acquired_size,
+            );
         defer inspector.allocator.free(free_set_blocks_acquired_buffer);
 
         var free_set_blocks_acquired_addresses =
             try std.ArrayList(u64).initCapacity(
-            inspector.allocator,
-            stdx.div_ceil(
-                free_set_blocks_acquired_size,
-                constants.block_size - @sizeOf(vsr.Header),
-            ),
-        );
+                inspector.allocator,
+                stdx.div_ceil(
+                    free_set_blocks_acquired_size,
+                    constants.block_size - @sizeOf(vsr.Header),
+                ),
+            );
         defer free_set_blocks_acquired_addresses.deinit();
 
         const free_set_blocks_released_buffer =
             try inspector.allocator.alignedAlloc(
-            u8,
-            @alignOf(vsr.FreeSet.Word),
-            free_set_blocks_released_size,
-        );
+                u8,
+                @alignOf(vsr.FreeSet.Word),
+                free_set_blocks_released_size,
+            );
         defer inspector.allocator.free(free_set_blocks_released_buffer);
 
         var free_set_blocks_released_addresses =
             try std.ArrayList(u64).initCapacity(
-            inspector.allocator,
-            stdx.div_ceil(
-                free_set_blocks_released_size,
-                constants.block_size - @sizeOf(vsr.Header),
-            ),
-        );
+                inspector.allocator,
+                stdx.div_ceil(
+                    free_set_blocks_released_size,
+                    constants.block_size - @sizeOf(vsr.Header),
+                ),
+            );
         defer free_set_blocks_released_addresses.deinit();
 
         try inspector.read_free_set_bitset(
@@ -805,13 +835,12 @@ const Inspector = struct {
         // This is not exact, but is an overestimate:
         const grid_blocks_max =
             @divFloor(constants.storage_size_limit_max, constants.block_size);
-        const free_set_block_addresses_count = free_set_blocks_acquired_addresses.items.len +
-            free_set_blocks_released_addresses.items.len;
+
         var free_set = try vsr.FreeSet.init(
             inspector.allocator,
             .{
-                .blocks_count = grid_blocks_max,
-                .blocks_released_prior_checkpoint_durability_max = free_set_block_addresses_count,
+                .grid_size_limit = grid_blocks_max * constants.block_size,
+                .blocks_released_prior_checkpoint_durability_max = 0,
             },
         );
         defer free_set.deinit(inspector.allocator);
@@ -819,14 +848,14 @@ const Inspector = struct {
         const SliceOfAlignedWordSlice = []const []align(@alignOf(vsr.FreeSet.Word)) const u8;
         const encoded_free_set_blocks_acquired: SliceOfAlignedWordSlice =
             if (free_set_blocks_acquired_buffer.len != 0)
-            &.{free_set_blocks_acquired_buffer}
-        else
-            &.{};
+                &.{free_set_blocks_acquired_buffer}
+            else
+                &.{};
         const encoded_free_set_blocks_released: SliceOfAlignedWordSlice =
             if (free_set_blocks_released_buffer.len != 0)
-            &.{free_set_blocks_released_buffer}
-        else
-            &.{};
+                &.{free_set_blocks_released_buffer}
+            else
+                &.{};
 
         free_set.open(.{
             .encoded = .{
@@ -1229,18 +1258,18 @@ fn print_struct(
     label: []const u8,
     value: anytype,
 ) !void {
-    comptime assert(@typeInfo(@TypeOf(value)) == .Pointer);
-    comptime assert(@typeInfo(@TypeOf(value)).Pointer.size == .One);
+    comptime assert(@typeInfo(@TypeOf(value)) == .pointer);
+    comptime assert(@typeInfo(@TypeOf(value)).pointer.size == .one);
 
-    const Type = @typeInfo(@TypeOf(value)).Pointer.child;
+    const Type = @typeInfo(@TypeOf(value)).pointer.child;
     // Print structs *without* a custom format() function.
-    if (comptime @typeInfo(Type) == .Struct and !std.meta.hasFn(Type, "format")) {
-        if (@typeInfo(Type).Struct.is_tuple) {
+    if (comptime @typeInfo(Type) == .@"struct" and !std.meta.hasFn(Type, "format")) {
+        if (@typeInfo(Type).@"struct".is_tuple) {
             try output.writeAll(label);
             // Print tuples as a single line.
             inline for (std.meta.fields(Type), 0..) |field, i| {
-                if (@typeInfo(field.type) == .Pointer and
-                    @typeInfo(@typeInfo(field.type).Pointer.child) == .Array)
+                if (@typeInfo(field.type) == .pointer and
+                    @typeInfo(@typeInfo(field.type).pointer.child) == .array)
                 {
                     // Allow inline labels.
                     try output.writeAll(@field(value, field.name));
@@ -1264,8 +1293,8 @@ fn print_struct(
 
     if (Element: {
         const type_info = @typeInfo(Type);
-        if (type_info == .Array) {
-            break :Element @as(?type, type_info.Array.child);
+        if (type_info == .array) {
+            break :Element @as(?type, type_info.array.child);
         }
         break :Element null;
     }) |Element| {
@@ -1293,20 +1322,20 @@ fn print_struct(
 
 fn print_value(output: std.io.AnyWriter, value: anytype) !void {
     const Type = @TypeOf(value);
-    if (@typeInfo(Type) == .Struct) assert(std.meta.hasFn(Type, "format"));
-    assert(@typeInfo(Type) != .Array);
+    if (@typeInfo(Type) == .@"struct") assert(std.meta.hasFn(Type, "format"));
+    assert(@typeInfo(Type) != .array);
 
     if (Type == u128) return output.print("0x{x:0>32}", .{value});
 
     if (Type == vsr.Operation) {
-        if (value.valid(StateMachine)) {
-            return output.writeAll(value.tag_name(StateMachine));
+        if (value.valid(StateMachine.Operation)) {
+            return output.writeAll(value.tag_name(StateMachine.Operation));
         } else {
             return output.print("{}!", .{@intFromEnum(value)});
         }
     }
 
-    if (@typeInfo(Type) == .Enum) {
+    if (@typeInfo(Type) == .@"enum") {
         if (std.enums.tagName(Type, value)) |value_string| {
             return output.print("{s}", .{value_string});
         } else {
@@ -1325,7 +1354,7 @@ fn print_block(writer: std.io.AnyWriter, block: BlockPtrConst) !void {
         .{ .block_type = .client_sessions, .Schema = schema.TrailerNode },
         .{ .block_type = .manifest, .Schema = schema.ManifestNode },
         .{ .block_type = .index, .Schema = schema.TableIndex },
-        .{ .block_type = .data, .Schema = schema.TableData },
+        .{ .block_type = .value, .Schema = schema.TableValue },
     }) |pair| {
         if (header.block_type == pair.block_type) {
             try print_struct(writer, "header.metadata", pair.Schema.metadata(block));
@@ -1361,26 +1390,26 @@ fn print_block(writer: std.io.AnyWriter, block: BlockPtrConst) !void {
         .index => {
             const index = schema.TableIndex.from(block);
             for (
-                index.data_addresses_used(block),
-                index.data_checksums_used(block),
+                index.value_addresses_used(block),
+                index.value_checksums_used(block),
                 0..,
-            ) |data_address, data_checksum, i| {
+            ) |value_address, value_checksum, i| {
                 try writer.print(
-                    "data_blocks[{:_>3}]: address={} checksum={x:0>32}\n",
-                    .{ i, data_address, data_checksum.value },
+                    "value_blocks[{:_>3}]: address={} checksum={x:0>32}\n",
+                    .{ i, value_address, value_checksum.value },
                 );
             }
         },
-        .data => {
-            const data = schema.TableData.from(block);
-            const metadata = data.block_metadata(block);
-            const data_bytes = data.block_values_used_bytes(block);
+        .value => {
+            const value_block = schema.TableValue.from(block);
+            const metadata = value_block.block_metadata(block);
+            const value_bytes = value_block.block_values_used_bytes(block);
 
             var label_buffer: [256]u8 = undefined;
             inline for (StateMachine.Forest.tree_infos) |tree_info| {
                 if (metadata.tree_id == tree_info.tree_id) {
                     for (
-                        std.mem.bytesAsSlice(tree_info.Tree.Table.Value, data_bytes),
+                        std.mem.bytesAsSlice(tree_info.Tree.Table.Value, value_bytes),
                         0..,
                     ) |*value, i| {
                         var label_stream = std.io.fixedBufferStream(&label_buffer);
@@ -1465,9 +1494,9 @@ const operation_schemas = list: {
     for (std.enums.values(StateMachine.Operation)) |operation| {
         if (operation == .pulse) continue;
         list = list ++ [_]OperationSchema{.{
-            .operation = vsr.Operation.from(StateMachine, operation),
-            .Event = StateMachine.EventType(operation),
-            .Result = StateMachine.ResultType(operation),
+            .operation = operation.to_vsr(),
+            .Event = operation.EventType(),
+            .Result = operation.ResultType(),
         }};
     }
     break :list list;
@@ -1581,11 +1610,12 @@ fn print_table_info(
         try output.print(" S={}..{}", .{ table.snapshot_min, table.snapshot_max });
     }
 
-    try output.print(" V={:_>6}/{} C={x:0>32} A={}\n", .{
+    try output.print(" V={:_>6}/{} C={x:0>32} A={} O={}\n", .{
         table.value_count,
         tree_info.Tree.Table.value_count_max,
         table.checksum,
         table.address,
+        vsr.Zone.offset(.grid, (table.address - 1) * constants.block_size),
     });
 }
 
@@ -1595,7 +1625,7 @@ fn GroupByType(comptime count_max: usize) type {
         const BitSet = stdx.BitSetType(count_max);
 
         count: usize = 0,
-        checksums: [count_max]?u128 = [_]?u128{null} ** count_max,
+        checksums: [count_max]?u128 = @splat(null),
         matches: [count_max]BitSet = undefined,
 
         pub fn compare(group_by: *GroupBy, bytes: []const u8) void {

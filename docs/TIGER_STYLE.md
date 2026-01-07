@@ -158,11 +158,10 @@ Code](https://spinroot.com/gerard/pdf/P10.pdf) will change the way you code fore
 - Declare variables at the **smallest possible scope**, and **minimize the number of variables in
   scope**, to reduce the probability that variables are misused.
 
-- Restrict the length of function bodies to reduce the probability of poorly structured code. We
-  enforce a **hard limit of 70 lines per function**.
-
-  Splitting code into functions requires taste. There are many ways to cut a wall of code into
-  chunks of 70 lines, but only a few splits will feel right. Some rules of thumb:
+- There's a sharp discontinuity between a function fitting on a screen, and having to scroll to
+  see how long it is. For this physical reason we enforce a **hard limit of 70 lines per function**.
+  Art is born of constraints. There are many ways to cut a wall of code into chunks of 70 lines,
+  but only a few splits will feel right. Some rules of thumb:
 
   * Good function shape is often the inverse of an hourglass: a few parameters, a simple return
     type, and a lot of meaty logic between the braces.
@@ -295,6 +294,10 @@ Beyond these rules:
   then line up nicely when `latency_ms_min` is added, as well as group all variables that relate to
   latency.
 
+- Infuse names with meaning. For example, `allocator: Allocator` is a good, if boring name,
+  but `gpa: Allocator` and `arena: Allocator` are excellent. They inform the reader whether
+  `deinit` should be called explicitly.
+
 - When choosing related names, try hard to find names with the same number of characters so that
   related variables all line up in the source. For example, as arguments to a memcpy function,
   `source` and `target` are better than `src` and `dest` because they have the second-order effect
@@ -312,6 +315,22 @@ Beyond these rules:
 - _Order_ matters for readability (even if it doesn't affect semantics). On the first read, a file
   is read top-down, so put important things near the top. The `main` function goes first.
 
+  The same goes for `structs`, the order is fields then types then methods:
+
+  ```zig
+  time: Time,
+  process_id: ProcessID,
+
+  const ProcessID = struct { cluster: u128, replica: u8 };
+  const Tracer = @This(); // This alias concludes the types section.
+
+  pub fn init(gpa: std.mem.Allocator, time: Time) !Tracer {
+      ...
+  }
+  ```
+
+  If a nested type is complex, make it a top-level struct.
+
   At the same time, not everything has a single right order. When in doubt, consider sorting
   alphabetically, taking advantage of big-endian naming.
 
@@ -326,6 +345,13 @@ Beyond these rules:
   `replica.preparing`. The former can be used directly as a section header in a document or
   conversation, whereas the latter must be clarified. Noun names compose more clearly for derived
   identifiers, e.g. `config.pipeline_max`.
+
+- Zig has named arguments through the `options: struct` pattern. Use it when arguments can be
+  mixed up. A function taking two `u64` must use an options struct. If an argument can be `null`,
+  it should be named so that the meaning of `null` literal at the call site is clear.
+
+  Because dependencies like an allocator or a tracer are singletons with unique types, they should
+  be threaded through constructors positionally, from the most general to the most specific.
 
 - **Write descriptive commit messages** that inform and delight the reader, because your commit
   messages are being read.
@@ -437,6 +463,9 @@ Beyond these rules:
   "measure". Use it up. Never go beyond. Nothing should be hidden by a horizontal scrollbar. Let
   your editor help you by setting a column ruler. To wrap a function signature, call or data
   structure, add a trailing comma, close your eyes and let `zig fmt` do the rest.
+
+  Similar to function length, the motivation behind the number 100 is physical: just enough
+  to fit two copies of the code side-by-side on a screen.
 
 - Add braces to the `if` statement unless it fits on a single line for consistency and defense in
   depth against "goto fail;" bugs.

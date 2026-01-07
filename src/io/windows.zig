@@ -1,4 +1,5 @@
 const std = @import("std");
+const stdx = @import("stdx");
 const os = std.os;
 const posix = std.posix;
 const assert = std.debug.assert;
@@ -7,15 +8,16 @@ const constants = @import("../constants.zig");
 const common = @import("./common.zig");
 
 const QueueType = @import("../queue.zig").QueueType;
-const Time = @import("../time.zig").Time;
+const TimeOS = @import("../time.zig").TimeOS;
 const buffer_limit = @import("../io.zig").buffer_limit;
 const DirectIO = @import("../io.zig").DirectIO;
 
 pub const IO = struct {
     pub const TCPOptions = common.TCPOptions;
+    pub const ListenOptions = common.ListenOptions;
 
     iocp: os.windows.HANDLE,
-    timer: Time = .{},
+    time_os: TimeOS = .{},
     io_pending: usize = 0,
     timeouts: QueueType(Completion) = QueueType(Completion).init(.{ .name = "io_timeouts" }),
     completed: QueueType(Completion) = QueueType(Completion).init(.{ .name = "io_completed" }),
@@ -150,7 +152,7 @@ pub const IO = struct {
         var timeouts_iterator = self.timeouts.iterate();
         while (timeouts_iterator.next()) |completion| {
             // Lazily get the current time.
-            const now = current_time orelse self.timer.monotonic();
+            const now = current_time orelse self.time_os.time().monotonic().ns;
             current_time = now;
 
             // Move the completion to completed if it expired.
@@ -200,7 +202,7 @@ pub const IO = struct {
             accept: struct {
                 overlapped: Overlapped,
                 listen_socket: socket_t,
-                client_socket: socket_t,
+                client_socket: ?socket_t,
                 addr_buffer: [(@sizeOf(std.net.Address) + 16) * 2]u8 align(4),
             },
             connect: struct {
@@ -297,6 +299,28 @@ pub const IO = struct {
         // TODO Cancel in-flight async IO and wait for all completions.
     }
 
+    pub const CancelError = error{
+        NotRunning,
+        NotInterruptable,
+    } || posix.UnexpectedError;
+
+    pub fn cancel(
+        _: *IO,
+        comptime Context: type,
+        _: Context,
+        comptime _: fn (
+            context: Context,
+            completion: *Completion,
+            result: CancelError!void,
+        ) void,
+        _: struct {
+            completion: *Completion,
+            target: *Completion,
+        },
+    ) void {
+        @panic("cancelation is not supported on windows");
+    }
+
     pub const AcceptError = posix.AcceptError || posix.SetSockOptError;
 
     pub fn accept(
@@ -319,7 +343,7 @@ pub const IO = struct {
             .{
                 .overlapped = undefined,
                 .listen_socket = socket,
-                .client_socket = INVALID_SOCKET,
+                .client_socket = null,
                 .addr_buffer = undefined,
             },
             struct {
@@ -330,68 +354,67 @@ pub const IO = struct {
                     var flags: os.windows.DWORD = undefined;
                     var transferred: os.windows.DWORD = undefined;
 
-                    const rc = switch (op.client_socket) {
+                    const rc = if (op.client_socket == null) blk: {
                         // When first called, the client_socket is invalid so we start the op.
-                        INVALID_SOCKET => blk: {
-                            // Create the socket that will be used for accept.
-                            op.client_socket = ctx.io.open_socket(
-                                posix.AF.INET,
-                                posix.SOCK.STREAM,
-                                posix.IPPROTO.TCP,
-                            ) catch |err| switch (err) {
-                                error.AddressFamilyNotSupported => unreachable,
-                                error.ProtocolNotSupported => unreachable,
-                                else => |e| return e,
-                            };
+                        // Create the socket that will be used for accept.
+                        op.client_socket = ctx.io.open_socket(
+                            posix.AF.INET,
+                            posix.SOCK.STREAM,
+                            posix.IPPROTO.TCP,
+                        ) catch |err| switch (err) {
+                            error.AddressFamilyNotSupported => unreachable,
+                            error.ProtocolNotSupported => unreachable,
+                            else => |e| return e,
+                        };
 
-                            var sync_bytes_read: os.windows.DWORD = undefined;
-                            op.overlapped = .{
-                                .raw = std.mem.zeroes(os.windows.OVERLAPPED),
-                                .completion = ctx.completion,
-                            };
+                        var sync_bytes_read: os.windows.DWORD = undefined;
+                        op.overlapped = .{
+                            .raw = std.mem.zeroes(os.windows.OVERLAPPED),
+                            .completion = ctx.completion,
+                        };
 
-                            // Start the asynchronous accept with the created socket.
-                            break :blk os.windows.ws2_32.AcceptEx(
-                                op.listen_socket,
-                                op.client_socket,
-                                &op.addr_buffer,
-                                0,
-                                @sizeOf(std.net.Address) + 16,
-                                @sizeOf(std.net.Address) + 16,
-                                &sync_bytes_read,
-                                &op.overlapped.raw,
-                            );
-                        },
+                        // Start the asynchronous accept with the created socket.
+                        break :blk os.windows.ws2_32.AcceptEx(
+                            op.listen_socket,
+                            op.client_socket.?,
+                            &op.addr_buffer,
+                            0,
+                            @sizeOf(std.net.Address) + 16,
+                            @sizeOf(std.net.Address) + 16,
+                            &sync_bytes_read,
+                            &op.overlapped.raw,
+                        );
+                    } else blk: {
                         // Called after accept was started, so get the result.
-                        else => os.windows.ws2_32.WSAGetOverlappedResult(
+                        break :blk os.windows.ws2_32.WSAGetOverlappedResult(
                             op.listen_socket,
                             &op.overlapped.raw,
                             &transferred,
                             os.windows.FALSE, // Don't wait.
                             &flags,
-                        ),
+                        );
                     };
 
                     // Return the socket if we succeed in accepting.
                     if (rc != os.windows.FALSE) {
                         // Enables getsockopt, setsockopt, getsockname, getpeername.
                         _ = os.windows.ws2_32.setsockopt(
-                            op.client_socket,
+                            op.client_socket.?,
                             os.windows.ws2_32.SOL.SOCKET,
                             os.windows.ws2_32.SO.UPDATE_ACCEPT_CONTEXT,
                             null,
                             0,
                         );
 
-                        return op.client_socket;
+                        return op.client_socket.?;
                     }
 
                     // Destroy the client_socket we created if we get a non WouldBlock error.
                     errdefer |err| switch (err) {
                         error.WouldBlock => {},
                         else => {
-                            ctx.io.close_socket(op.client_socket);
-                            op.client_socket = INVALID_SOCKET;
+                            ctx.io.close_socket(op.client_socket.?);
+                            op.client_socket = null;
                         },
                     };
 
@@ -465,7 +488,7 @@ pub const IO = struct {
                         }
 
                         // ConnectEx requires the socket to be initially bound (INADDR_ANY).
-                        const inaddr_any = std.mem.zeroes([4]u8);
+                        const inaddr_any: [4]u8 = @splat(0);
                         const bind_addr = std.net.Address.initIp4(inaddr_any, 0);
                         posix.bind(
                             op.socket,
@@ -1018,7 +1041,7 @@ pub const IO = struct {
             callback,
             completion,
             .timeout,
-            .{ .deadline = self.timer.monotonic() + nanoseconds },
+            .{ .deadline = self.time_os.time().monotonic().ns + nanoseconds },
             struct {
                 fn do_operation(ctx: Completion.Context, op: anytype) TimeoutError!void {
                     _ = ctx;
@@ -1085,7 +1108,6 @@ pub const IO = struct {
     }
 
     pub const socket_t = posix.socket_t;
-    pub const INVALID_SOCKET = os.windows.ws2_32.INVALID_SOCKET;
 
     /// Creates a TCP socket that can be used for async operations with the IO instance.
     pub fn open_socket_tcp(self: *IO, family: u32, options: TCPOptions) !socket_t {
@@ -1155,7 +1177,7 @@ pub const IO = struct {
         _: *IO,
         fd: socket_t,
         address: std.net.Address,
-        options: common.ListenOptions,
+        options: ListenOptions,
     ) !std.net.Address {
         return common.listen(fd, address, options);
     }
@@ -1177,18 +1199,18 @@ pub const IO = struct {
         self: *IO,
         dir_handle: fd_t,
         relative_path: []const u8,
-        method: enum { create, open, open_read_only },
+        purpose: enum { format, open, inspect },
     ) !fd_t {
         const path_w = try os.windows.sliceToPrefixedFileW(dir_handle, relative_path);
 
         // FILE_CREATE = O_CREAT | O_EXCL
         var creation_disposition: os.windows.DWORD = 0;
-        switch (method) {
-            .create => {
+        switch (purpose) {
+            .format => {
                 creation_disposition = os.windows.FILE_CREATE;
                 log.info("creating \"{s}\"...", .{relative_path});
             },
-            .open, .open_read_only => {
+            .open, .inspect => {
                 creation_disposition = os.windows.OPEN_EXISTING;
                 log.info("opening \"{s}\"...", .{relative_path});
             },
@@ -1205,7 +1227,7 @@ pub const IO = struct {
         access_mask |= os.windows.SYNCHRONIZE;
         access_mask |= os.windows.GENERIC_READ;
 
-        if (method != .open_read_only) {
+        if (purpose != .inspect) {
             access_mask |= os.windows.GENERIC_WRITE;
         }
 
@@ -1250,6 +1272,7 @@ pub const IO = struct {
         return handle;
     }
 
+    pub const OpenDataFilePurpose = enum { format, open, inspect };
     /// Opens or creates a journal file:
     /// - For reading and writing.
     /// - For Direct I/O (required on windows).
@@ -1263,7 +1286,7 @@ pub const IO = struct {
         dir_handle: fd_t,
         relative_path: []const u8,
         size: u64,
-        method: enum { create, create_or_open, open, open_read_only },
+        purpose: OpenDataFilePurpose,
         direct_io: DirectIO,
     ) !fd_t {
         assert(relative_path.len > 0);
@@ -1271,27 +1294,14 @@ pub const IO = struct {
         // On windows, assume that Direct IO is always available.
         _ = direct_io;
 
-        const handle = switch (method) {
+        const handle = switch (purpose) {
+            .format => try self.open_file_handle(dir_handle, relative_path, .format),
             .open => try self.open_file_handle(dir_handle, relative_path, .open),
-            .open_read_only => try self.open_file_handle(
+            .inspect => try self.open_file_handle(
                 dir_handle,
                 relative_path,
-                .open_read_only,
+                .inspect,
             ),
-            .create => try self.open_file_handle(dir_handle, relative_path, .create),
-            .create_or_open => open_file_handle(
-                self,
-                dir_handle,
-                relative_path,
-                .open,
-            ) catch |err| switch (err) {
-                error.FileNotFound => try self.open_file_handle(
-                    dir_handle,
-                    relative_path,
-                    .create,
-                ),
-                else => return err,
-            },
         };
         errdefer os.windows.CloseHandle(handle);
 
@@ -1299,7 +1309,7 @@ pub const IO = struct {
         // even when we haven't given shared access to other processes.
         fs_lock(handle, size) catch |err| switch (err) {
             error.WouldBlock => {
-                if (method == .open_read_only) {
+                if (purpose == .inspect) {
                     log.warn(
                         "another process holds the data file lock - results may be inconsistent",
                         .{},
@@ -1312,14 +1322,14 @@ pub const IO = struct {
         };
 
         // Ask the file system to allocate contiguous sectors for the file (if possible):
-        if (method == .create) {
+        if (purpose == .format) {
             log.info("allocating {}...", .{std.fmt.fmtIntSizeBin(size)});
             fs_allocate(handle, size) catch {
                 log.warn("file system failed to preallocate the file memory", .{});
                 log.info("allocating by writing to the last sector of the file instead...", .{});
 
                 const sector_size = constants.sector_size;
-                const sector: [sector_size]u8 align(sector_size) = [_]u8{0} ** sector_size;
+                const sector: [sector_size]u8 align(sector_size) = @splat(0);
 
                 // Handle partial writes where the physical sector is less than a logical sector:
                 const write_offset = size - sector.len;
@@ -1338,7 +1348,7 @@ pub const IO = struct {
         // making decisions on data that was never durably written by a previously crashed process.
         // We therefore always fsync when we open the path, also to wait for any pending O_DSYNC.
         // Thanks to Alex Miller from FoundationDB for diving into our source and pointing this out.
-        if (method != .open_read_only) {
+        if (purpose != .inspect) {
             try posix.fsync(handle);
         }
 
@@ -1357,37 +1367,16 @@ pub const IO = struct {
         // TODO: Look into using SetFileIoOverlappedRange() for better unbuffered async IO perf
         // NOTE: Requires SeLockMemoryPrivilege.
 
-        const kernel32 = struct {
-            const LOCKFILE_EXCLUSIVE_LOCK = 0x2;
-            const LOCKFILE_FAIL_IMMEDIATELY = 0x1;
-
-            // Declaring the function with an alternative name because `CamelCase` functions are
-            // by convention, used for building generic types.
-            const lock_file_ex = @extern(
-                *const fn (
-                    hFile: os.windows.HANDLE,
-                    dwFlags: os.windows.DWORD,
-                    dwReserved: os.windows.DWORD,
-                    nNumberOfBytesToLockLow: os.windows.DWORD,
-                    nNumberOfBytesToLockHigh: os.windows.DWORD,
-                    lpOverlapped: ?*os.windows.OVERLAPPED,
-                ) callconv(os.windows.WINAPI) os.windows.BOOL,
-                .{
-                    .library_name = "kernel32",
-                    .name = "LockFileEx",
-                },
-            );
-        };
         // hEvent = null
         // Offset & OffsetHigh = 0
         var lock_overlapped = std.mem.zeroes(os.windows.OVERLAPPED);
 
         // LOCK_EX | LOCK_NB
         var lock_flags: os.windows.DWORD = 0;
-        lock_flags |= kernel32.LOCKFILE_EXCLUSIVE_LOCK;
-        lock_flags |= kernel32.LOCKFILE_FAIL_IMMEDIATELY;
+        lock_flags |= stdx.windows.LOCKFILE_EXCLUSIVE_LOCK;
+        lock_flags |= stdx.windows.LOCKFILE_FAIL_IMMEDIATELY;
 
-        const locked = kernel32.lock_file_ex(
+        const locked = stdx.windows.LockFileEx(
             handle,
             lock_flags,
             0, // Reserved param is always zero.
@@ -1424,17 +1413,8 @@ pub const IO = struct {
             };
         }
 
-        const set_end_of_file = @extern(
-            *const fn (
-                hFile: os.windows.HANDLE,
-            ) callconv(os.windows.WINAPI) std.os.windows.BOOL,
-            .{
-                .library_name = "kernel32",
-                .name = "SetEndOfFile",
-            },
-        );
         // Mark the moved file pointer (start + size) as the physical EOF.
-        const allocated = set_end_of_file(handle);
+        const allocated = stdx.windows.SetEndOfFile(handle);
         if (allocated == os.windows.FALSE) {
             const err = os.windows.kernel32.GetLastError();
             return os.windows.unexpectedError(err);

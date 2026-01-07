@@ -5,7 +5,7 @@ const mem = std.mem;
 const meta = std.meta;
 
 const vsr = @import("../vsr.zig");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 
 pub fn NodePoolType(comptime _node_size: u32, comptime _node_alignment: u13) type {
     return struct {
@@ -49,15 +49,6 @@ pub fn NodePoolType(comptime _node_size: u32, comptime _node_alignment: u13) typ
 
             allocator.free(pool.buffer);
             pool.free.deinit(allocator);
-        }
-
-        pub fn reset(pool: *NodePool) void {
-            pool.free.setRangeValue(.{ .start = 0, .end = pool.free.capacity() }, true);
-
-            pool.* = .{
-                .buffer = pool.buffer,
-                .free = pool.free,
-            };
         }
 
         pub fn acquire(pool: *NodePool) Node {

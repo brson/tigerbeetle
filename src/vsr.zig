@@ -12,6 +12,7 @@ pub const constants = @import("constants.zig");
 pub const io = @import("io.zig");
 pub const queue = @import("queue.zig");
 pub const stack = @import("stack.zig");
+pub const message_buffer = @import("message_buffer.zig");
 pub const message_bus = @import("message_bus.zig");
 pub const message_pool = @import("message_pool.zig");
 pub const state_machine = @import("state_machine.zig");
@@ -20,8 +21,7 @@ pub const tb_client = @import("clients/c/tb_client.zig");
 pub const tigerbeetle = @import("tigerbeetle.zig");
 pub const time = @import("time.zig");
 pub const trace = @import("trace.zig");
-pub const stdx = @import("stdx.zig");
-pub const flags = @import("flags.zig");
+pub const stdx = @import("stdx");
 pub const grid = @import("vsr/grid.zig");
 pub const superblock = @import("vsr/superblock.zig");
 pub const aof = @import("aof.zig");
@@ -35,12 +35,13 @@ pub const lsm = .{
     .TimestampRange = @import("lsm/timestamp_range.zig").TimestampRange,
 };
 pub const testing = .{
-    .snaptest = @import("testing/snaptest.zig"),
     .cluster = @import("testing/cluster.zig"),
     .random_int_exponential = @import("testing/fuzz.zig").random_int_exponential,
     .IdPermutation = @import("testing/id.zig").IdPermutation,
     .parse_seed = @import("testing/fuzz.zig").parse_seed,
 };
+pub const ewah = @import("ewah.zig").ewah;
+pub const checkpoint_trailer = @import("vsr/checkpoint_trailer.zig");
 
 pub const multi_batch = @import("vsr/multi_batch.zig");
 
@@ -52,7 +53,7 @@ pub const Status = @import("vsr/replica.zig").Status;
 pub const SyncStage = @import("vsr/sync.zig").Stage;
 pub const SyncTarget = @import("vsr/sync.zig").Target;
 pub const ClientType = @import("vsr/client.zig").ClientType;
-pub const ClockType = @import("vsr/clock.zig").ClockType;
+pub const Clock = @import("vsr/clock.zig").Clock;
 pub const GridType = @import("vsr/grid.zig").GridType;
 pub const JournalType = @import("vsr/journal.zig").JournalType;
 pub const ClientSessions = @import("vsr/client_sessions.zig").ClientSessions;
@@ -63,7 +64,6 @@ pub const SuperBlockManifestReferences = superblock.ManifestReferences;
 pub const SuperBlockTrailerReference = superblock.TrailerReference;
 pub const VSRState = superblock.SuperBlockHeader.VSRState;
 pub const CheckpointState = superblock.SuperBlockHeader.CheckpointState;
-pub const CheckpointStateOld = superblock.SuperBlockHeader.CheckpointStateOld;
 pub const checksum = @import("vsr/checksum.zig").checksum;
 pub const ChecksumStream = @import("vsr/checksum.zig").ChecksumStream;
 pub const Header = @import("vsr/message_header.zig").Header;
@@ -77,16 +77,47 @@ pub const CountingAllocator = @import("counting_allocator.zig");
 /// For backwards compatibility through breaking changes (e.g. upgrading checksums/ciphers).
 pub const Version: u16 = 0;
 
-pub const multiversioning = @import("multiversioning.zig");
-pub const ReleaseList = multiversioning.ReleaseList;
-pub const Release = multiversioning.Release;
-pub const ReleaseTriple = multiversioning.ReleaseTriple;
+pub const multiversion = @import("multiversion.zig");
+pub const ReleaseList = multiversion.ReleaseList;
+pub const Release = multiversion.Release;
+pub const ReleaseTriple = multiversion.ReleaseTriple;
 
 pub const ProcessType = enum { replica, client };
 pub const Peer = union(enum) {
     unknown,
     replica: u8,
     client: u128,
+    client_likely: u128,
+
+    pub fn transition(old: Peer, new: Peer) enum { retain, update, reject } {
+        return switch (old) {
+            .unknown => .update,
+            .client_likely => switch (new) {
+                .client_likely => if (std.meta.eql(old, new))
+                    .retain
+                else
+                    // Receiving requests from two different clients on the same connection implies
+                    // that we are talking to a replica. However, as we don't know which one, we
+                    // retain this as a connection to a client, for simplicity.
+                    .retain,
+                .client => if (old.client_likely == new.client) .update else .reject,
+                .replica => .update,
+                .unknown => .retain,
+            },
+
+            .replica => switch (new) {
+                .replica => if (std.meta.eql(old, new)) .retain else .reject,
+                .client => .reject,
+                .client_likely, .unknown => .retain,
+            },
+            .client => switch (new) {
+                .client => if (std.meta.eql(old, new)) .retain else .reject,
+                .client_likely => if (old.client == new.client_likely) .retain else .reject,
+                .replica => .reject,
+                .unknown => .retain,
+            },
+        };
+    }
 };
 
 pub const Zone = enum {
@@ -267,27 +298,27 @@ pub const Operation = enum(u8) {
     /// Operations ≥vsr_operations_reserved are available for the state machine.
     _,
 
-    pub fn from(comptime StateMachine: type, operation: StateMachine.Operation) Operation {
-        check_state_machine_operations(StateMachine);
+    pub fn from(comptime StateMachineOperation: type, operation: StateMachineOperation) Operation {
+        comptime check_state_machine_operations(StateMachineOperation);
         return @as(Operation, @enumFromInt(@intFromEnum(operation)));
     }
 
-    pub fn to(comptime StateMachine: type, operation: Operation) StateMachine.Operation {
-        check_state_machine_operations(StateMachine);
-        assert(operation.valid(StateMachine));
+    pub fn to(comptime StateMachineOperation: type, operation: Operation) StateMachineOperation {
+        comptime check_state_machine_operations(StateMachineOperation);
+        assert(operation.valid(StateMachineOperation));
         assert(!operation.vsr_reserved());
-        return @as(StateMachine.Operation, @enumFromInt(@intFromEnum(operation)));
+        return @as(StateMachineOperation, @enumFromInt(@intFromEnum(operation)));
     }
 
-    pub fn cast(self: Operation, comptime StateMachine: type) StateMachine.Operation {
-        check_state_machine_operations(StateMachine);
-        return StateMachine.operation_from_vsr(self).?;
+    pub fn cast(self: Operation, comptime StateMachineOperation: type) StateMachineOperation {
+        comptime check_state_machine_operations(StateMachineOperation);
+        return StateMachineOperation.from_vsr(self).?;
     }
 
-    pub fn valid(self: Operation, comptime StateMachine: type) bool {
-        check_state_machine_operations(StateMachine);
+    pub fn valid(self: Operation, comptime StateMachineOperation: type) bool {
+        comptime check_state_machine_operations(StateMachineOperation);
 
-        inline for (.{ Operation, StateMachine.Operation }) |Enum| {
+        inline for (.{ Operation, StateMachineOperation }) |Enum| {
             const ops = comptime std.enums.values(Enum);
             inline for (ops) |op| {
                 if (@intFromEnum(self) == @intFromEnum(op)) {
@@ -303,10 +334,10 @@ pub const Operation = enum(u8) {
         return @intFromEnum(self) < constants.vsr_operations_reserved;
     }
 
-    pub fn tag_name(self: Operation, comptime StateMachine: type) []const u8 {
-        assert(self.valid(StateMachine));
-        inline for (.{ Operation, StateMachine.Operation }) |Enum| {
-            inline for (@typeInfo(Enum).Enum.fields) |field| {
+    pub fn tag_name(self: Operation, comptime StateMachineOperation: type) []const u8 {
+        assert(self.valid(StateMachineOperation));
+        inline for (.{ Operation, StateMachineOperation }) |Enum| {
+            inline for (@typeInfo(Enum).@"enum".fields) |field| {
                 const op = @field(Enum, field.name);
                 if (@intFromEnum(self) == @intFromEnum(op)) {
                     return field.name;
@@ -316,23 +347,25 @@ pub const Operation = enum(u8) {
         unreachable;
     }
 
-    fn check_state_machine_operations(comptime StateMachine: type) void {
+    fn check_state_machine_operations(comptime StateMachineOperation: type) void {
         comptime {
-            assert(@typeInfo(StateMachine.Operation).Enum.is_exhaustive);
-            assert(@typeInfo(StateMachine.Operation).Enum.tag_type ==
-                @typeInfo(Operation).Enum.tag_type);
-            for (@typeInfo(StateMachine.Operation).Enum.fields) |field| {
-                const operation = @field(StateMachine.Operation, field.name);
+            assert(@typeInfo(StateMachineOperation) == .@"enum");
+            assert(@typeInfo(StateMachineOperation).@"enum".is_exhaustive);
+            assert(@typeInfo(StateMachineOperation).@"enum".tag_type ==
+                @typeInfo(Operation).@"enum".tag_type);
+            for (@typeInfo(StateMachineOperation).@"enum".fields) |field| {
+                const operation = @field(StateMachineOperation, field.name);
                 if (@intFromEnum(operation) < constants.vsr_operations_reserved) {
-                    @compileError("StateMachine.Operation is reserved");
+                    @compileError("StateMachine Operation is reserved");
                 }
             }
-            for (@typeInfo(Operation).Enum.fields) |field| {
+            for (@typeInfo(Operation).@"enum".fields) |field| {
                 const vsr_operation = @field(Operation, field.name);
                 switch (vsr_operation) {
-                    // The StateMachine can convert a `vsr.Operation.pulse` into a valid operation.
-                    .pulse => maybe(StateMachine.operation_from_vsr(vsr_operation) == null),
-                    else => assert(StateMachine.operation_from_vsr(vsr_operation) == null),
+                    // The StateMachine Operation can convert
+                    // a `vsr.Operation.pulse` into a valid operation.
+                    .pulse => maybe(StateMachineOperation.from_vsr(vsr_operation) == null),
+                    else => assert(StateMachineOperation.from_vsr(vsr_operation) == null),
                 }
             }
         }
@@ -344,7 +377,7 @@ pub const RegisterRequest = extern struct {
     /// When command=prepare, batch_size_limit > 0 and batch_size_limit ≤ message_body_size_max.
     /// (Note that this does *not* include the `@sizeOf(Header)`.)
     batch_size_limit: u32,
-    reserved: [252]u8 = [_]u8{0} ** 252,
+    reserved: [252]u8 = @splat(0),
 
     comptime {
         assert(@sizeOf(RegisterRequest) == 256);
@@ -355,7 +388,7 @@ pub const RegisterRequest = extern struct {
 
 pub const RegisterResult = extern struct {
     batch_size_limit: u32,
-    reserved: [60]u8 = [_]u8{0} ** 60,
+    reserved: [60]u8 = @splat(0),
 
     comptime {
         assert(@sizeOf(RegisterResult) == 64);
@@ -367,7 +400,7 @@ pub const RegisterResult = extern struct {
 pub const BlockRequest = extern struct {
     block_checksum: u128,
     block_address: u64,
-    reserved: [8]u8 = [_]u8{0} ** 8,
+    reserved: [8]u8 = @splat(0),
 
     comptime {
         assert(@sizeOf(BlockRequest) == 32);
@@ -399,7 +432,7 @@ pub const ReconfigurationRequest = extern struct {
     ///
     /// At the moment, we require this to be equal to the old count.
     standby_count: u8,
-    reserved: [54]u8 = [_]u8{0} ** 54,
+    reserved: [54]u8 = @splat(0),
     /// The result of this request. Set to zero by the client and filled-in by the primary when it
     /// accepts a reconfiguration request.
     result: ReconfigurationResult,
@@ -545,7 +578,7 @@ test "ReconfigurationRequest" {
         }
 
         fn to_members(m: anytype) Members {
-            var result = [_]u128{0} ** constants.members_max;
+            var result: [constants.members_max]u128 = @splat(0);
             inline for (m, 0..) |member, index| result[index] = member;
             return result;
         }
@@ -629,7 +662,7 @@ test "ReconfigurationRequest" {
 
 pub const UpgradeRequest = extern struct {
     release: Release,
-    reserved: [12]u8 = [_]u8{0} ** 12,
+    reserved: [12]u8 = @splat(0),
 
     comptime {
         assert(@sizeOf(UpgradeRequest) == 16);
@@ -827,7 +860,7 @@ pub fn exponential_backoff_with_jitter(
 }
 
 test "exponential_backoff_with_jitter" {
-    var prng = stdx.PRNG.from_seed(0);
+    var prng = stdx.PRNG.from_seed_testing();
 
     const attempts = 1000;
     const max: u64 = std.math.maxInt(u64);
@@ -1047,18 +1080,16 @@ test parse_addresses {
 
 test "parse_addresses: fuzz" {
     const test_count = 1024;
-    const len_max = 32;
+    const input_size_max = 32;
     const alphabet = " \t\n,:[]0123456789abcdefgABCDEFGXx";
 
-    const seed = std.crypto.random.int(u64);
+    var prng = stdx.PRNG.from_seed_testing();
 
-    var prng = stdx.PRNG.from_seed(seed);
-
-    var input_max: [len_max]u8 = .{0} ** len_max;
+    var input_bufer: [input_size_max]u8 = @splat(0);
     var buffer: [3]std.net.Address = undefined;
     for (0..test_count) |_| {
-        const len = prng.int_inclusive(usize, len_max);
-        const input = input_max[0..len];
+        const input_size = prng.int_inclusive(usize, input_size_max);
+        const input = input_bufer[0..input_size];
         for (input) |*c| {
             c.* = alphabet[prng.index(alphabet)];
         }
@@ -1190,7 +1221,7 @@ pub fn root_members(cluster: u128) Members {
     };
     comptime assert(@sizeOf(IdSeed) == 33);
 
-    var result = [_]u128{0} ** constants.members_max;
+    var result: [constants.members_max]u128 = @splat(0);
     var replica: u8 = 0;
     while (replica < constants.members_max) : (replica += 1) {
         const seed = IdSeed{
@@ -1233,26 +1264,8 @@ pub fn member_index(members: *const Members, replica_id: u128) ?u8 {
     } else return null;
 }
 
-pub fn verify_release_list(releases: []const Release, release_included: Release) void {
-    assert(releases.len >= 1);
-    assert(releases.len <= constants.vsr_releases_max);
-
-    for (
-        releases[0 .. releases.len - 1],
-        releases[1..],
-    ) |release_a, release_b| {
-        assert(release_a.value < release_b.value);
-    }
-
-    for (releases) |release| {
-        if (release.value == release_included.value) return;
-    } else {
-        @panic("verify_release_list_contains: release not found");
-    }
-}
-
 pub const Headers = struct {
-    pub const Array = stdx.BoundedArrayType(Header.Prepare, constants.view_change_headers_max);
+    pub const Array = stdx.BoundedArrayType(Header.Prepare, constants.view_headers_max);
     /// The SuperBlock's persisted VSR headers.
     /// One of the following:
     ///
@@ -1282,7 +1295,7 @@ pub const Headers = struct {
     pub fn dvc_header_type(header: *const Header.Prepare) enum { blank, valid } {
         if (std.meta.eql(header.*, Headers.dvc_blank(header.op))) return .blank;
 
-        if (constants.verify) assert(header.valid_checksum());
+        assert(header.valid_checksum());
         assert(header.command == .prepare);
         assert(header.operation != .reserved);
         assert(header.invalid() == null);
@@ -1311,7 +1324,7 @@ const ViewChangeHeadersSlice = struct {
 
     pub fn verify(headers: ViewChangeHeadersSlice) void {
         assert(headers.slice.len > 0);
-        assert(headers.slice.len <= constants.view_change_headers_max);
+        assert(headers.slice.len <= constants.view_headers_max);
 
         const head = &headers.slice[0];
         // A DVC's head op is never a gap or faulty.
@@ -1329,7 +1342,7 @@ const ViewChangeHeadersSlice = struct {
             // SV: The first "pipeline + 1" ops of the SV are consecutive.
             if (headers.command == .do_view_change or
                 (headers.command == .start_view and
-                index < constants.pipeline_prepare_queue_max + 1))
+                    index < constants.pipeline_prepare_queue_max + 1))
             {
                 assert(header.op == head.op - index);
             }
@@ -1340,7 +1353,7 @@ const ViewChangeHeadersSlice = struct {
                     // superblock.checkpoint could make .do_view_change headers durable instead of
                     // .start_view headers when view == log_view (see `commit_checkpoint_superblock`
                     // in `replica.zig`). When these headers are loaded from the superblock on
-                    // startup, they are considered to be .start_view headers (see `vsr_headers` in
+                    // startup, they are considered to be .start_view headers (see `view_headers` in
                     // `superblock.zig`).
                     maybe(headers.command == .do_view_change);
                     maybe(headers.command == .start_view);
@@ -1495,20 +1508,20 @@ const ViewChangeHeadersArray = struct {
     ) void {
         headers.command = command;
         headers.array.clear();
-        for (slice) |*header| headers.array.append_assume_capacity(header.*);
+        for (slice) |*header| headers.array.push(header.*);
         headers.verify();
     }
 
     pub fn append(headers: *ViewChangeHeadersArray, header: *const Header.Prepare) void {
         // We don't do comprehensive validation here — assume that verify() will be called
         // after any series of appends.
-        headers.array.append_assume_capacity(header.*);
+        headers.array.push(header.*);
     }
 
     pub fn append_blank(headers: *ViewChangeHeadersArray, op: u64) void {
         assert(headers.command == .do_view_change);
         assert(headers.array.count() > 0);
-        headers.array.append_assume_capacity(Headers.dvc_blank(op));
+        headers.array.push(Headers.dvc_blank(op));
     }
 };
 
@@ -1604,8 +1617,8 @@ pub const Checkpoint = struct {
 };
 
 test "Checkpoint ops diagram" {
-    const Snap = @import("./testing/snaptest.zig").Snap;
-    const snap = Snap.snap;
+    const Snap = stdx.Snap;
+    const snap = Snap.snap_fn("src");
 
     var string = std.ArrayList(u8).init(std.testing.allocator);
     defer string.deinit();
@@ -1711,46 +1724,3 @@ pub const Snapshot = struct {
         return op + 1;
     }
 };
-
-pub const Budget = struct {
-    capacity: u32,
-    available: u32,
-    refill_max: u32,
-
-    pub fn init(options: struct {
-        capacity: u32,
-        refill_max: u32,
-    }) Budget {
-        assert(options.refill_max <= options.capacity);
-        return Budget{
-            .capacity = options.capacity,
-            .available = options.capacity,
-            .refill_max = options.refill_max,
-        };
-    }
-
-    pub fn spend(budget: *Budget, amount: u32) bool {
-        assert(budget.capacity > 0);
-        assert(budget.available <= budget.capacity);
-        assert(amount > 0);
-
-        if (budget.available < amount) return false;
-        budget.available -= amount;
-        return true;
-    }
-
-    pub fn refill(budget: *Budget, amount: u32) void {
-        assert(amount <= budget.refill_max);
-        assert(budget.available <= budget.capacity);
-
-        budget.available = @min((budget.available + amount), budget.capacity);
-    }
-};
-
-pub fn block_count_max(storage_size_limit: u64) usize {
-    const shard_count_limit: usize = @intCast(@divFloor(
-        storage_size_limit - superblock.data_file_size_min,
-        constants.block_size * FreeSet.shard_bits,
-    ));
-    return shard_count_limit * FreeSet.shard_bits;
-}

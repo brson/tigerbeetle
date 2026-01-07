@@ -15,7 +15,7 @@ support. But for ease of development we also support macOS and Windows.
 * Go >= 1.21
 
 **Additionally on Windows**: you must install [Zig
-0.13.0](https://ziglang.org/download/#release-0.13.0) and set the
+0.14.1](https://ziglang.org/download/#release-0.14.1) and set the
 `CC` environment variable to `zig.exe cc`. Use the full path for
 `zig.exe`.
 
@@ -68,7 +68,7 @@ features of TigerBeetle.
 * [Basic](/src/clients/go/samples/basic/): Create two accounts and transfer an amount between them.
 * [Two-Phase Transfer](/src/clients/go/samples/two-phase/): Create two accounts and start a pending transfer between
 them, then post the transfer.
-* [Many Two-Phase Transfers](/src/clients/go/samples/two-phase-many/): Create two accounts and start a number of pending transfer
+* [Many Two-Phase Transfers](/src/clients/go/samples/two-phase-many/): Create two accounts and start a number of pending transfers
 between them, posting and voiding alternating transfers.
 ## Creating a Client
 
@@ -78,7 +78,8 @@ ID and replica addresses are both chosen by the system that
 starts the TigerBeetle cluster.
 
 Clients are thread-safe and a single instance should be shared
-between multiple concurrent tasks.
+between multiple concurrent tasks. This allows events to be 
+[automatically batched](https://docs.tigerbeetle.com/coding/requests/#batching-events).
 
 Multiple clients are useful when connecting to more than
 one TigerBeetle cluster.
@@ -475,8 +476,7 @@ transferErrors, err := client.CreateTransfers([]Transfer{transfer0})
 // Error handling omitted.
 
 transfer1 := Transfer{
-	ID: ToUint128(9),
-	// Post the entire pending amount.
+	ID:        ToUint128(9),
 	Amount:    ToUint128(0),
 	PendingID: ToUint128(8),
 	Flags:     TransferFlags{VoidPendingTransfer: true}.ToUint16(),
@@ -589,7 +589,7 @@ filter := QueryFilter{
 	Ledger:       0,  // No filter by Ledger
 	TimestampMin: 0,  // No filter by Timestamp.
 	TimestampMax: 0,  // No filter by Timestamp.
-	Limit:        10, // Limit to ten balances at most.
+	Limit:        10, // Limit to ten accounts at most.
 	Flags: QueryFilterFlags{
 		Reversed: true, // Sort by timestamp in reverse-chronological order.
 	}.ToUint32(),
@@ -617,7 +617,7 @@ filter := QueryFilter{
 	Ledger:       0,  // No filter by Ledger.
 	TimestampMin: 0,  // No filter by Timestamp.
 	TimestampMax: 0,  // No filter by Timestamp.
-	Limit:        10, // Limit to ten balances at most.
+	Limit:        10, // Limit to ten transfers at most.
 	Flags: QueryFilterFlags{
 		Reversed: true, // Sort by timestamp in reverse-chronological order.
 	}.ToUint32(),

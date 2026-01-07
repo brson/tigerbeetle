@@ -255,7 +255,7 @@ test "Queue: push/pop/peek/remove/empty" {
 }
 
 test "Queue: fuzz" {
-    const stdx = @import("./stdx.zig");
+    const stdx = @import("stdx");
     const fuzz = @import("./testing/fuzz.zig");
 
     const Item = struct {
@@ -266,7 +266,7 @@ test "Queue: fuzz" {
     const Model = stdx.RingBufferType(u64, .slice);
 
     const gpa = std.testing.allocator;
-    var prng = stdx.PRNG.from_seed(92);
+    var prng = stdx.PRNG.from_seed_testing();
 
     for (0..100) |_| {
         const N = 1000;
@@ -283,6 +283,7 @@ test "Queue: fuzz" {
 
         var items = try gpa.alloc(Item, N);
         defer gpa.free(items);
+
         for (items, 0..) |*item, value| {
             item.* = .{ .value = value, .link = .{} };
         }

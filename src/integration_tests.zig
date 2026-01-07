@@ -12,16 +12,20 @@ const log = std.log;
 const assert = std.debug.assert;
 
 const Shell = @import("./shell.zig");
-const Snap = @import("./testing/snaptest.zig").Snap;
-const snap = Snap.snap;
+const Snap = stdx.Snap;
+const snap = Snap.snap_fn("src");
 const TmpTigerBeetle = @import("./testing/tmp_tigerbeetle.zig");
 
-const stdx = @import("stdx.zig");
+const stdx = @import("stdx");
 const ratio = stdx.PRNG.ratio;
 
 const vortex_exe: []const u8 = @import("test_options").vortex_exe;
 const tigerbeetle: []const u8 = @import("test_options").tigerbeetle_exe;
 const tigerbeetle_past: []const u8 = @import("test_options").tigerbeetle_exe_past;
+
+comptime {
+    _ = @import("clients/c/tb_client_header_test.zig");
+}
 
 test "repl integration" {
     const Context = struct {
@@ -59,7 +63,7 @@ test "repl integration" {
                 \\{tigerbeetle} repl --cluster=0 --addresses={addresses} --command={command}
             , .{
                 .tigerbeetle = context.tigerbeetle_exe,
-                .addresses = context.tmp_beetle.port_str.slice(),
+                .addresses = context.tmp_beetle.port_str,
                 .command = command,
             });
         }
@@ -279,6 +283,7 @@ test "benchmark/inspect smoke" {
         "{tigerbeetle} inspect grid                    {path}",
         "{tigerbeetle} inspect manifest                {path}",
         "{tigerbeetle} inspect tables --tree=transfers {path}",
+        "{tigerbeetle} inspect integrity               {path}",
     }) |command| {
         log.debug("{s}", .{command});
 
@@ -286,6 +291,46 @@ test "benchmark/inspect smoke" {
             command,
             .{ .tigerbeetle = tigerbeetle, .path = data_file },
         );
+    }
+
+    // Corrupt the data file, and ensure the integrity check fails. Due to how it works, the
+    // corruption has to be in a spot that's actually used. Take the first offset from
+    // `tigerbeetle inspect tables --tree=transfers`.
+    const tables_output = try shell.exec_stdout(
+        "{tigerbeetle} inspect tables --tree=transfers {path}",
+        .{ .tigerbeetle = tigerbeetle, .path = data_file },
+    );
+
+    const offset = try std.fmt.parseInt(
+        u64,
+        stdx.cut(tables_output, "O=").?[1],
+        10,
+    );
+
+    {
+        const file = try std.fs.cwd().openFile(data_file, .{ .mode = .read_write });
+        defer file.close();
+
+        var prng = stdx.PRNG.from_seed_testing();
+        var random_bytes: [256]u8 = undefined;
+        prng.fill(&random_bytes);
+
+        try file.pwriteAll(&random_bytes, offset);
+    }
+
+    // `shell.exec` assumes that success is a zero exit code; but in this case the test expects
+    // corruption to be found and wants to assert a non-zero exit code.
+    var child = std.process.Child.init(
+        &.{ tigerbeetle, "inspect", "integrity", data_file },
+        std.testing.allocator,
+    );
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+
+    const term = try child.spawnAndWait();
+    switch (term) {
+        .Exited, .Signal => |value| try std.testing.expect(value != 0),
+        else => unreachable,
     }
 }
 
@@ -318,16 +363,13 @@ test "in-place upgrade" {
     //
     // To spice things up, replicas are periodically killed and restarted.
 
-    if (builtin.target.os.tag != .linux) {
-        // For now, test in-place upgrades only on Linux.
-        return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) {
+        return error.SkipZigTest; // Coming soon!
     }
 
     const replica_count = TmpCluster.replica_count;
-    const seed = std.crypto.random.int(u64);
-    log.info("seed = {}", .{seed});
 
-    var cluster = try TmpCluster.init(.{ .seed = seed });
+    var cluster = try TmpCluster.init();
     defer cluster.deinit();
 
     for (0..replica_count) |replica_index| {
@@ -341,7 +383,7 @@ test "in-place upgrade" {
     }
 
     const ticks_max = 50;
-    var upgrade_tick: [replica_count]u8 = .{0} ** replica_count;
+    var upgrade_tick: [replica_count]u8 = @splat(0);
     for (0..replica_count) |replica_index| {
         upgrade_tick[replica_index] = cluster.prng.int_inclusive(u8, ticks_max - 1);
     }
@@ -384,10 +426,8 @@ test "recover smoke" {
     }
 
     const replica_count = TmpCluster.replica_count;
-    const seed = std.crypto.random.int(u64);
-    log.info("seed = {}", .{seed});
 
-    var cluster = try TmpCluster.init(.{ .seed = seed });
+    var cluster = try TmpCluster.init();
     defer cluster.deinit();
 
     for (0..replica_count) |replica_index| {
@@ -418,29 +458,10 @@ test "vortex smoke" {
     const shell = try Shell.create(std.testing.allocator);
     defer shell.destroy();
 
-    const script_path = try shell.fmt("./.zig-cache/tmp/{}.sh", .{
-        std.crypto.random.int(u64),
-    });
-    defer shell.cwd.deleteTree(script_path) catch {};
-
-    const script_contents = try shell.fmt(
-        \\ ip link set up dev lo && \
-        \\   {s} supervisor \
-        \\   --test-duration-minutes=1 \
-        \\   --tigerbeetle-executable={s}
-    , .{
-        vortex_exe,
-        tigerbeetle,
-    });
-    _ = try shell.cwd.writeFile(.{
-        .sub_path = script_path,
-        .data = script_contents,
-        .flags = .{ .mode = 0o777 },
-    });
-
-    try shell.exec("unshare --net --fork --map-root-user --pid sh {script_path}", .{
-        .script_path = script_path,
-    });
+    try shell.exec(
+        "{vortex_exe} supervisor --test-duration=1s --replica-count=1",
+        .{ .vortex_exe = vortex_exe },
+    );
 }
 
 const TmpCluster = struct {
@@ -452,17 +473,15 @@ const TmpCluster = struct {
     tmp: []const u8,
 
     prng: stdx.PRNG,
-    replicas: [replica_count]?std.process.Child = .{null} ** replica_count,
+    replicas: [replica_count]?std.process.Child = @splat(null),
     replica_exe: [replica_count][]const u8,
     replica_datafile: [replica_count][]const u8,
-    replica_upgraded: [replica_count]bool = .{false} ** replica_count,
+    replica_upgraded: [replica_count]bool = @splat(false),
 
     workload_thread: ?std.Thread = null,
     workload_exit_ok: bool = false,
 
-    fn init(options: struct {
-        seed: u64,
-    }) !TmpCluster {
+    fn init() !TmpCluster {
         const shell = try Shell.create(std.testing.allocator);
         errdefer shell.destroy();
 
@@ -471,8 +490,8 @@ const TmpCluster = struct {
 
         try shell.cwd.makePath(tmp);
 
-        var replica_exe: [replica_count][]const u8 = .{""} ** replica_count;
-        var replica_datafile: [replica_count][]const u8 = .{""} ** replica_count;
+        var replica_exe: [replica_count][]const u8 = @splat("");
+        var replica_datafile: [replica_count][]const u8 = @splat("");
         for (0..replica_count) |replica_index| {
             replica_exe[replica_index] = try shell.fmt("{s}/tigerbeetle{}{s}", .{
                 tmp,
@@ -485,7 +504,7 @@ const TmpCluster = struct {
             });
         }
 
-        const prng = stdx.PRNG.from_seed(options.seed);
+        const prng = stdx.PRNG.from_seed_testing();
         return .{
             .shell = shell,
             .tmp = tmp,
@@ -565,9 +584,24 @@ const TmpCluster = struct {
 
     fn replica_upgrade(cluster: *TmpCluster, replica_index: usize) !void {
         assert(!cluster.replica_upgraded[replica_index]);
+
+        const upgrade_requires_restart = builtin.os.tag != .linux;
+        if (upgrade_requires_restart) {
+            if (cluster.replicas[replica_index] != null) {
+                try cluster.replica_kill(replica_index);
+            }
+            assert(cluster.replicas[replica_index] == null);
+        }
+
         cluster.shell.cwd.deleteFile(cluster.replica_exe[replica_index]) catch {};
         try cluster.replica_install(replica_index, .current);
         cluster.replica_upgraded[replica_index] = true;
+
+        if (upgrade_requires_restart) {
+            assert(cluster.replicas[replica_index] == null);
+            try cluster.replica_spawn(replica_index);
+            assert(cluster.replicas[replica_index] != null);
+        }
     }
 
     fn replica_spawn(cluster: *TmpCluster, replica_index: usize) !void {
@@ -605,9 +639,7 @@ const TmpCluster = struct {
                 const shell = try Shell.create(std.testing.allocator);
                 defer shell.destroy();
 
-                try shell.exec_options(.{
-                    .timeout_ns = 10 * std.time.ns_per_min,
-                },
+                try shell.exec_options(.{ .timeout = .minutes(10) },
                     \\{tigerbeetle} benchmark
                     \\    --print-batch-timings
                     \\    --transfer-count={transfer_count}

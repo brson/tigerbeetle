@@ -8,13 +8,35 @@
 //! - The results of all measurements are serialized as a single JSON object, `Run`.
 //! - The key part: this JSON is then stored in a "distributed database" for our visualization
 //!   front-end to pick up. This "database" is just a newline-delimited JSON file in a git repo
+//!
+//! To generate a DEVHUBDB_PAT (used by cfo and CI):
+//! 1. Go to https://github.com/settings/personal-access-tokens/new
+//! 2. Fill out token name (e.g. "cfo/ci devhubdb token").
+//! 3. Resource owner: "tigerbeetle"
+//! 4. Expiry: "366 days" (maximum available)
+//! 5. Repository access: "Only select repositories"
+//! 6. Select repositories: "tigerbeetle/devhubdb"
+//! 7. Add permissions: "Metadata"
+//! 8. Add permissions: "Contents"; Access: "Read and write".
+//! 9. "Generate token".
+//! 10. (Copy token.)
+//!
+//! To update token in TigerBeetle CI:
+//! 1. https://github.com/tigerbeetle/tigerbeetle/settings/environments
+//! 2. Click "devhub".
+//! 3. Environment Secrets > Edit DEVHUBDB_PAT
+//! 4. Paste token; "Update secret"
+//!
+//! (Also need to update the DEVHUBDB_PAT environment variable passed to the CFO supervisors.)
 const std = @import("std");
 const assert = std.debug.assert;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const Shell = @import("../shell.zig");
 const changelog = @import("./changelog.zig");
-const Release = @import("../multiversioning.zig").Release;
+const Release = @import("../multiversion.zig").Release;
+
+const MiB = stdx.MiB;
 
 const log = std.log;
 
@@ -34,6 +56,9 @@ pub fn main(shell: *Shell, _: std.mem.Allocator, cli_args: CLIArgs) !void {
 }
 
 fn devhub_coverage(shell: *Shell) !void {
+    var section = try shell.open_section("coverage");
+    defer section.close();
+
     const kcov_version = shell.exec_stdout("kcov --version", .{}) catch {
         return error.NoKcov;
     };
@@ -49,7 +74,7 @@ fn devhub_coverage(shell: *Shell) !void {
 
     const kcov: []const []const u8 = &.{ "kcov", "--include-path=./src", "./src/devhub/coverage" };
     inline for (.{
-        "{kcov} ./zig-out/bin/test",
+        "{kcov} ./zig-out/bin/test-unit",
         "{kcov} ./zig-out/bin/fuzz --events-max=500000 lsm_tree 92",
         "{kcov} ./zig-out/bin/fuzz --events-max=500000 lsm_forest 92",
         "{kcov} ./zig-out/bin/vopr 92",
@@ -70,6 +95,9 @@ fn devhub_coverage(shell: *Shell) !void {
 }
 
 fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
+    var section = try shell.open_section("metrics");
+    defer section.close();
+
     const commit_timestamp_str =
         try shell.exec_stdout("git show -s --format=%ct {sha}", .{ .sha = cli_args.sha });
     const commit_timestamp = try std.fmt.parseInt(u64, commit_timestamp_str, 10);
@@ -105,7 +133,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
         const changelog_text = try shell.project_root.readFileAlloc(
             shell.arena.allocator(),
             "CHANGELOG.md",
-            1024 * 1024,
+            1 * MiB,
         );
         var changelog_iteratator = changelog.ChangelogIterator.init(changelog_text);
 
@@ -135,12 +163,34 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
         , .{ .sha = cli_args.sha });
     }
     try shell.project_root.deleteFile("tigerbeetle");
-    try shell.exec("unzip zig-out/dist/tigerbeetle/tigerbeetle-x86_64-linux.zip", .{});
 
-    const benchmark_result = try shell.exec_stdout(
-        "./tigerbeetle benchmark --validate --checksum-performance",
+    try shell.unzip_executable(
+        "zig-out/dist/tigerbeetle/tigerbeetle-x86_64-linux.zip",
+        "tigerbeetle",
+    );
+
+    // `--log-debug-replica` is explicitly enabled, to measure the performance hit from debug
+    // logging and count the log lines.
+    const benchmark_result, const benchmark_stderr = try shell.exec_stdout_stderr(
+        "./tigerbeetle benchmark --validate --checksum-performance --log-debug-replica " ++
+            "--file=datafile-devhub",
         .{},
     );
+
+    const integrity_time_ms = blk: {
+        timer.reset();
+
+        try shell.exec(
+            "./tigerbeetle inspect integrity datafile-devhub",
+            .{},
+        );
+
+        break :blk timer.read() / std.time.ns_per_ms;
+    };
+
+    shell.cwd.deleteFile("datafile-devhub") catch unreachable;
+
+    const replica_log_lines = std.mem.count(u8, benchmark_stderr, "\n");
     const tps = try get_measurement(benchmark_result, "load accepted", "tx/s");
     const batch_p100_ms = try get_measurement(benchmark_result, "batch latency p100", "ms");
     const query_p100_ms = try get_measurement(benchmark_result, "query latency p100", "ms");
@@ -297,6 +347,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
             .{ .name = "RSS", .value = rss_bytes, .unit = "bytes" },
             .{ .name = "datafile", .value = datafile_bytes, .unit = "bytes" },
             .{ .name = "datafile empty", .value = datafile_empty_bytes, .unit = "bytes" },
+            .{ .name = "replica log lines", .value = replica_log_lines, .unit = "count" },
             .{
                 .name = "checksum(message_size_max)",
                 .value = checksum_message_size_max_us,
@@ -308,6 +359,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
             .{ .name = "startup time - 8GiB grid cache", .value = startup_time_ms, .unit = "ms" },
             .{ .name = "stats count", .value = stats_count, .unit = "count" },
             .{ .name = "repl single command", .value = repl_single_command_ms, .unit = "ms" },
+            .{ .name = "inspect integrity time", .value = integrity_time_ms, .unit = "ms" },
         },
     };
 
@@ -407,7 +459,7 @@ fn upload_nyrkio(shell: *Shell, batch: *const MetricBatch) !void {
         [_]*const MetricBatch{batch}, // Nyrkiö needs an _array_ of batches.
         .{},
     );
-    try shell.http_post(url, payload, .{
+    _ = try shell.http_post(url, payload, .{
         .content_type = .json,
         .authorization = try shell.fmt("Bearer {s}", .{token}),
     });

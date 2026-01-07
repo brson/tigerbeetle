@@ -9,7 +9,7 @@ const io_uring_sqe = linux.io_uring_sqe;
 const log = std.log.scoped(.io);
 
 const constants = @import("../constants.zig");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const common = @import("./common.zig");
 const QueueType = @import("../queue.zig").QueueType;
 const buffer_limit = @import("../io.zig").buffer_limit;
@@ -20,6 +20,7 @@ const maybe = stdx.maybe;
 
 pub const IO = struct {
     pub const TCPOptions = common.TCPOptions;
+    pub const ListenOptions = common.ListenOptions;
     const CompletionList = DoublyLinkedListType(Completion, .awaiting_back, .awaiting_next);
 
     ring: IO_Uring,
@@ -46,7 +47,7 @@ pub const IO = struct {
     // This is *not* the completion that is being canceled.
     cancel_completion: Completion = undefined,
 
-    cancel_status: union(enum) {
+    cancel_all_status: union(enum) {
         // Not canceling.
         inactive,
         // Waiting to start canceling the next awaiting operation.
@@ -89,7 +90,7 @@ pub const IO = struct {
 
     /// Pass all queued submissions to the kernel and peek for completions.
     pub fn run(self: *IO) !void {
-        assert(self.cancel_status != .done);
+        assert(self.cancel_all_status != .done);
 
         // We assume that all timeouts submitted by `run_for_ns()` will be reaped by `run_for_ns()`
         // and that `tick()` and `run_for_ns()` cannot be run concurrently.
@@ -116,17 +117,16 @@ pub const IO = struct {
     /// The `nanoseconds` argument is a u63 to allow coercion to the i64 used
     /// in the kernel_timespec struct.
     pub fn run_for_ns(self: *IO, nanoseconds: u63) !void {
-        assert(self.cancel_status != .done);
+        assert(self.cancel_all_status != .done);
 
         // We must use the same clock source used by io_uring (CLOCK_MONOTONIC) since we specify the
         // timeout below as an absolute value. Otherwise, we may deadlock if the clock sources are
         // dramatically different. Any kernel that supports io_uring will support CLOCK_MONOTONIC.
-        var current_ts: posix.timespec = undefined;
-        posix.clock_gettime(posix.CLOCK.MONOTONIC, &current_ts) catch unreachable;
+        const current_ts = posix.clock_gettime(posix.CLOCK.MONOTONIC) catch unreachable;
         // The absolute CLOCK_MONOTONIC time after which we may return from this function:
         const timeout_ts: os.linux.kernel_timespec = .{
-            .tv_sec = current_ts.tv_sec,
-            .tv_nsec = current_ts.tv_nsec + nanoseconds,
+            .sec = current_ts.sec,
+            .nsec = current_ts.nsec + nanoseconds,
         };
         var timeouts: usize = 0;
         var etime = false;
@@ -177,8 +177,8 @@ pub const IO = struct {
         // 2) potentially queues more SQEs to take advantage more of the next flush_submissions().
         while (self.completed.pop()) |completion| {
             if (completion.operation == .timeout and
-                completion.operation.timeout.timespec.tv_sec == 0 and
-                completion.operation.timeout.timespec.tv_nsec == 0)
+                completion.operation.timeout.timespec.sec == 0 and
+                completion.operation.timeout.timespec.nsec == 0)
             {
                 // Zero-duration timeouts are a special case, and aren't listed in `awaiting`.
                 maybe(self.awaiting.empty());
@@ -190,12 +190,12 @@ pub const IO = struct {
                 self.awaiting.remove(completion);
             }
 
-            switch (self.cancel_status) {
+            switch (self.cancel_all_status) {
                 .inactive => completion.complete(),
                 .next => {},
                 .queued => if (completion.operation == .cancel) completion.complete(),
                 .wait => |wait| if (wait.target == completion) {
-                    self.cancel_status = .next;
+                    self.cancel_all_status = .next;
                 },
                 .done => unreachable,
             }
@@ -265,7 +265,7 @@ pub const IO = struct {
     }
 
     fn enqueue(self: *IO, completion: *Completion) void {
-        switch (self.cancel_status) {
+        switch (self.cancel_all_status) {
             .inactive => {},
             .queued => assert(completion.operation == .cancel),
             else => unreachable,
@@ -303,68 +303,89 @@ pub const IO = struct {
     /// - Linux kernel ≥6.0 supports `io_uring_register_sync_cancel` which would remove the `queued`
     ///   cancellation stage.
     pub fn cancel_all(self: *IO) void {
-        assert(self.cancel_status == .inactive);
+        assert(self.cancel_all_status == .inactive);
 
         // Even if we return early due to an io_uring error, IO won't allow more operations.
-        defer self.cancel_status = .done;
+        defer self.cancel_all_status = .done;
 
-        self.cancel_status = .next;
+        self.cancel_all_status = .next;
 
         // Discard any operations that haven't started yet.
         while (self.unqueued.pop()) |_| {}
 
         while (self.awaiting.tail) |target| {
             assert(!self.awaiting.empty());
-            assert(self.cancel_status == .next);
+            assert(self.cancel_all_status == .next);
             assert(target.operation != .cancel);
 
-            self.cancel(target);
-            assert(self.cancel_status == .queued);
+            self.cancel_all_status = .{ .queued = .{ .target = target } };
 
-            while (self.cancel_status == .queued or self.cancel_status == .wait) {
+            self.cancel(
+                *IO,
+                self,
+                cancel_all_callback,
+                .{
+                    .completion = &self.cancel_completion,
+                    .target = target,
+                },
+            );
+
+            while (self.cancel_all_status == .queued or self.cancel_all_status == .wait) {
                 self.run_for_ns(constants.tick_ms * std.time.ns_per_ms) catch |err| {
                     std.debug.panic("IO.cancel_all: run_for_ns error: {}", .{err});
                 };
             }
-            assert(self.cancel_status == .next);
+            assert(self.cancel_all_status == .next);
         }
         assert(self.awaiting.empty());
         assert(self.ios_queued == 0);
         assert(self.ios_in_kernel == 0);
     }
 
-    fn cancel(self: *IO, target: *Completion) void {
-        self.cancel_completion = .{
-            .io = self,
-            .context = self,
-            .callback = erase_types(*IO, CancelError!void, cancel_callback),
-            .operation = .{ .cancel = .{ .target = target } },
-        };
-
-        self.cancel_status = .{ .queued = .{ .target = target } };
-        self.enqueue(&self.cancel_completion);
-    }
-
-    const CancelError = error{
-        NotRunning,
-        NotInterruptable,
-    } || posix.UnexpectedError;
-
-    fn cancel_callback(self: *IO, completion: *Completion, result: CancelError!void) void {
-        assert(self.cancel_status == .queued);
+    fn cancel_all_callback(self: *IO, completion: *Completion, result: CancelError!void) void {
+        assert(self.cancel_all_status == .queued);
         assert(completion == &self.cancel_completion);
         assert(completion.operation == .cancel);
-        assert(completion.operation.cancel.target == self.cancel_status.queued.target);
+        assert(completion.operation.cancel.target == self.cancel_all_status.queued.target);
 
-        self.cancel_status = status: {
+        self.cancel_all_status = status: {
             result catch |err| switch (err) {
                 error.NotRunning => break :status .next,
                 error.NotInterruptable => {},
                 error.Unexpected => unreachable,
             };
             // Wait for the target operation to complete or abort.
-            break :status .{ .wait = .{ .target = self.cancel_status.queued.target } };
+            break :status .{ .wait = .{ .target = self.cancel_all_status.queued.target } };
         };
+    }
+
+    pub const CancelError = error{
+        NotRunning,
+        NotInterruptable,
+    } || posix.UnexpectedError;
+
+    pub fn cancel(
+        self: *IO,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (
+            context: Context,
+            completion: *Completion,
+            result: CancelError!void,
+        ) void,
+        options: struct {
+            completion: *Completion,
+            target: *Completion,
+        },
+    ) void {
+        options.completion.* = .{
+            .io = self,
+            .context = context,
+            .callback = erase_types(Context, CancelError!void, callback),
+            .operation = .{ .cancel = .{ .target = options.target } },
+        };
+
+        self.enqueue(options.completion);
     }
 
     /// This struct holds the data needed for a single io_uring operation.
@@ -426,7 +447,7 @@ pub const IO = struct {
                     );
                 },
                 .recv => |op| {
-                    sqe.prep_recv(op.socket, op.buffer, posix.MSG.NOSIGNAL);
+                    sqe.prep_recv(op.socket, op.buffer, 0);
                 },
                 .send => |op| {
                     sqe.prep_send(op.socket, op.buffer, posix.MSG.NOSIGNAL);
@@ -538,6 +559,7 @@ pub const IO = struct {
                                 .AGAIN, .INPROGRESS => error.WouldBlock,
                                 .ALREADY => error.OpenAlreadyInProgress,
                                 .BADF => error.FileDescriptorInvalid,
+                                .CANCELED => error.Canceled,
                                 .CONNREFUSED => error.ConnectionRefused,
                                 .CONNRESET => error.ConnectionResetByPeer,
                                 .FAULT => unreachable,
@@ -658,6 +680,7 @@ pub const IO = struct {
                                 },
                                 .AGAIN => error.WouldBlock,
                                 .BADF => error.FileDescriptorInvalid,
+                                .CANCELED => error.Canceled,
                                 .CONNREFUSED => error.ConnectionRefused,
                                 .FAULT => unreachable,
                                 .INVAL => unreachable,
@@ -936,6 +959,7 @@ pub const IO = struct {
         ProtocolNotSupported,
         ConnectionTimedOut,
         SystemResources,
+        Canceled,
     } || posix.UnexpectedError;
 
     pub fn connect(
@@ -1083,6 +1107,7 @@ pub const IO = struct {
         ConnectionResetByPeer,
         ConnectionTimedOut,
         OperationNotSupported,
+        Canceled,
     } || posix.UnexpectedError;
 
     pub fn recv(
@@ -1160,7 +1185,17 @@ pub const IO = struct {
     /// Best effort to synchronously transfer bytes to the kernel.
     pub fn send_now(self: *IO, socket: socket_t, buffer: []const u8) ?usize {
         _ = self;
-        return posix.send(socket, buffer, posix.MSG.DONTWAIT) catch |err| switch (err) {
+        // posix.send is a thin wrapper around posix.sendto() that assumes the socket is connected
+        // and has an `unreachable` on eg NetworkUnreachable and a few others. Tring to check this
+        // before using the socket is race prone, so rather use sendto() directly to correctly
+        // handle those cases.
+        return posix.sendto(
+            socket,
+            buffer,
+            posix.MSG.DONTWAIT | posix.MSG.NOSIGNAL,
+            null,
+            0,
+        ) catch |err| switch (err) {
             error.WouldBlock => return null,
             // To avoid duplicating error handling, force the caller to fallback to normal send.
             else => return null,
@@ -1227,7 +1262,7 @@ pub const IO = struct {
             .callback = erase_types(Context, TimeoutError!void, callback),
             .operation = .{
                 .timeout = .{
-                    .timespec = .{ .tv_sec = 0, .tv_nsec = nanoseconds },
+                    .timespec = .{ .sec = 0, .nsec = nanoseconds },
                 },
             },
         };
@@ -1356,7 +1391,6 @@ pub const IO = struct {
     }
 
     pub const socket_t = posix.socket_t;
-    pub const INVALID_SOCKET = -1;
 
     /// Creates a TCP socket that can be used for async operations with the IO instance.
     pub fn open_socket_tcp(self: *IO, family: u32, options: TCPOptions) !socket_t {
@@ -1394,7 +1428,7 @@ pub const IO = struct {
         _: *IO,
         fd: socket_t,
         address: std.net.Address,
-        options: common.ListenOptions,
+        options: ListenOptions,
     ) !std.net.Address {
         return common.listen(fd, address, options);
     }
@@ -1411,6 +1445,7 @@ pub const IO = struct {
     pub const fd_t = posix.fd_t;
     pub const INVALID_FILE: fd_t = -1;
 
+    pub const OpenDataFilePurpose = enum { format, open, inspect };
     /// Opens or creates a journal file:
     /// - For reading and writing.
     /// - For Direct I/O (if possible in development mode, but required in production mode).
@@ -1424,7 +1459,7 @@ pub const IO = struct {
         dir_fd: fd_t,
         relative_path: []const u8,
         size: u64,
-        method: enum { create, create_or_open, open, open_read_only },
+        purpose: OpenDataFilePurpose,
         direct_io: DirectIO,
     ) !fd_t {
         _ = self;
@@ -1436,7 +1471,7 @@ pub const IO = struct {
 
         var flags: posix.O = .{
             .CLOEXEC = true,
-            .ACCMODE = if (method == .open_read_only) .RDONLY else .RDWR,
+            .ACCMODE = if (purpose == .inspect) .RDONLY else .RDWR,
             .DSYNC = true,
         };
         var mode: posix.mode_t = 0;
@@ -1448,7 +1483,7 @@ pub const IO = struct {
                 0,
             ) catch |err| switch (err) {
                 error.FileNotFound => {
-                    if (method == .create or method == .create_or_open) {
+                    if (purpose == .format) {
                         // It's impossible to distinguish creating a new file and opening a new
                         // block device with the current API. So if it's possible that we should
                         // create a file we try that instead of failing here.
@@ -1530,19 +1565,14 @@ pub const IO = struct {
                     }
                 }
 
-                switch (method) {
-                    .create => {
+                switch (purpose) {
+                    .format => {
                         flags.CREAT = true;
                         flags.EXCL = true;
                         mode = 0o666;
                         log.info("creating \"{s}\"...", .{relative_path});
                     },
-                    .create_or_open => {
-                        flags.CREAT = true;
-                        mode = 0o666;
-                        log.info("opening or creating \"{s}\"...", .{relative_path});
-                    },
-                    .open, .open_read_only => {
+                    .open, .inspect => {
                         log.info("opening \"{s}\"...", .{relative_path});
                     },
                 }
@@ -1595,7 +1625,7 @@ pub const IO = struct {
             }
         };
 
-        if (method == .open_read_only) {
+        if (purpose == .inspect) {
             assert(flags.ACCMODE == .RDONLY);
             maybe(lock_acquired);
 
@@ -1614,7 +1644,7 @@ pub const IO = struct {
         // Ask the file system to allocate contiguous sectors for the file (if possible):
         // If the file system does not support `fallocate()`, then this could mean more seeks or a
         // panic if we run out of disk space (ENOSPC).
-        if (method == .create and kind == .file) {
+        if (purpose == .format and kind == .file) {
             log.info("allocating {}...", .{std.fmt.fmtIntSizeBin(size)});
             fs_allocate(fd, size) catch |err| switch (err) {
                 error.OperationNotSupported => {
@@ -1623,7 +1653,7 @@ pub const IO = struct {
                         "of the file instead...", .{});
 
                     const sector_size = constants.sector_size;
-                    const sector: [sector_size]u8 align(sector_size) = [_]u8{0} ** sector_size;
+                    const sector: [sector_size]u8 align(sector_size) = @splat(0);
 
                     // Handle partial writes where the physical sector is
                     // less than a logical sector:
@@ -1682,7 +1712,7 @@ pub const IO = struct {
                     );
                 }
 
-                if (method == .create or method == .create_or_open) {
+                if (purpose == .format) {
                     // Check that the first superblock_zone_size bytes are 0.
                     // - It'll ensure that the block device is not directly TigerBeetle.
                     // - It'll be very likely to catch any cases where there's an existing
@@ -1739,7 +1769,7 @@ pub const IO = struct {
     fn fs_supports_direct_io(dir_fd: fd_t) !bool {
         if (!@hasField(posix.O, "DIRECT")) return false;
 
-        var cookie: [16]u8 = .{'0'} ** 16;
+        var cookie: [16]u8 = @splat('0');
         _ = stdx.array_print(16, &cookie, "{0x}", .{std.crypto.random.int(u64)});
 
         const path: [:0]const u8 = "fs_supports_direct_io-" ++ cookie ++ "";

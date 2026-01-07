@@ -30,8 +30,9 @@
 //! column) and the total size of all monorphisations (third column).
 
 const std = @import("std");
-const stdx = @import("./stdx.zig");
-const flags = @import("./flags.zig");
+const stdx = @import("stdx");
+
+const MiB = stdx.MiB;
 
 const log = std.log;
 pub const std_options = .{
@@ -52,9 +53,9 @@ pub fn main() !void {
 
     var args = try std.process.argsWithAllocator(allocator);
 
-    const cli_args = flags.parse(&args, CLIArgs);
+    const cli_args = stdx.flags(&args, CLIArgs);
 
-    const line_buffer = try allocator.alloc(u8, 1024 * 1024);
+    const line_buffer = try allocator.alloc(u8, MiB);
     const func_buf = try allocator.alloc(u8, 4096);
 
     const stdin = std.io.getStdIn();
@@ -130,7 +131,7 @@ test "extract_function_name" {
     var buf: [1024]u8 = undefined;
     const func_name = extract_function_name(
         \\define internal fastcc i64 @".vsr.vsr.clock.ClockType(.vsr.time.Time).monotonic"
-        ++
+    ++
         \\(%.vsr.time.Time* %.0.1.val) unnamed_addr #1 !dbg !71485 {
     , &buf).?;
     try std.testing.expectEqualStrings(".vsr.vsr.clock.ClockType.monotonic", func_name);

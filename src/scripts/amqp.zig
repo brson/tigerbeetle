@@ -5,10 +5,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log;
 const testing = std.testing;
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 const maybe = stdx.maybe;
 const ratio = stdx.PRNG.ratio;
+const KiB = stdx.KiB;
 
 const tb = @import("../tigerbeetle.zig");
 const vsr = @import("../vsr.zig");
@@ -76,6 +77,7 @@ fn run_protocol_test(gpa: std.mem.Allocator, options: struct { host: std.net.Add
         stdx.unique_u128(),
     });
     defer gpa.free(testing_queue);
+
     context.queue_declare(.{
         .queue = testing_queue, // Creating the queue.
         .passive = false,
@@ -191,6 +193,7 @@ fn run_protocol_test(gpa: std.mem.Allocator, options: struct { host: std.net.Add
         stdx.unique_u128(),
     });
     defer gpa.free(progress_queue);
+
     context.queue_declare(.{
         .queue = progress_queue,
         .passive = false,
@@ -275,6 +278,7 @@ fn run_serialization_test(
         stdx.unique_u128(),
     });
     defer gpa.free(queue);
+
     context.queue_declare(.{
         .queue = queue,
         .passive = false,
@@ -371,10 +375,13 @@ fn run_cdc_test(
     var amqp_context: AmqpContext = undefined;
     try amqp_context.init(gpa);
     defer amqp_context.deinit(gpa);
+
     try amqp_context.connect(options.host);
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+
+    var time_os: vsr.time.TimeOS = .{};
 
     const queue = try std.fmt.allocPrint(arena.allocator(), "queue_{}", .{
         stdx.unique_u128(),
@@ -406,7 +413,7 @@ fn run_cdc_test(
             "--idle-interval-ms={idle_interval_ms}",
         .{
             .tigerbeetle = tmp_beetle.tigerbeetle_exe,
-            .addresses = tmp_beetle.port_str.slice(),
+            .addresses = tmp_beetle.port_str,
             .port = options.host.getPort(),
             .queue = queue,
             .idle_interval_ms = 1,
@@ -424,7 +431,7 @@ fn run_cdc_test(
             "--transfer-pending",
         .{
             .tigerbeetle = tmp_beetle.tigerbeetle_exe,
-            .addresses = tmp_beetle.port_str.slice(),
+            .addresses = tmp_beetle.port_str,
             .transfer_count = options.transfer_count,
         },
     );
@@ -441,7 +448,7 @@ fn run_cdc_test(
     //   at most one batch is duplicated.
     // - Start multiple CDC jobs to stress the lock queue.
     var vsr_context: VSRContext = undefined;
-    try vsr_context.init(gpa, tmp_beetle.port);
+    try vsr_context.init(gpa, time_os.time(), tmp_beetle.port);
     defer vsr_context.deinit(gpa);
 
     var count: u32 = 0;
@@ -463,6 +470,7 @@ fn run_cdc_test(
         };
         assert(events.len > 0);
         defer timestamp_previous = events[events.len - 1].timestamp;
+
         for (events) |*event| {
             // Keep track of how many transfers will expire:
             switch (event.type) {
@@ -584,7 +592,7 @@ const AmqpContext = struct {
     // Uses `deinit() + init()` since graceful disconnection/reconnection is not handled.
     pub fn disconnect(self: *AmqpContext, gpa: std.mem.Allocator) !void {
         assert(!self.busy);
-        assert(self.client.fd != vsr.io.IO.INVALID_SOCKET);
+        assert(self.client.fd != null);
         assert(self.client.awaiter == .none);
         assert(self.client.action == .none);
         assert(self.client.send_buffer.state == .idle);
@@ -621,6 +629,7 @@ const AmqpContext = struct {
         assert(!self.busy);
         assert(self.message == null);
         defer self.message = null;
+
         self.busy = true;
         self.client.get_message(&get_message_header_callback, options);
         self.wait();
@@ -688,26 +697,19 @@ const AmqpContext = struct {
 const VSRContext = struct {
     const MessagePool = vsr.message_pool.MessagePool;
     const Message = MessagePool.Message;
-    const Tracer = vsr.trace.TracerType(vsr.time.Time);
-    const Storage = vsr.storage.StorageType(vsr.io.IO, Tracer);
-    const StateMachine = vsr.state_machine.StateMachineType(
-        Storage,
-        vsr.constants.state_machine_config,
-    );
     const Client = vsr.ClientType(
-        StateMachine,
-        vsr.message_bus.MessageBusClient,
-        vsr.time.Time,
+        tb.Operation,
+        vsr.message_bus.MessageBusType(vsr.io.IO),
     );
 
     client: Client,
     io: vsr.io.IO,
     message_pool: MessagePool,
     busy: bool,
-    buffer: []tb.ChangeEvent,
-    results: ?usize,
+    event_buffer: []tb.ChangeEvent,
+    event_count: ?u32,
 
-    pub fn init(self: *VSRContext, gpa: std.mem.Allocator, port: u16) !void {
+    pub fn init(self: *VSRContext, gpa: std.mem.Allocator, time: vsr.time.Time, port: u16) !void {
         self.io = try vsr.io.IO.init(32, 0);
         errdefer self.io.deinit();
 
@@ -717,12 +719,12 @@ const VSRContext = struct {
         const address = try std.net.Address.parseIp4("127.0.0.1", port);
         self.client = try Client.init(
             gpa,
+            time,
+            &self.message_pool,
             .{
                 .id = stdx.unique_u128(),
                 .cluster = 0,
                 .replica_count = 1,
-                .time = .{},
-                .message_pool = &self.message_pool,
                 .message_bus_options = .{
                     .configuration = &.{address},
                     .io = &self.io,
@@ -731,32 +733,33 @@ const VSRContext = struct {
         );
         errdefer self.client.deinit(gpa);
 
-        self.buffer = undefined;
-        self.results = null;
+        self.event_buffer = undefined;
+        self.event_count = null;
         self.busy = true;
         self.client.register(register_callback, @intFromPtr(self));
         self.wait();
 
-        self.buffer = try gpa.alloc(tb.ChangeEvent, StateMachine.operation_result_max(
-            .get_change_events,
-            @divFloor(StateMachine.constants.message_body_size_max, @sizeOf(tb.ChangeEvent)),
+        self.event_buffer = try gpa.alloc(tb.ChangeEvent, @divFloor(
+            tb.Operation.get_change_events.result_max(vsr.constants.message_body_size_max),
+            @sizeOf(tb.ChangeEvent),
         ));
-        errdefer gpa.free(self.buffer);
+        errdefer gpa.free(self.event_buffer);
         assert(!self.busy);
     }
 
     pub fn deinit(self: *VSRContext, gpa: std.mem.Allocator) void {
         assert(!self.busy);
-        gpa.free(self.buffer);
+        gpa.free(self.event_buffer);
         self.client.deinit(gpa);
         self.message_pool.deinit(gpa);
         self.io.deinit();
+        self.* = undefined;
     }
 
     pub fn get_change_events(self: *VSRContext, timestamp_min: u64) ![]tb.ChangeEvent {
         assert(!self.busy);
-        assert(self.results == null);
-        defer self.results = null;
+        assert(self.event_count == null);
+        defer self.event_count = null;
 
         const filter: tb.ChangeEventsFilter = .{
             .limit = std.math.maxInt(u32),
@@ -772,10 +775,10 @@ const VSRContext = struct {
         );
         self.wait();
         assert(!self.busy);
-        assert(self.results != null);
-        assert(self.results.? <= self.buffer.len);
+        assert(self.event_count != null);
+        assert(self.event_count.? <= self.event_buffer.len);
 
-        return self.buffer[0..self.results.?];
+        return self.event_buffer[0..self.event_count.?];
     }
 
     fn wait(self: *VSRContext) void {
@@ -803,24 +806,24 @@ const VSRContext = struct {
         result: []u8,
     ) void {
         _ = timestamp;
-        const operation = operation_vsr.cast(StateMachine);
+        const operation = operation_vsr.cast(tb.Operation);
         assert(operation == .get_change_events);
 
         const self: *VSRContext = @ptrFromInt(@as(usize, @intCast(user_data)));
         assert(self.busy);
-        assert(self.results == null);
+        assert(self.event_count == null);
 
         const events = stdx.bytes_as_slice(
             .exact,
             tb.ChangeEvent,
             result,
         );
-        assert(events.len <= self.buffer.len);
-        self.results = events.len;
+        assert(events.len <= self.event_buffer.len);
+        self.event_count = @intCast(events.len);
         stdx.copy_disjoint(
             .inexact,
             tb.ChangeEvent,
-            self.buffer,
+            self.event_buffer,
             events,
         );
         self.busy = false;
@@ -905,7 +908,7 @@ const TmpRabbitMQ = struct {
 
 const TestingBasicProperties = @import("../cdc/amqp/protocol.zig").TestingBasicProperties;
 const TestingContent = struct {
-    const size_max = 1024;
+    const size_max = 1 * KiB;
     bytes: []const u8,
 
     fn init(arena: std.mem.Allocator, prng: *stdx.PRNG) !*TestingContent {

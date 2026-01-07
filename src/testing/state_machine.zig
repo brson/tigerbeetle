@@ -1,16 +1,13 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const vsr = @import("../vsr.zig");
-const global_constants = @import("../constants.zig");
+const constants = @import("../constants.zig");
 const GrooveType = @import("../lsm/groove.zig").GrooveType;
 const ForestType = @import("../lsm/forest.zig").ForestType;
 
-pub fn StateMachineType(
-    comptime Storage: type,
-    comptime config: global_constants.StateMachineConfig,
-) type {
+pub fn StateMachineType(comptime Storage: type) type {
     return struct {
         const StateMachine = @This();
         const Grid = @import("../vsr/grid.zig").GridType(Storage);
@@ -18,26 +15,33 @@ pub fn StateMachineType(
         pub const Workload = WorkloadType(StateMachine);
 
         pub const Operation = enum(u8) {
-            echo = global_constants.vsr_operations_reserved + 0,
+            echo = constants.vsr_operations_reserved + 0,
+
+            pub fn EventType(comptime _: Operation) type {
+                return u8; // Must be non-zero-sized for sliceAsBytes().
+            }
+
+            pub fn ResultType(comptime _: Operation) type {
+                return u8; // Must be non-zero-sized for sliceAsBytes().
+            }
+
+            pub fn result_size(_: Operation) u32 {
+                return @sizeOf(u8);
+            }
+
+            pub fn event_size(_: Operation) u32 {
+                return @sizeOf(u8);
+            }
+
+            pub fn from_vsr(operation: vsr.Operation) ?Operation {
+                if (operation.vsr_reserved()) return null;
+                return vsr.Operation.to(Operation, operation);
+            }
+
+            pub fn to_vsr(operation: Operation) vsr.Operation {
+                return vsr.Operation.from(Operation, operation);
+            }
         };
-
-        pub fn operation_from_vsr(operation: vsr.Operation) ?Operation {
-            if (operation.vsr_reserved()) return null;
-
-            return vsr.Operation.to(StateMachine, operation);
-        }
-
-        pub const constants = struct {
-            pub const message_body_size_max = config.message_body_size_max;
-        };
-
-        pub fn EventType(comptime _: Operation) type {
-            return u8; // Must be non-zero-sized for sliceAsBytes().
-        }
-
-        pub fn ResultType(comptime _: Operation) type {
-            return u8; // Must be non-zero-sized for sliceAsBytes().
-        }
 
         pub const Options = struct {
             batch_size_limit: u32,
@@ -87,9 +91,11 @@ pub fn StateMachineType(
         pub fn init(
             self: *StateMachine,
             allocator: std.mem.Allocator,
+            time: vsr.time.Time,
             grid: *Grid,
             options: Options,
         ) !void {
+            _ = time;
             self.* = .{
                 .options = options,
                 .forest = undefined,
@@ -281,7 +287,6 @@ pub fn StateMachineType(
 fn WorkloadType(comptime StateMachine: type) type {
     return struct {
         const Workload = @This();
-        const constants = StateMachine.constants;
 
         prng: *stdx.PRNG,
         options: Options,

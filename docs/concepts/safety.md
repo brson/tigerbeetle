@@ -26,7 +26,7 @@ might fail catastrophically (e.g. due to a fire in the data center). Primary/bac
 ad-hoc failover can lose data due to split-brain.
 
 To avoid these pitfalls, TigerBeetle implements pioneering
-[Viewstamped Replication](https://pmg.csail.mit.edu/papers/vr-revisited.pdf) and consensus algorithm,
+[Viewstamped Replication](http://pmg.csail.mit.edu/papers/vr-revisited.pdf) and consensus algorithm,
 that guarantees correct, automatic failover. It's worth emphasizing that consensus proper needs only
 be engaged during actual failover. During the normal operation, the cost of consensus is just the
 cost of replication, which is further minimized because of
@@ -44,6 +44,12 @@ different cloud providers (two replicas per provider). Because TigerBeetle uses
 [Heidi Howard's flexible quorums](https://arxiv.org/pdf/1608.06696v1), this deployment is guaranteed
 to tolerate a complete outage of any cloud provider and will likely survive even if one extra
 replica fails.
+
+TigerBeetle detects and overcomes
+[Gray Failure](https://www.microsoft.com/en-us/research/wp-content/uploads/2017/06/paper-1.pdf)
+automatically. If a replica's disk becomes slow or the network interface starts dropping packets,
+TigerBeetle automatically adjusts replication topology to ensure that the slow replica doesn't
+affect user-visible latencies, while still guaranteeing cluster-wide durability.
 
 ## Storage Fault Tolerance
 
@@ -193,6 +199,6 @@ This concludes the discussion of the concepts behind TigerBeetle --- an [OLTP](.
 for recording business transactions in real time, using a
 [double-entry bookkeeping](./debit-credit.md) schema, which
 [is orders of magnitude faster](./performance.md) and
-[keeps the data safe](./safety.md) even when the underling hardware inevitably fails.
+[keeps the data safe](./safety.md) even when the underlying hardware inevitably fails.
 
 We will now learn [how to build applications on top of TigerBeetle](../coding/).

@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 
 const Allocator = std.mem.Allocator;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("../constants.zig");
 const is_composite_key = @import("composite_key.zig").is_composite_key;
 
@@ -18,6 +18,15 @@ const Direction = @import("../direction.zig").Direction;
 const TimestampRange = @import("timestamp_range.zig").TimestampRange;
 
 const Error = @import("scan_buffer.zig").Error;
+
+/// Scans work with asynchronous iterators --- streams.
+///
+/// Iterator has       `fn next() ?Item`,
+/// while a stream has `fn next() Pending!?Item`
+///
+/// When a stream returns `error.Pending`, this means that it is unknown
+/// whether a stream has more items or not, and further IO is required.
+const Pending = error{Pending};
 
 /// ScanBuilder is a helper to create and combine scans using
 /// any of the Groove's indexes.
@@ -265,17 +274,17 @@ pub fn ScanBuilderType(
         }
 
         fn CompositeKeyType(comptime index: std.meta.FieldEnum(Groove.IndexTrees)) type {
-            const IndexTree = std.meta.fieldInfo(Groove.IndexTrees, index).type;
+            const IndexTree = @FieldType(Groove.IndexTrees, @tagName(index));
             return IndexTree.Table.Value;
         }
 
         fn CompositeKeyPrefixType(comptime index: std.meta.FieldEnum(Groove.IndexTrees)) type {
             const CompositeKey = CompositeKeyType(index);
-            return std.meta.fieldInfo(CompositeKey, .field).type;
+            return @FieldType(CompositeKey, "field");
         }
 
         fn ScanImplType(comptime field: std.meta.FieldEnum(Scan.Dispatcher)) type {
-            return std.meta.fieldInfo(Scan.Dispatcher, field).type;
+            return @FieldType(Scan.Dispatcher, @tagName(field));
         }
 
         fn key_from_value(
@@ -352,29 +361,29 @@ pub fn ScanType(
             // Union field for the id tree:
             if (Groove.IdTree != void) {
                 const ScanTree = ScanTreeType(*Context, Groove.IdTree, Storage);
-                type_info.Union.fields = type_info.Union.fields ++
+                type_info.@"union".fields = type_info.@"union".fields ++
                     [_]std.builtin.Type.UnionField{.{
-                    .name = "id",
-                    .type = ScanTree,
-                    .alignment = @alignOf(ScanTree),
-                }};
+                        .name = "id",
+                        .type = ScanTree,
+                        .alignment = @alignOf(ScanTree),
+                    }};
             }
 
             // Union fields for each index tree:
             for (std.meta.fields(Groove.IndexTrees)) |field| {
                 const IndexTree = field.type;
                 const ScanTree = ScanTreeType(*Context, IndexTree, Storage);
-                type_info.Union.fields = type_info.Union.fields ++
+                type_info.@"union".fields = type_info.@"union".fields ++
                     [_]std.builtin.Type.UnionField{.{
-                    .name = field.name,
-                    .type = ScanTree,
-                    .alignment = @alignOf(ScanTree),
-                }};
+                        .name = field.name,
+                        .type = ScanTree,
+                        .alignment = @alignOf(ScanTree),
+                    }};
             }
 
             // We need a tagged union for dynamic dispatching.
-            type_info.Union.tag_type = blk: {
-                const union_fields = type_info.Union.fields;
+            type_info.@"union".tag_type = blk: {
+                const union_fields = type_info.@"union".fields;
                 var tag_fields: [union_fields.len]std.builtin.Type.EnumField =
                     undefined;
                 for (&tag_fields, union_fields, 0..) |*tag_field, union_field, i| {
@@ -384,7 +393,7 @@ pub fn ScanType(
                     };
                 }
 
-                break :blk @Type(.{ .Enum = .{
+                break :blk @Type(.{ .@"enum" = .{
                     .tag_type = std.math.IntFittingRange(0, tag_fields.len - 1),
                     .fields = &tag_fields,
                     .decls = &.{},
@@ -399,34 +408,21 @@ pub fn ScanType(
         assigned: bool,
 
         pub fn read(scan: *Scan, context: *Context) void {
+            @setEvalBranchQuota(4_000);
             switch (scan.dispatcher) {
-                inline else => |*scan_impl, tag| read_dispatch(
-                    tag,
-                    scan_impl,
-                    context,
-                ),
+                inline else => |*scan_impl, tag| {
+                    const Impl = @TypeOf(scan_impl.*);
+                    const on_read_callback = struct {
+                        fn callback(ctx: *Context, ptr: *Impl) void {
+                            ctx.callback(ctx, parent(tag, ptr));
+                        }
+                    }.callback;
+                    scan_impl.read(context, on_read_callback);
+                },
             }
         }
 
-        // Comptime generates an specialized callback function for each type.
-        // TODO(Zig): remove this function and move this logic to `read`,
-        // but for some reason, the Zig compiler can't resolve the correct type.
-        fn read_dispatch(
-            comptime tag: std.meta.Tag(Dispatcher),
-            scan_impl: *std.meta.fieldInfo(Dispatcher, tag).type,
-            context: *Context,
-        ) void {
-            const Impl = @TypeOf(scan_impl.*);
-            const on_read_callback = struct {
-                fn callback(ctx: *Context, ptr: *Impl) void {
-                    ctx.callback(ctx, parent(tag, ptr));
-                }
-            }.callback;
-
-            scan_impl.read(context, on_read_callback);
-        }
-
-        pub fn next(scan: *Scan) error{ReadAgain}!?u64 {
+        pub fn next(scan: *Scan) Pending!?u64 {
             switch (scan.dispatcher) {
                 inline .merge_union,
                 .merge_intersection,
@@ -535,7 +531,7 @@ pub fn ScanType(
 
         inline fn parent(
             comptime field: std.meta.FieldEnum(Dispatcher),
-            impl: *std.meta.FieldType(Dispatcher, field),
+            impl: *@FieldType(Dispatcher, @tagName(field)),
         ) *Scan {
             const dispatcher: *Dispatcher = @alignCast(@fieldParentPtr(
                 @tagName(field),

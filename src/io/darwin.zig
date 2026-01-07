@@ -4,20 +4,21 @@ const mem = std.mem;
 const assert = std.debug.assert;
 const log = std.log.scoped(.io);
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("../constants.zig");
 const common = @import("./common.zig");
 const QueueType = @import("../queue.zig").QueueType;
-const Time = @import("../time.zig").Time;
+const TimeOS = @import("../time.zig").TimeOS;
 const buffer_limit = @import("../io.zig").buffer_limit;
 const DirectIO = @import("../io.zig").DirectIO;
 
 pub const IO = struct {
     pub const TCPOptions = common.TCPOptions;
+    pub const ListenOptions = common.ListenOptions;
 
     kq: fd_t,
     event_id: Event = 0,
-    time: Time = .{},
+    time_os: TimeOS = .{},
     io_inflight: usize = 0,
     timeouts: QueueType(Completion) = QueueType(Completion).init(.{ .name = "io_timeouts" }),
     completed: QueueType(Completion) = QueueType(Completion).init(.{ .name = "io_completed" }),
@@ -99,8 +100,8 @@ pub const IO = struct {
             if (change_events == 0 and self.completed.empty()) {
                 if (wait_for_completions) {
                     const timeout_ns = next_timeout orelse @panic("kevent() blocking forever");
-                    ts.tv_nsec = @as(@TypeOf(ts.tv_nsec), @intCast(timeout_ns % std.time.ns_per_s));
-                    ts.tv_sec = @as(@TypeOf(ts.tv_sec), @intCast(timeout_ns / std.time.ns_per_s));
+                    ts.nsec = @as(@TypeOf(ts.nsec), @intCast(timeout_ns % std.time.ns_per_s));
+                    ts.sec = @as(@TypeOf(ts.sec), @intCast(timeout_ns / std.time.ns_per_s));
                 } else if (self.io_inflight == 0) {
                     return;
                 }
@@ -136,19 +137,19 @@ pub const IO = struct {
             const completion = self.io_pending.pop() orelse return flushed;
 
             const event_info = switch (completion.operation) {
-                .accept => |op| [2]c_int{ op.socket, posix.system.EVFILT_READ },
-                .connect => |op| [2]c_int{ op.socket, posix.system.EVFILT_WRITE },
-                .read => |op| [2]c_int{ op.fd, posix.system.EVFILT_READ },
-                .write => |op| [2]c_int{ op.fd, posix.system.EVFILT_WRITE },
-                .recv => |op| [2]c_int{ op.socket, posix.system.EVFILT_READ },
-                .send => |op| [2]c_int{ op.socket, posix.system.EVFILT_WRITE },
+                .accept => |op| [2]c_int{ op.socket, posix.system.EVFILT.READ },
+                .connect => |op| [2]c_int{ op.socket, posix.system.EVFILT.WRITE },
+                .read => |op| [2]c_int{ op.fd, posix.system.EVFILT.READ },
+                .write => |op| [2]c_int{ op.fd, posix.system.EVFILT.WRITE },
+                .recv => |op| [2]c_int{ op.socket, posix.system.EVFILT.READ },
+                .send => |op| [2]c_int{ op.socket, posix.system.EVFILT.WRITE },
                 else => @panic("invalid completion operation queued for io"),
             };
 
             event.* = .{
                 .ident = @as(u32, @intCast(event_info[0])),
                 .filter = @as(i16, @intCast(event_info[1])),
-                .flags = posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_ONESHOT,
+                .flags = posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.ONESHOT,
                 .fflags = 0,
                 .data = 0,
                 .udata = @intFromPtr(completion),
@@ -163,7 +164,7 @@ pub const IO = struct {
         while (timeouts_iterator.next()) |completion| {
 
             // NOTE: We could cache `now` above the loop but monotonic() should be cheap to call.
-            const now = self.time.monotonic();
+            const now = self.time_os.time().monotonic().ns;
             const expires = completion.operation.timeout.expires;
 
             // NOTE: remove() could be O(1) here with a doubly-linked-list
@@ -288,6 +289,28 @@ pub const IO = struct {
 
     pub fn cancel_all(_: *IO) void {
         // TODO Cancel in-flight async IO and wait for all completions.
+    }
+
+    pub const CancelError = error{
+        NotRunning,
+        NotInterruptable,
+    } || posix.UnexpectedError;
+
+    pub fn cancel(
+        _: *IO,
+        comptime Context: type,
+        _: Context,
+        comptime _: fn (
+            context: Context,
+            completion: *Completion,
+            result: CancelError!void,
+        ) void,
+        _: struct {
+            completion: *Completion,
+            target: *Completion,
+        },
+    ) void {
+        @panic("cancelation is not supported on darwin");
     }
 
     pub const AcceptError = posix.AcceptError || posix.SetSockOptError;
@@ -565,7 +588,7 @@ pub const IO = struct {
         );
     }
 
-    pub const SendError = posix.SendError;
+    pub const SendError = error{ConnectionRefused} || posix.SendError;
 
     pub fn send(
         self: *IO,
@@ -592,7 +615,28 @@ pub const IO = struct {
             },
             struct {
                 fn do_operation(op: anytype) SendError!usize {
-                    return posix.send(op.socket, op.buf[0..op.len], 0);
+                    // Use `posix.sendto` instead of `posix.send` because UDP sockets
+                    // may return `ConnectionRefused`.
+                    // https://github.com/ziglang/zig/issues/20219
+                    // https://github.com/ziglang/zig/pull/20223
+                    return posix.sendto(
+                        op.socket,
+                        op.buf[0..op.len],
+                        0,
+                        null,
+                        0,
+                    ) catch |err| switch (err) {
+                        error.AddressFamilyNotSupported => unreachable,
+                        error.SymLinkLoop => unreachable,
+                        error.NameTooLong => unreachable,
+                        error.FileNotFound => unreachable,
+                        error.NotDir => unreachable,
+                        error.NetworkUnreachable => unreachable,
+                        error.AddressNotAvailable => unreachable,
+                        error.SocketNotConnected => unreachable,
+                        error.UnreachableAddress => unreachable,
+                        else => |e| return e,
+                    };
                 }
             },
         );
@@ -641,7 +685,7 @@ pub const IO = struct {
             completion,
             .timeout,
             .{
-                .expires = self.time.monotonic() + nanoseconds,
+                .expires = self.time_os.time().monotonic().ns + nanoseconds,
             },
             struct {
                 fn do_operation(_: anytype) TimeoutError!void {
@@ -704,8 +748,8 @@ pub const IO = struct {
 
         var kev = mem.zeroes([1]posix.Kevent);
         kev[0].ident = event;
-        kev[0].filter = posix.system.EVFILT_USER;
-        kev[0].flags = posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_CLEAR;
+        kev[0].filter = posix.system.EVFILT.USER;
+        kev[0].flags = posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.CLEAR;
 
         const polled = posix.kevent(self.kq, &kev, kev[0..0], null) catch |err| switch (err) {
             error.AccessDenied => unreachable, // EV_FILTER is allowed for every user.
@@ -744,8 +788,8 @@ pub const IO = struct {
 
         var kev = mem.zeroes([1]posix.Kevent);
         kev[0].ident = event;
-        kev[0].filter = posix.system.EVFILT_USER;
-        kev[0].fflags = posix.system.NOTE_TRIGGER;
+        kev[0].filter = posix.system.EVFILT.USER;
+        kev[0].fflags = posix.system.NOTE.TRIGGER;
         kev[0].udata = @intFromPtr(completion);
 
         const polled: usize = posix.kevent(self.kq, &kev, kev[0..0], null) catch unreachable;
@@ -757,8 +801,8 @@ pub const IO = struct {
 
         var kev = mem.zeroes([1]posix.Kevent);
         kev[0].ident = event;
-        kev[0].filter = posix.system.EVFILT_USER;
-        kev[0].flags = posix.system.EV_DELETE;
+        kev[0].filter = posix.system.EVFILT.USER;
+        kev[0].flags = posix.system.EV.DELETE;
         kev[0].udata = 0; // Not needed for EV_DELETE.
 
         const polled = posix.kevent(self.kq, &kev, kev[0..0], null) catch unreachable;
@@ -766,7 +810,6 @@ pub const IO = struct {
     }
 
     pub const socket_t = posix.socket_t;
-    pub const INVALID_SOCKET = -1;
 
     /// Creates a TCP socket that can be used for async operations with the IO instance.
     pub fn open_socket_tcp(self: *IO, family: u32, options: TCPOptions) !socket_t {
@@ -819,7 +862,7 @@ pub const IO = struct {
         _: *IO,
         fd: socket_t,
         address: std.net.Address,
-        options: common.ListenOptions,
+        options: ListenOptions,
     ) !std.net.Address {
         return common.listen(fd, address, options);
     }
@@ -836,6 +879,7 @@ pub const IO = struct {
     pub const fd_t = posix.fd_t;
     pub const INVALID_FILE: fd_t = -1;
 
+    pub const OpenDataFilePurpose = enum { format, open, inspect };
     /// Opens or creates a journal file:
     /// - For reading and writing.
     /// - For Direct I/O (required on darwin).
@@ -849,7 +893,7 @@ pub const IO = struct {
         dir_fd: fd_t,
         relative_path: []const u8,
         size: u64,
-        method: enum { create, create_or_open, open, open_read_only },
+        purpose: OpenDataFilePurpose,
         direct_io: DirectIO,
     ) !fd_t {
         _ = self;
@@ -866,7 +910,7 @@ pub const IO = struct {
         // To work around this, fs_sync() is explicitly called after writing in do_operation.
         var flags: posix.O = .{
             .CLOEXEC = true,
-            .ACCMODE = if (method == .open_read_only) .RDONLY else .RDWR,
+            .ACCMODE = if (purpose == .inspect) .RDONLY else .RDWR,
             .DSYNC = true,
         };
         var mode: posix.mode_t = 0;
@@ -874,19 +918,14 @@ pub const IO = struct {
         // TODO Document this and investigate whether this is in fact correct to set here.
         if (@hasField(posix.O, "LARGEFILE")) flags.LARGEFILE = true;
 
-        switch (method) {
-            .create => {
+        switch (purpose) {
+            .format => {
                 flags.CREAT = true;
                 flags.EXCL = true;
                 mode = 0o666;
                 log.info("creating \"{s}\"...", .{relative_path});
             },
-            .create_or_open => {
-                flags.CREAT = true;
-                mode = 0o666;
-                log.info("opening or creating \"{s}\"...", .{relative_path});
-            },
-            .open, .open_read_only => {
+            .open, .inspect => {
                 log.info("opening \"{s}\"...", .{relative_path});
             },
         }
@@ -912,7 +951,7 @@ pub const IO = struct {
         // LOCK_NB means that we want to fail the lock without waiting if another process has it.
         posix.flock(fd, posix.LOCK.EX | posix.LOCK.NB) catch |err| switch (err) {
             error.WouldBlock => {
-                if (method == .open_read_only) {
+                if (purpose == .inspect) {
                     log.warn(
                         "another process holds the data file lock - results may be inconsistent",
                         .{},
@@ -927,7 +966,7 @@ pub const IO = struct {
         // Ask the file system to allocate contiguous sectors for the file (if possible):
         // If the file system does not support `fallocate()`, then this could mean more seeks or a
         // panic if we run out of disk space (ENOSPC).
-        if (method == .create) try fs_allocate(fd, size);
+        if (purpose == .format) try fs_allocate(fd, size);
 
         // The best fsync strategy is always to fsync before reading because this prevents us from
         // making decisions on data that was never durably written by a previously crashed process.

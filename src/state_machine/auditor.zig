@@ -3,20 +3,18 @@
 //!
 //! The Auditor expects replies in ascending commit order.
 const std = @import("std");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 const maybe = stdx.maybe;
 const log = std.log.scoped(.test_auditor);
 
-const constants = @import("../constants.zig");
 const tb = @import("../tigerbeetle.zig");
 const IdPermutation = @import("../testing/id.zig").IdPermutation;
 const TimestampRange = @import("../lsm/timestamp_range.zig").TimestampRange;
 
 const PriorityQueue = std.PriorityQueue;
 const Storage = @import("../testing/storage.zig").Storage;
-const StateMachine =
-    @import("../state_machine.zig").StateMachineType(Storage, constants.state_machine_config);
+const StateMachine = @import("../state_machine.zig").StateMachineType(Storage);
 
 pub const CreateAccountResultSet = std.enums.EnumSet(tb.CreateAccountResult);
 // TODO(zig): See `Ordered` comments.
@@ -24,8 +22,8 @@ pub const CreateTransferResultSet = std.enums.EnumSet(tb.CreateTransferResult.Or
 
 /// Batch sizes apply to both `create` and `lookup` operations.
 /// (More ids would fit in the `lookup` request, but then the response wouldn't fit.)
-const accounts_batch_size_max = StateMachine.constants.batch_max.create_accounts;
-const transfers_batch_size_max = StateMachine.constants.batch_max.create_transfers;
+const accounts_batch_size_max = StateMachine.batch_max.create_accounts;
+const transfers_batch_size_max = StateMachine.batch_max.create_transfers;
 
 const InFlightKey = struct {
     client_index: usize,
@@ -209,6 +207,7 @@ pub const AccountingAuditor = struct {
             },
         }) void {
             defer assert(self.current.count_total() <= self.changes_events_max);
+
             const count: u32 = switch (change) {
                 .transfer => 1,
                 .expiry => |expiry| expiry.expired_count,
@@ -282,6 +281,7 @@ pub const AccountingAuditor = struct {
         fn release_snapshot(self: *ChangesTracker) Counter {
             assert(self.snapshot != null);
             defer self.snapshot = null;
+
             return self.snapshot.?;
         }
     };
@@ -874,9 +874,10 @@ pub fn IteratorForCreateType(comptime Result: type) type {
         pub fn take(
             self: *IteratorForCreate,
             event_index: usize,
-        ) ?std.meta.fieldInfo(Result, .result).type {
+        ) ?@FieldType(Result, "result") {
             if (self.results.len > 0 and self.results[0].index == event_index) {
                 defer self.results = self.results[1..];
+
                 return self.results[0].result;
             } else {
                 return null;
@@ -900,6 +901,7 @@ pub fn IteratorForLookupType(comptime Result: type) type {
         pub fn take(self: *IteratorForLookup, id: u128) ?*const Result {
             if (self.results.len > 0 and self.results[0].id == id) {
                 defer self.results = self.results[1..];
+
                 return &self.results[0];
             } else {
                 return null;

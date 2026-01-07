@@ -24,7 +24,7 @@
 //! - Tables invisible to snapshot_latest and the current snapshot can be removed.
 //!
 const std = @import("std");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 
 const log = std.log.scoped(.lsm_manifest_level_fuzz);
@@ -245,7 +245,7 @@ pub fn EnvironmentType(comptime table_count_max_tree: u32, comptime node_size: u
             try env.pool.init(gpa, node_pool_size);
             errdefer env.pool.deinit(gpa);
 
-            try env.level.init(gpa);
+            try env.level.init(gpa, &env.pool);
             errdefer env.level.deinit(gpa, &env.pool);
 
             env.buffer = TableBuffer.init(gpa);

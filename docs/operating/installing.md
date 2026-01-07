@@ -24,7 +24,7 @@ curl -Lo tigerbeetle.zip https://mac.tigerbeetle.com && unzip tigerbeetle.zip
 <summary>Windows</summary>
 
 ```console
-powershell -command "curl.exe -Lo tigerbeetle.zip https://windows.tigerbeetle.com; Expand-Archive tigerbeetle.zip .
+powershell -command "curl.exe -Lo tigerbeetle.zip https://windows.tigerbeetle.com; Expand-Archive tigerbeetle.zip ."
 .\tigerbeetle version
 ```
 </details>
@@ -64,5 +64,5 @@ compilation instructions.
 
 ## Client Libraries
 
-Client libraries for .Net, Go, Java, Node, and Python are published to the respective package
+Client libraries for .NET, Go, Java, Node.js, and Python are published to the respective package
 repositories, see [Clients](../coding/clients/).

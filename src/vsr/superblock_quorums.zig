@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const log = std.log.scoped(.superblock_quorums);
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 
 const superblock = @import("./superblock.zig");
 const SuperBlockHeader = superblock.SuperBlockHeader;
@@ -25,7 +25,7 @@ pub fn QuorumsType(comptime options: Options) type {
             /// An integer value indicates the copy index found in the corresponding slot.
             /// A `null` value indicates that the copy is invalid or not a member of the working
             /// quorum. All copies belong to the same (valid, working) quorum.
-            slots: [options.superblock_copies]?u8 = [_]?u8{null} ** options.superblock_copies,
+            slots: [options.superblock_copies]?u8 = @splat(null),
 
             pub fn repairs(quorum: Quorum) RepairIterator {
                 assert(quorum.valid);
@@ -103,7 +103,8 @@ pub fn QuorumsType(comptime options: Options) type {
 
             for (quorums.slice()) |quorum| {
                 if (quorum.copies.full()) {
-                    log.debug("quorum: checksum={x} parent={x} sequence={} count={} valid={}", .{
+                    log.debug("quorum: checksum={x:0>32} parent={x:0>32} sequence={} count={} " ++
+                        "valid={}", .{
                         quorum.header.checksum,
                         quorum.header.parent,
                         quorum.header.sequence,
@@ -111,7 +112,8 @@ pub fn QuorumsType(comptime options: Options) type {
                         quorum.valid,
                     });
                 } else {
-                    log.warn("quorum: checksum={x} parent={x} sequence={} count={} valid={}", .{
+                    log.warn("quorum: checksum={x:0>32} parent={x:0>32} sequence={} count={} " ++
+                        "valid={}", .{
                         quorum.header.checksum,
                         quorum.header.parent,
                         quorum.header.sequence,
@@ -209,7 +211,7 @@ pub fn QuorumsType(comptime options: Options) type {
             }
 
             if (copy.copy == slot) {
-                log.debug("copy: {}/{}: checksum={x} parent={x} sequence={}", .{
+                log.debug("copy: {}/{}: checksum={x:0>32} parent={x:0>32} sequence={}", .{
                     slot,
                     options.superblock_copies,
                     copy.checksum,
@@ -217,7 +219,8 @@ pub fn QuorumsType(comptime options: Options) type {
                     copy.sequence,
                 });
             } else if (copy.copy >= options.superblock_copies) {
-                log.warn("copy: {}/{}: checksum={x} parent={x} sequence={} corrupt copy={}", .{
+                log.warn("copy: {}/{}: checksum={x:0>32} parent={x:0>32} sequence={} " ++
+                    "corrupt copy={}", .{
                     slot,
                     options.superblock_copies,
                     copy.checksum,
@@ -229,7 +232,8 @@ pub fn QuorumsType(comptime options: Options) type {
                 // If our read was misdirected, we definitely still want to count the copy.
                 // We must just be careful to count it idempotently.
                 log.warn(
-                    "copy: {}/{}: checksum={x} parent={x} sequence={} misdirected from copy={}",
+                    "copy: {}/{}: checksum={x:0>32} parent={x:0>32} sequence={} " ++
+                        "misdirected from copy={}",
                     .{
                         slot,
                         options.superblock_copies,
@@ -376,7 +380,7 @@ pub fn QuorumsType(comptime options: Options) type {
 }
 
 test "Quorums.working" {
-    var prng = stdx.PRNG.from_seed(123);
+    var prng = stdx.PRNG.from_seed_testing();
 
     // Don't print warnings from the Quorums.
     const level = std.testing.log_level;
@@ -387,7 +391,7 @@ test "Quorums.working" {
 }
 
 test "Quorum.repairs" {
-    var prng = stdx.PRNG.from_seed(123);
+    var prng = stdx.PRNG.from_seed_testing();
 
     // Don't print warnings from the Quorums.
     const level = std.testing.log_level;

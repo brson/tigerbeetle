@@ -3,10 +3,10 @@ const assert = std.debug.assert;
 const math = std.math;
 const mem = std.mem;
 
-const stdx = @import("../stdx.zig");
-const constants = @import("../constants.zig");
+const stdx = @import("stdx");
 
 const Direction = @import("../direction.zig").Direction;
+const Pending = error{Pending};
 
 /// ZigZag merge join.
 /// Resources:
@@ -16,25 +16,25 @@ pub fn ZigZagMergeIteratorType(
     comptime Context: type,
     comptime Key: type,
     comptime Value: type,
-    comptime key_from_value: fn (*const Value) callconv(.Inline) Key,
+    comptime key_from_value: fn (*const Value) callconv(.@"inline") Key,
     comptime streams_max: u32,
     /// Peek the next key in the stream identified by `stream_index`.
     /// For example, `peek(stream_index=2)` returns `user_streams[2][0]`.
-    /// Returns `Drained` if the stream was consumed and must be refilled
+    /// Returns `Pending` if the stream was consumed and must be refilled
     /// before calling `peek()` again.
-    /// Returns `Empty` if the stream was fully consumed and reached the end.
+    /// Returns null if the stream was fully consumed and reached the end.
     comptime stream_peek: fn (
         context: *Context,
         stream_index: u32,
-    ) error{ Empty, Drained }!Key,
+    ) Pending!?Key,
     /// Consumes the current value and moves the stream identified by `stream_index`.
     /// Pop is always called after `peek()`, it is not expected that the stream be `Empty`
-    /// or `Drained`.
+    /// or `Pending`.
     comptime stream_pop: fn (context: *Context, stream_index: u32) Value,
     /// Probes the stream identified by `stream_index` causing it to move to the next value such
     /// that `value.key >= probe_key` (ascending) or `value.key <= probe_key` (descending).
     /// Should not be called when the current key already matches the probe.
-    /// The stream may become `Empty` or `Drained` _after_ probing.
+    /// The stream may become empty or `Pending` _after_ probing.
     comptime stream_probe: fn (context: *Context, stream_index: u32, probe_key: Key) void,
 ) type {
     return struct {
@@ -69,39 +69,36 @@ pub fn ZigZagMergeIteratorType(
             _ = it;
         }
 
-        pub fn pop(it: *ZigZagMergeIterator) error{Drained}!?Value {
-            while (try it.peek_key()) |key| {
-                const value = stream_pop(it.context, 0);
-                assert(key_from_value(&value) == key);
-                for (1..it.streams_count) |stream_index| {
-                    const value_other = stream_pop(it.context, @intCast(stream_index));
-                    assert(key_from_value(&value_other) == key);
+        pub fn pop(it: *ZigZagMergeIterator) Pending!?Value {
+            const key = try it.peek_key() orelse
+                return null;
 
-                    if (constants.verify) {
-                        // Differently from K-way merge, there's no precedence between streams
-                        // in Zig-Zag merge. It's assumed that all streams will produce the same
-                        // value during a key intersection.
-                        assert(stdx.equal_bytes(Value, &value, &value_other));
-                    }
+            if (it.key_popped) |previous| {
+                switch (std.math.order(previous, key)) {
+                    .lt => assert(it.direction == .ascending),
+                    // Duplicate values are not expected.
+                    .eq => unreachable,
+                    .gt => assert(it.direction == .descending),
                 }
+            }
+            it.key_popped = key;
 
-                if (it.key_popped) |previous| {
-                    switch (std.math.order(previous, key)) {
-                        .lt => assert(it.direction == .ascending),
-                        // Duplicate values are not expected.
-                        .eq => unreachable,
-                        .gt => assert(it.direction == .descending),
-                    }
-                }
-                it.key_popped = key;
+            const value = stream_pop(it.context, 0);
+            assert(key_from_value(&value) == key);
+            for (1..it.streams_count) |stream_index| {
+                const value_other = stream_pop(it.context, @intCast(stream_index));
+                assert(key_from_value(&value_other) == key);
 
-                return value;
+                // Differently from K-way merge, there's no precedence between streams
+                // in Zig-Zag merge. It's assumed that all streams will produce the same
+                // value during a key intersection.
+                assert(stdx.equal_bytes(Value, &value, &value_other));
             }
 
-            return null;
+            return value;
         }
 
-        fn peek_key(it: *ZigZagMergeIterator) error{Drained}!?Key {
+        fn peek_key(it: *ZigZagMergeIterator) Pending!?Key {
             assert(it.streams_count <= streams_max);
             assert(it.streams_count > 1);
 
@@ -110,43 +107,43 @@ pub fn ZigZagMergeIteratorType(
                 .descending => std.math.maxInt(Key),
             };
 
-            var drained: BitSet = BitSet.initEmpty();
+            var pending: BitSet = BitSet.initEmpty();
             var probe_key: Key = key_min;
 
             var probing: BitSet = BitSet.initFull();
             while (probing.count() > 0) {
-                // Looking into all non-drained streams for a match, while accumulating
+                // Looking into all non-pending streams for a match, while accumulating
                 // the most ahead key to probe the streams behind.
                 probing = BitSet.initEmpty();
                 for (0..it.streams_count) |stream_index| {
-                    if (drained.isSet(stream_index)) continue;
+                    if (pending.isSet(stream_index)) continue;
 
                     const key = stream_peek(it.context, @intCast(stream_index)) catch |err| {
                         switch (err) {
-                            // Return immediately on empty streams.
-                            // If any one stream is empty, then there can be no value remaining
-                            // in the intersection.
-                            error.Empty => return null,
-                            // Skipping `Drained` streams. The goal is to match all buffered streams
-                            // first so that the drained ones can read from a narrower key range.
-                            error.Drained => {
-                                drained.set(stream_index);
+                            // Skipping `Pending` streams. The goal is to match all buffered streams
+                            // first so that the pending ones can read from a narrower key range.
+                            error.Pending => {
+                                pending.set(stream_index);
                                 continue;
                             },
                         }
-                    };
+                    } orelse
+                        // Return immediately on empty streams.
+                        // If any one stream is empty, then there can be no value remaining
+                        // in the intersection.
+                        return null;
 
                     // The stream cannot regress.
                     assert(
                         it.probe_key_previous == null or
                             key == it.probe_key_previous.? or
                             it.key_ahead(.{
-                            .key_after = key,
-                            .key_before = it.probe_key_previous.?,
-                        }),
+                                .key_after = key,
+                                .key_before = it.probe_key_previous.?,
+                            }),
                     );
 
-                    // The keys matches, continuing to the next stream.
+                    // The keys match, continuing to the next stream.
                     if (key == probe_key) continue;
 
                     if (it.key_ahead(.{ .key_after = key, .key_before = probe_key })) {
@@ -154,9 +151,9 @@ pub fn ZigZagMergeIteratorType(
                         // meaning all streams before must be probed.
                         probe_key = key;
 
-                        // Setting all previous streams as `true` except the drained ones.
+                        // Setting all previous streams as `true` except the pending ones.
                         probing.setRangeValue(.{ .start = 0, .end = stream_index }, true);
-                        probing.setIntersection(drained.complement());
+                        probing.setIntersection(pending.complement());
                         assert(!probing.isSet(stream_index));
                     } else {
                         // The stream is behind and needs to be probed.
@@ -171,14 +168,13 @@ pub fn ZigZagMergeIteratorType(
 
                     const key = stream_peek(it.context, @intCast(stream_index)) catch |err| {
                         switch (err) {
-                            error.Empty => return null,
-                            error.Drained => {
-                                drained.set(stream_index);
+                            error.Pending => {
+                                pending.set(stream_index);
                                 probing.unset(stream_index);
                                 continue;
                             },
                         }
-                    };
+                    } orelse return null;
 
                     // After probed, the stream must either match the key or be ahead.
                     if (key == probe_key) {
@@ -189,24 +185,23 @@ pub fn ZigZagMergeIteratorType(
                 }
             }
 
-            if (drained.count() == it.streams_count) {
-                // Can't probe if all streams are drained.
+            if (pending.count() == it.streams_count) {
+                // Can't probe if all streams are pending.
                 assert(probe_key == key_min);
-                return error.Drained;
+                return error.Pending;
             }
 
             assert(probe_key != key_min);
             for (0..it.streams_count) |stream_index| {
-                if (drained.isSet(stream_index)) {
-                    // Probing the drained stream will update the key range for the next read.
+                if (pending.isSet(stream_index)) {
+                    // Probing the pending stream will update the key range for the next read.
                     stream_probe(it.context, @intCast(stream_index), probe_key);
-                    // The stream must remain drained after probed.
-                    assert(stream_peek(it.context, @intCast(stream_index)) == error.Drained);
+                    // The stream must remain pending after being probed.
+                    assert(stream_peek(it.context, @intCast(stream_index)) == Pending.Pending);
                 } else {
                     // At this point, all the buffered streams must have produced a matching key.
-                    assert(stream_peek(it.context, @intCast(stream_index)) catch {
-                        unreachable;
-                    } == probe_key);
+                    assert((stream_peek(it.context, @intCast(stream_index)) catch unreachable) ==
+                        probe_key);
                 }
             }
 
@@ -216,7 +211,7 @@ pub fn ZigZagMergeIteratorType(
                 it.key_ahead(.{ .key_after = probe_key, .key_before = it.probe_key_previous.? }));
 
             it.probe_key_previous = probe_key;
-            return if (drained.count() == 0) probe_key else error.Drained;
+            return if (pending.count() == 0) probe_key else error.Pending;
         }
 
         /// Returns true if `key_after` is ahead of `key_before` depending on the direction,
@@ -254,9 +249,9 @@ fn TestContextType(comptime streams_max: u32) type {
         fn stream_peek(
             context: *const TestContext,
             stream_index: u32,
-        ) error{ Empty, Drained }!Key {
+        ) Pending!?Key {
             const stream = context.streams[stream_index];
-            if (stream.len == 0) return error.Empty;
+            if (stream.len == 0) return null;
             return switch (context.direction) {
                 .ascending => key_from_value(&stream[0]),
                 .descending => key_from_value(&stream[stream.len - 1]),
@@ -280,12 +275,9 @@ fn TestContextType(comptime streams_max: u32) type {
 
         fn stream_probe(context: *TestContext, stream_index: u32, probe_key: Key) void {
             while (true) {
-                const key = stream_peek(context, stream_index) catch |err| {
-                    switch (err) {
-                        error.Drained => unreachable,
-                        error.Empty => return,
-                    }
-                };
+                const key = stream_peek(context, stream_index) catch |err| switch (err) {
+                    error.Pending => unreachable,
+                } orelse return;
 
                 if (switch (context.direction) {
                     .ascending => key >= probe_key,
@@ -381,6 +373,7 @@ fn TestContextType(comptime streams_max: u32) type {
                     var dummy: [10]Value = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
                     const replaced = streams[streams_count - 1];
                     defer streams[streams_count - 1] = replaced;
+
                     streams[streams_count - 1] = &dummy;
                     try merge(streams[0..streams_count], &.{});
                 }
@@ -390,6 +383,7 @@ fn TestContextType(comptime streams_max: u32) type {
                     const empty: [0]Value = .{};
                     const replaced = streams[streams_count - 1];
                     defer streams[streams_count - 1] = replaced;
+
                     streams[streams_count - 1] = &empty;
                     try merge(streams[0..streams_count], &.{});
                 }

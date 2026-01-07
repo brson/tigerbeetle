@@ -30,15 +30,15 @@ pub fn ScanLookupType(
             index: u8,
             scan_lookup: *ScanLookup,
             lookup_context: Groove.ObjectTree.LookupContext = undefined,
-            index_produced: ?usize = null,
+            object_index: ?u32 = null,
         };
 
         groove: *Groove,
         scan: *Scan,
         scan_context: Scan.Context = .{ .callback = &scan_read_callback },
 
-        buffer: ?[]Object,
-        buffer_produced_len: ?usize,
+        object_buffer: ?[]Object,
+        object_count: ?u32,
         state: ScanLookupStatus,
         callback: ?Callback,
 
@@ -53,8 +53,8 @@ pub fn ScanLookupType(
             return .{
                 .groove = groove,
                 .scan = scan,
-                .buffer = null,
-                .buffer_produced_len = null,
+                .object_buffer = null,
+                .object_count = null,
                 .callback = null,
                 .state = .idle,
             };
@@ -62,23 +62,24 @@ pub fn ScanLookupType(
 
         pub fn read(
             self: *ScanLookup,
-            buffer: []Object,
+            object_buffer: []Object,
             callback: Callback,
         ) void {
+            assert(object_buffer.len > 0);
             assert(self.state == .idle or
                 // `read()` can be called multiple times when the buffer has finished,
                 // but the scan still yields.
                 self.state == .buffer_finished);
             assert(self.callback == null);
             assert(self.workers_pending == 0);
-            assert(self.buffer == null);
-            assert(self.buffer_produced_len == null);
+            assert(self.object_buffer == null);
+            assert(self.object_count == null);
 
             self.* = .{
                 .groove = self.groove,
                 .scan = self.scan,
-                .buffer = buffer,
-                .buffer_produced_len = 0,
+                .object_buffer = object_buffer,
+                .object_count = 0,
                 .callback = callback,
                 .state = .scan,
             };
@@ -90,7 +91,7 @@ pub fn ScanLookupType(
         fn slice(self: *const ScanLookup) []const Object {
             assert(self.state == .buffer_finished or self.state == .scan_finished);
             assert(self.workers_pending == 0);
-            return self.buffer.?[0..self.buffer_produced_len.?];
+            return self.object_buffer.?[0..self.object_count.?];
         }
 
         fn scan_read_callback(context: *Scan.Context, scan: *Scan) void {
@@ -105,6 +106,22 @@ pub fn ScanLookupType(
             assert(self.state == .scan);
             assert(self.workers_pending == 0);
 
+            // Track an extra "worker" that will be decremented at the end.
+            // This prevents the callback from being called during the loop
+            // if all workers finish synchronously.
+            // After the callback, the `self` reference is no longer valid.
+            self.workers_pending += 1;
+            defer {
+                assert(self.workers_pending > 0);
+                self.workers_pending -= 1;
+
+                // It's safe to call the callback synchronously here since this function
+                // is always called by `scan_read_callback`.
+                if (self.workers_pending == 0) {
+                    self.lookup_finished();
+                }
+            }
+
             self.groove.grid.trace.start(.{
                 .lookup = .{ .tree = @enumFromInt(self.groove.objects.config.id) },
             });
@@ -112,7 +129,7 @@ pub fn ScanLookupType(
             self.state = .lookup;
 
             for (&self.workers, 0..) |*worker, index| {
-                assert(self.workers_pending == index);
+                assert(self.workers_pending == index + 1);
 
                 worker.* = .{
                     .index = @intCast(index),
@@ -131,14 +148,8 @@ pub fn ScanLookupType(
 
                 // If the worker finished synchronously (e.g `workers_pending`
                 // decreased), we don't need to start new ones.
-                if (self.workers_pending == index) break;
+                if (self.workers_pending == index + 1) break;
             }
-
-            // The lookup may have been completed synchronously,
-            // and the last worker already called the callback.
-            // It's safe to call the callback synchronously here since this function
-            // is always called by `scan_read_callback`.
-            assert(self.workers_pending > 0 or self.state != .lookup);
         }
 
         fn lookup_worker_next(self: *ScanLookup, worker: *LookupWorker) void {
@@ -146,14 +157,14 @@ pub fn ScanLookupType(
             assert(self.state == .lookup);
 
             while (self.state == .lookup) {
-                if (self.buffer_produced_len.? == self.buffer.?.len) {
+                if (self.object_count.? == self.object_buffer.?.len) {
                     // The provided buffer was exhausted.
                     self.state = .buffer_finished;
                     break;
                 }
 
                 const timestamp = self.scan.next() catch |err| switch (err) {
-                    error.ReadAgain => {
+                    error.Pending => {
                         // The scan needs to be buffered again.
                         self.state = .scan;
                         break;
@@ -166,8 +177,8 @@ pub fn ScanLookupType(
 
                 // Incrementing the produced len once we are sure that
                 // there is an object to lookup for that position.
-                worker.index_produced = self.buffer_produced_len.?;
-                self.buffer_produced_len = self.buffer_produced_len.? + 1;
+                worker.object_index = self.object_count.?;
+                self.object_count = self.object_count.? + 1;
 
                 const objects = &self.groove.objects;
                 if (objects.table_mutable.get(timestamp) orelse
@@ -178,20 +189,20 @@ pub fn ScanLookupType(
 
                     // Object present in table mutable/immutable,
                     // continue the loop to fetch the next one.
-                    self.buffer.?[worker.index_produced.?] = object.*;
+                    self.object_buffer.?[worker.object_index.?] = object.*;
                     continue;
                 } else switch (objects.lookup_from_levels_cache(
                     self.scan.snapshot(),
                     timestamp,
                 )) {
                     // Since the scan already found the key,
-                    // we don't expected `negative` here.
+                    // we don't expect `negative` here.
                     .negative => unreachable,
 
                     // Object is cached in memory,
                     // continue the loop to fetch the next one.
                     .positive => |object| {
-                        self.buffer.?[worker.index_produced.?] = object.*;
+                        self.object_buffer.?[worker.object_index.?] = object.*;
                         continue;
                     },
 
@@ -227,11 +238,11 @@ pub fn ScanLookupType(
             const worker: *LookupWorker = @fieldParentPtr("lookup_context", completion);
             const self: *ScanLookup = worker.scan_lookup;
 
-            assert(worker.index_produced != null);
-            assert(worker.index_produced.? < self.buffer_produced_len.?);
+            assert(worker.object_index != null);
+            assert(worker.object_index.? < self.object_count.?);
 
             worker.lookup_context = undefined;
-            self.buffer.?[worker.index_produced.?] = result.?.*;
+            self.object_buffer.?[worker.object_index.?] = result.?.*;
 
             switch (self.state) {
                 .idle => unreachable,
@@ -255,25 +266,30 @@ pub fn ScanLookupType(
 
             self.workers_pending -= 1;
             if (self.workers_pending == 0) {
-                self.groove.grid.trace.stop(.{
-                    .lookup = .{ .tree = @enumFromInt(self.groove.objects.config.id) },
-                });
+                self.lookup_finished();
+            }
+        }
 
-                switch (self.state) {
-                    .idle, .lookup => unreachable,
-                    // The scan's buffer was consumed and it needs to read again:
-                    .scan => self.scan.read(&self.scan_context),
-                    // Either the lookup buffer was filled, or the scan reached the end:
-                    .buffer_finished, .scan_finished => {
-                        const callback = self.callback.?;
-                        const results = self.slice();
-                        self.buffer = null;
-                        self.buffer_produced_len = null;
-                        self.callback = null;
+        fn lookup_finished(self: *ScanLookup) void {
+            assert(self.workers_pending == 0);
+            self.groove.grid.trace.stop(.{
+                .lookup = .{ .tree = @enumFromInt(self.groove.objects.config.id) },
+            });
 
-                        callback(self, results);
-                    },
-                }
+            switch (self.state) {
+                .idle, .lookup => unreachable,
+                // The scan's buffer was consumed and it needs to read again:
+                .scan => self.scan.read(&self.scan_context),
+                // Either the lookup buffer was filled, or the scan reached the end:
+                .buffer_finished, .scan_finished => {
+                    const callback = self.callback.?;
+                    const results = self.slice();
+                    self.object_buffer = null;
+                    self.object_count = null;
+                    self.callback = null;
+
+                    callback(self, results);
+                },
             }
         }
     };

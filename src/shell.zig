@@ -19,8 +19,10 @@ const log = std.log;
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 
-const stdx = @import("stdx.zig");
+const stdx = @import("stdx");
 const Shell = @This();
+
+const MiB = stdx.MiB;
 
 const cwd_stack_max = 16;
 
@@ -271,7 +273,7 @@ pub fn file_ensure_content(
     content: []const u8,
     create_flags: std.fs.File.CreateFlags,
 ) !enum { unchanged, updated } {
-    const max_bytes = 1024 * 1024;
+    const max_bytes = 1 * MiB;
     const content_current = shell.cwd.readFileAlloc(shell.gpa, path, max_bytes) catch null;
     defer if (content_current) |slice| shell.gpa.free(slice);
 
@@ -400,7 +402,7 @@ pub fn exec_options(
     shell: *Shell,
     options: struct {
         stdin_slice: ?[]const u8 = null,
-        timeout_ns: u64 = 10 * std.time.ns_per_min,
+        timeout: stdx.Duration = .minutes(10),
     },
     comptime cmd: []const u8,
     cmd_args: anytype,
@@ -410,7 +412,7 @@ pub fn exec_options(
 
     return exec_inner(shell, argv.slice(), .{
         .stdin_slice = options.stdin_slice,
-        .timeout_ns = options.timeout_ns,
+        .timeout = options.timeout,
     });
 }
 
@@ -425,6 +427,22 @@ pub fn exec_stdout(shell: *Shell, comptime cmd: []const u8, cmd_args: anytype) !
         .capture_stdout = &captured_stdout,
     });
     return captured_stdout;
+}
+
+pub fn exec_stdout_stderr(shell: *Shell, comptime cmd: []const u8, cmd_args: anytype) !struct {
+    []const u8,
+    []const u8,
+} {
+    var argv = try Argv.expand(shell.gpa, cmd, cmd_args);
+    defer argv.deinit();
+
+    var captured_stdout: []const u8 = &.{};
+    var captured_stderr: []const u8 = &.{};
+    try exec_inner(shell, argv.slice(), .{
+        .capture_stdout = &captured_stdout,
+        .capture_stderr = &captured_stderr,
+    });
+    return .{ captured_stdout, captured_stderr };
 }
 
 pub fn exec_stdout_options(
@@ -448,13 +466,26 @@ pub fn exec_stdout_options(
 
 /// Runs the zig compiler.
 pub fn exec_zig(shell: *Shell, comptime cmd: []const u8, cmd_args: anytype) !void {
+    return shell.exec_zig_options(.{}, cmd, cmd_args);
+}
+
+pub fn exec_zig_options(
+    shell: *Shell,
+    options: struct {
+        timeout: stdx.Duration = .minutes(10),
+    },
+    comptime cmd: []const u8,
+    cmd_args: anytype,
+) !void {
     var argv = Argv.init(shell.gpa);
     defer argv.deinit();
 
     try argv.append_new_arg("{s}", .{shell.zig_exe.?});
     try expand_argv(&argv, cmd, cmd_args);
 
-    return shell.exec_inner(argv.slice(), .{});
+    return shell.exec_inner(argv.slice(), .{
+        .timeout = options.timeout,
+    });
 }
 
 fn exec_inner(
@@ -462,9 +493,13 @@ fn exec_inner(
     argv: []const []const u8,
     options: struct {
         stdin_slice: ?[]const u8 = null,
-        capture_stdout: ?*[]const u8 = null, // Optional out parameter.
-        output_limit_bytes: usize = 128 * 1024 * 1024,
-        timeout_ns: u64 = 10 * std.time.ns_per_min,
+
+        // Optional out parameters:
+        capture_stdout: ?*[]const u8 = null,
+        capture_stderr: ?*[]const u8 = null,
+
+        output_limit_bytes: usize = 128 * MiB,
+        timeout: stdx.Duration = .minutes(10),
     },
 ) !void {
     const argv_formatted = try std.mem.join(shell.gpa, " ", argv);
@@ -516,7 +551,7 @@ fn exec_inner(
             assert(poller.?.fifo(stream).head == 0);
         };
 
-        const deadline: i128 = std.time.nanoTimestamp() + options.timeout_ns;
+        const deadline: i128 = std.time.nanoTimestamp() + options.timeout.ns;
         for (0..1_000_000) |_| {
             const timeout: i128 = deadline - std.time.nanoTimestamp();
             if (timeout <= 0) return error.ExecTimeout;
@@ -535,14 +570,19 @@ fn exec_inner(
         else => return error.ExecFailed,
     }
 
-    if (options.capture_stdout) |destination| {
-        const stdout = poller.?.fifo(.stdout).readableSlice(0);
-        const trailing_newline = if (std.mem.indexOfScalar(u8, stdout, '\n')) |first_newline|
-            first_newline == stdout.len - 1
-        else
-            false;
-        const len_without_newline = stdout.len - @intFromBool(trailing_newline);
-        destination.* = try shell.arena.allocator().dupe(u8, stdout[0..len_without_newline]);
+    inline for (
+        .{ options.capture_stdout, options.capture_stderr },
+        .{ .stdout, .stderr },
+    ) |capture_destination, capture_stream| {
+        if (capture_destination) |destination| {
+            const stream = poller.?.fifo(capture_stream).readableSlice(0);
+            const trailing_newline = if (std.mem.indexOfScalar(u8, stream, '\n')) |first_newline|
+                first_newline == stream.len - 1
+            else
+                false;
+            const len_without_newline = stream.len - @intFromBool(trailing_newline);
+            destination.* = try shell.arena.allocator().dupe(u8, stream[0..len_without_newline]);
+        }
     }
 }
 
@@ -614,7 +654,7 @@ pub fn git_env_setup(shell: *Shell, options: struct { use_hostname: bool }) !voi
         if (builtin.target.os.tag != .linux) {
             @panic("use_hostname only supported on linux");
         }
-        var hostname_buffer = std.mem.zeroes([std.posix.HOST_NAME_MAX]u8);
+        var hostname_buffer: [std.posix.HOST_NAME_MAX]u8 = @splat(0);
         const hostname = try std.posix.gethostname(&hostname_buffer);
 
         try shell.env.put("GIT_AUTHOR_NAME", hostname);
@@ -746,7 +786,7 @@ fn expand_argv(argv: *Argv, comptime cmd: []const u8, cmd_args: anytype) !void {
 
         const T = @TypeOf(arg_or_slice);
 
-        if (@typeInfo(T) == .Int or @typeInfo(T) == .ComptimeInt) {
+        if (@typeInfo(T) == .int or @typeInfo(T) == .comptime_int) {
             if (concat_left) {
                 try argv.extend_last_arg("{d}", .{arg_or_slice});
             } else {
@@ -771,8 +811,8 @@ fn expand_argv(argv: *Argv, comptime cmd: []const u8, cmd_args: anytype) !void {
     comptime if (args_used.count() != arg_count) @compileError("Unused argument");
 }
 
-const Snap = @import("./testing/snaptest.zig").Snap;
-const snap = Snap.snap;
+const Snap = stdx.Snap;
+const snap = Snap.snap_fn("src");
 
 test "shell: expand_argv" {
     const T = struct {
@@ -785,22 +825,22 @@ test "shell: expand_argv" {
             defer argv.deinit();
 
             try expand_argv(&argv, cmd, args);
-            try want.diff_json(argv.slice(), .{});
+            try want.diff_zon(argv.slice());
         }
     };
 
     try T.check("zig version", .{}, snap(@src(),
-        \\["zig","version"]
+        \\.{ "zig", "version" }
     ));
     try T.check("  zig  version  ", .{}, snap(@src(),
-        \\["zig","version"]
+        \\.{ "zig", "version" }
     ));
 
     try T.check(
         "zig {version}",
         .{ .version = @as([]const u8, "version") },
         snap(@src(),
-            \\["zig","version"]
+            \\.{ "zig", "version" }
         ),
     );
 
@@ -808,7 +848,11 @@ test "shell: expand_argv" {
         "zig {version}",
         .{ .version = @as([]const []const u8, &.{ "version", "--verbose" }) },
         snap(@src(),
-            \\["zig","version","--verbose"]
+            \\.{
+            \\    "zig",
+            \\    "version",
+            \\    "--verbose",
+            \\}
         ),
     );
 
@@ -816,14 +860,24 @@ test "shell: expand_argv" {
         "git fetch origin refs/pull/{pr}/head",
         .{ .pr = 92 },
         snap(@src(),
-            \\["git","fetch","origin","refs/pull/92/head"]
+            \\.{
+            \\    "git",
+            \\    "fetch",
+            \\    "origin",
+            \\    "refs/pull/92/head",
+            \\}
         ),
     );
     try T.check(
         "gh pr checkout {pr}",
         .{ .pr = @as(u32, 92) },
         snap(@src(),
-            \\["gh","pr","checkout","92"]
+            \\.{
+            \\    "gh",
+            \\    "pr",
+            \\    "checkout",
+            \\    "92",
+            \\}
         ),
     );
 }
@@ -832,22 +886,17 @@ test "shell: expand_argv" {
 ///
 /// Caller is responsible for closing the dir.
 fn discover_project_root() !std.fs.Dir {
-    // TODO(Zig): https://github.com/ziglang/zig/issues/16779
-    const ancestors = "./" ++ "../" ** 16;
+    var current = try std.fs.cwd().openDir(".", .{});
+    errdefer current.close(); // Caller is responsible for closing on success.
 
-    var level: u32 = 0;
-    while (level < 16) : (level += 1) {
-        const ancestor = ancestors[0 .. 2 + 3 * level];
-        assert(ancestor[ancestor.len - 1] == '/');
-
-        var current = try std.fs.cwd().openDir(ancestor, .{});
-        errdefer current.close();
-
+    for (0..16) |_| {
         if (current.statFile("src/shell.zig")) |_| {
             return current;
         } else |err| switch (err) {
             error.FileNotFound => {
+                const parent = try current.openDir("..", .{});
                 current.close();
+                current = parent;
             },
             else => return err,
         }
@@ -867,45 +916,100 @@ pub const HttpOptions = struct {
         }
     };
 
-    content_type: ?ContentType,
-    authorization: ?[]const u8,
+    content_type: ?ContentType = null,
+    authorization: ?[]const u8 = null,
+
+    response_body_size_max: u32 = 512 * stdx.KiB,
 };
 
-/// Issues an HTTP POST request with the given `body` to the given `url`.
+pub fn http_get(shell: *Shell, url: []const u8, options: HttpOptions) ![]const u8 {
+    return shell.http_request(.get, url, options);
+}
+
+pub fn http_post(
+    shell: *Shell,
+    url: []const u8,
+    body: []const u8,
+    options: HttpOptions,
+) ![]const u8 {
+    return shell.http_request(.{ .post = body }, url, options);
+}
+
+/// Issues an HTTP request to the given `url` and returns the response.
 ///
+/// The returned body is owned by the shell arena and doesn't need to be freed.
 /// If the response is not 200 OK, the response body is logged and an error is returned.
-pub fn http_post(shell: *Shell, url: []const u8, body: []const u8, options: HttpOptions) !void {
-    errdefer |err| log.err("failed to HTTP post to \"{s}\": {s}", .{ url, @errorName(err) });
+fn http_request(
+    shell: *Shell,
+    method: union(enum) { get, post: []const u8 },
+    url: []const u8,
+    options: HttpOptions,
+) ![]const u8 {
+    errdefer |err| log.err("failed to HTTP {s} to \"{s}\": {s}", .{
+        @tagName(method),
+        url,
+        @errorName(err),
+    });
 
     var client = std.http.Client{ .allocator = shell.gpa };
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
-    var header_buffer: [4 << 10]u8 = undefined;
-    var request = try client.open(.POST, uri, .{ .server_header_buffer = &header_buffer });
+    var header_buffer: [4 * stdx.KiB]u8 = undefined;
+    var request = try client.open(
+        switch (method) {
+            .post => .POST,
+            .get => .GET,
+        },
+        uri,
+        .{ .server_header_buffer = &header_buffer },
+    );
     defer request.deinit();
 
     if (options.content_type) |content_type| {
         request.headers.content_type = .{ .override = content_type.string() };
     }
+
     if (options.authorization) |authorization| {
         request.headers.authorization = .{ .override = authorization };
     }
-    request.transfer_encoding = .{ .content_length = body.len };
+
+    if (method == .post) {
+        request.transfer_encoding = .{ .content_length = method.post.len };
+    }
 
     try request.send();
-    try request.writeAll(body);
+    if (method == .post) {
+        try request.writeAll(method.post);
+    }
     try request.finish();
     try request.wait();
 
-    if (request.response.status != std.http.Status.ok) {
-        const response_body_size_max = 512 << 10;
-        var response_body_buffer: [response_body_size_max]u8 = undefined;
-        const response_body_len = try request.readAll(&response_body_buffer);
-        const response_body = response_body_buffer[0..response_body_len];
-        log.err("response: {s}", .{response_body});
-        return error.WrongStatusResponse;
+    const response_body_buffer_size = request.response.content_length orelse
+        options.response_body_size_max;
+
+    if (response_body_buffer_size > options.response_body_size_max) {
+        return error.ResponseTooLarge;
     }
+
+    const response_body_buffer = try shell.arena.allocator().alloc(
+        u8,
+        response_body_buffer_size,
+    );
+    const response_body_size = try request.readAll(response_body_buffer);
+    assert(response_body_size <= options.response_body_size_max);
+    const response_body = response_body_buffer[0..response_body_size];
+
+    if (request.response.content_length) |response_content_length| {
+        assert(response_content_length == response_body_size);
+    }
+
+    if (request.response.status != std.http.Status.ok) {
+        log.err("response: {s}", .{response_body});
+        return error.ResponseWrongStatus;
+    }
+
+    return response_body;
 }
 
 /// Converts an ISO8601 timestamp into seconds from the epoch by shelling out to the `date` util.
@@ -914,4 +1018,168 @@ pub fn iso8601_to_timestamp_seconds(shell: *Shell, datetime_iso8601: []const u8)
         "date -d {datetime_iso8601} +%s",
         .{ .datetime_iso8601 = datetime_iso8601 },
     ), 10);
+}
+
+pub fn unzip_executable(
+    shell: *Shell,
+    zip_path: []const u8,
+    executable_name: []const u8,
+) !void {
+    const zip_file = try shell.cwd.openFile(zip_path, .{});
+    defer zip_file.close();
+
+    try std.zip.extract(shell.cwd, zip_file.seekableStream(), .{});
+
+    const zip_extracted = try shell.cwd.openFile(executable_name, .{});
+    defer zip_extracted.close();
+
+    // Zig's std.zip.extract doesn't handle permissions.
+    if (builtin.os.tag != .windows) {
+        try zip_extracted.chmod(0o755);
+    }
+}
+
+fn unix_to_dos_timestamp(date_time: stdx.DateTimeUTC) struct { time: u16, date: u16 } {
+    assert(date_time.year >= 1980 and date_time.year <= 2107);
+
+    const time: u16 =
+        (@as(u16, date_time.hour) << 11) |
+        (@as(u16, date_time.minute) << 5) |
+        (@as(u16, @divFloor(date_time.second, 2)));
+
+    const date: u16 =
+        ((@as(u16, date_time.year - 1980)) << 9) |
+        (@as(u16, date_time.month) << 5) |
+        (@as(u16, date_time.day));
+
+    return .{ .time = time, .date = date };
+}
+
+pub fn zip_executable(
+    shell: *Shell,
+    zip_file: std.fs.File,
+    input: struct {
+        executable_name: []const u8,
+        executable_mtime: stdx.DateTimeUTC,
+        max_size: u64,
+    },
+) !void {
+    assert(std.mem.eql(u8, std.fs.path.basename(input.executable_name), input.executable_name));
+
+    var zip_file_writer = std.io.countingWriter(zip_file.writer());
+
+    const executable = try shell.cwd.readFileAlloc(
+        shell.gpa,
+        input.executable_name,
+        input.max_size,
+    );
+    defer shell.gpa.free(executable);
+
+    const executable_mtime_dos = unix_to_dos_timestamp(input.executable_mtime);
+    const crc32 = std.hash.Crc32.hash(executable);
+
+    const executable_deflated_buffer = try shell.gpa.alloc(u8, input.max_size);
+    defer shell.gpa.free(executable_deflated_buffer);
+
+    const executable_deflated = blk: {
+        var executable_stream = std.io.fixedBufferStream(executable);
+        var executable_deflated_stream = std.io.fixedBufferStream(executable_deflated_buffer);
+
+        try std.compress.flate.deflate.compress(
+            .raw,
+            executable_stream.reader(),
+            executable_deflated_stream.writer(),
+            .{ .level = .best },
+        );
+        assert(executable_stream.pos == executable.len);
+
+        break :blk executable_deflated_stream.getWritten();
+    };
+
+    const zip_version_20 = 0x14;
+    const zip_unix = 0x0300;
+
+    const local_file_header: std.zip.LocalFileHeader = .{
+        .signature = std.zip.local_file_header_sig,
+        .version_needed_to_extract = zip_version_20,
+        .flags = .{ .encrypted = false, ._ = 0 },
+        .compression_method = .deflate,
+        .last_modification_time = executable_mtime_dos.time,
+        .last_modification_date = executable_mtime_dos.date,
+        .crc32 = crc32,
+        .compressed_size = @intCast(executable_deflated.len),
+        .uncompressed_size = @intCast(executable.len),
+        .filename_len = @intCast(input.executable_name.len),
+        .extra_len = 0,
+    };
+
+    try zip_file_writer.writer().writeStructEndian(local_file_header, .little);
+    try zip_file_writer.writer().writeAll(input.executable_name);
+    try zip_file_writer.writer().writeAll(executable_deflated);
+
+    const central_directory_file_header: std.zip.CentralDirectoryFileHeader = .{
+        .signature = std.zip.central_file_header_sig,
+        .version_made_by = zip_unix | zip_version_20,
+        .version_needed_to_extract = zip_version_20,
+        .flags = .{ .encrypted = false, ._ = 0 },
+        .compression_method = .deflate,
+        .last_modification_time = executable_mtime_dos.time,
+        .last_modification_date = executable_mtime_dos.date,
+        .crc32 = crc32,
+        .compressed_size = @intCast(executable_deflated.len),
+        .uncompressed_size = @intCast(executable.len),
+        .filename_len = @intCast(input.executable_name.len),
+        .extra_len = 0,
+        .comment_len = 0,
+        .disk_number = 0,
+        .internal_file_attributes = 0,
+        .external_file_attributes = 0o0100755 << 16, // Regular file, executable.
+        .local_file_header_offset = 0,
+    };
+
+    const central_directory_offset = zip_file_writer.bytes_written;
+    try zip_file_writer.writer().writeStructEndian(central_directory_file_header, .little);
+    try zip_file_writer.writer().writeAll(input.executable_name);
+    const central_directory_end = zip_file_writer.bytes_written;
+
+    const end_record: std.zip.EndRecord = .{
+        .signature = std.zip.end_record_sig,
+        .disk_number = 0,
+        .central_directory_disk_number = 0,
+        .record_count_disk = 1,
+        .record_count_total = 1,
+        .central_directory_size = @intCast(central_directory_end - central_directory_offset),
+        .central_directory_offset = @intCast(central_directory_offset),
+        .comment_len = 0,
+    };
+    try zip_file_writer.writer().writeStructEndian(end_record, .little);
+}
+
+pub fn sha256sum(shell: *Shell, file_path: []const u8) !u256 {
+    const buffer = try shell.gpa.alloc(u8, 512 * stdx.KiB);
+    defer shell.gpa.free(buffer);
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+
+    const file = try shell.cwd.openFile(file_path, .{});
+    defer file.close();
+
+    const stat = try file.stat();
+    var bytes_read_total: u64 = 0;
+    while (bytes_read_total < stat.size) {
+        const bytes_read = try file.readAll(buffer);
+        if (bytes_read == 0) {
+            break;
+        }
+
+        bytes_read_total += bytes_read;
+        hasher.update(buffer[0..bytes_read]);
+    }
+
+    assert(stat.size == bytes_read_total);
+
+    var output: u256 = undefined;
+    hasher.final(std.mem.asBytes(&output));
+
+    return output;
 }

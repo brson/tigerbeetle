@@ -6,9 +6,10 @@ const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 const allocator = std.testing.allocator;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("../constants.zig");
 const vsr = @import("../vsr.zig");
+const fuzz = @import("../testing/fuzz.zig");
 const Process = @import("../testing/cluster/message_bus.zig").Process;
 const Message = @import("../message_pool.zig").MessagePool.Message;
 const MessageBuffer = @import("../message_buffer.zig").MessageBuffer;
@@ -34,7 +35,9 @@ const checkpoint_2_prepare_max = vsr.Checkpoint.prepare_max_for_checkpoint(check
 const checkpoint_1_prepare_ok_max = checkpoint_1_trigger + constants.pipeline_prepare_queue_max;
 const checkpoint_2_prepare_ok_max = checkpoint_2_trigger + constants.pipeline_prepare_queue_max;
 
-const log_level = std.log.Level.err;
+const MiB = stdx.MiB;
+
+const log_level: std.log.Level = .err;
 
 const releases = [_]Release{
     .{
@@ -217,7 +220,7 @@ test "Cluster: recovery: grid corruption (disjoint)" {
 
     // Corrupt the whole grid.
     // Manifest blocks will be repaired as each replica opens its forest.
-    // Table index/filter/data blocks will be repaired as the replica commits/compacts.
+    // Table index/filter/value blocks will be repaired as the replica commits/compacts.
     for ([_]TestReplicas{
         t.replica(.R0),
         t.replica(.R1),
@@ -481,9 +484,7 @@ test "Cluster: network: partition client-primary (symmetric)" {
     var c = t.clients(.{});
 
     t.replica(.A0).drop_all(.C_, .bidirectional);
-    // TODO: https://github.com/tigerbeetle/tigerbeetle/issues/444
-    // try c.request(1, 1);
-    try c.request(1, 0);
+    try c.request(1, 1);
 }
 
 test "Cluster: network: partition client-primary (asymmetric, drop requests)" {
@@ -494,9 +495,7 @@ test "Cluster: network: partition client-primary (asymmetric, drop requests)" {
     var c = t.clients(.{});
 
     t.replica(.A0).drop_all(.C_, .incoming);
-    // TODO: https://github.com/tigerbeetle/tigerbeetle/issues/444
-    // try c.request(1, 1);
-    try c.request(1, 0);
+    try c.request(1, 1);
 }
 
 test "Cluster: network: partition client-primary (asymmetric, drop replies)" {
@@ -507,9 +506,7 @@ test "Cluster: network: partition client-primary (asymmetric, drop replies)" {
     var c = t.clients(.{});
 
     t.replica(.A0).drop_all(.C_, .outgoing);
-    // TODO: https://github.com/tigerbeetle/tigerbeetle/issues/444
-    // try c.request(1, 1);
-    try c.request(1, 0);
+    try c.request(1, 1);
 }
 
 test "Cluster: network: partition flexible quorum" {
@@ -941,6 +938,7 @@ test "Cluster: view_change: lagging replica advances checkpoint during view chan
 
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
+
     var c = t.clients(.{});
     var a0 = t.replica(.A0);
     var b1 = t.replica(.B1);
@@ -1640,6 +1638,7 @@ test "Cluster: client: empty command=request operation=register body" {
                 .command = .request,
                 .operation = .register,
                 .release = client_release,
+                .previous_request_latency = 0,
             };
             request_header.set_checksum_body(&.{}); // Note the absence of a `vsr.RegisterRequest`.
             request_header.set_checksum();
@@ -1746,6 +1745,7 @@ test "Cluster: view_change: DVC header doesn't match current header in journal" 
 
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
+
     var c = t.clients(.{});
     var a0 = t.replica(.A0);
     var b1 = t.replica(.B1);
@@ -1842,6 +1842,7 @@ test "Cluster: view_change: lagging replica repairs WAL using start_view from po
 
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
+
     var c = t.clients(.{});
     var a0 = t.replica(.A0);
     var b1 = t.replica(.B1);
@@ -1939,6 +1940,152 @@ test "Cluster: view_change: lagging replica repairs WAL using start_view from po
     try expectEqual(b1.commit(), checkpoint_3_trigger + 1);
 }
 
+test "Cluster: partitioned replica with higher view cannot lock out client" {
+    const t = try TestContext.init(.{ .replica_count = 3 });
+    defer t.deinit();
+
+    var c = t.clients(.{ .index = 0, .count = 1 });
+
+    try c.request(1, 1);
+
+    try expectEqual(t.replica(.R_).commit(), 1);
+    try expectEqual(t.replica(.R_).view(), 1);
+    try expectEqual(t.replica(.R_).log_view(), 1);
+
+    const a0 = t.replica(.A0);
+    const b1 = t.replica(.B1);
+    const b2 = t.replica(.B2);
+
+    // Partition primary, allow one of the backups to increment its view to 2 but the other to
+    // maintain its view at 1. Block exchange of DVC messages to avoid view change.
+    a0.drop_all(.R_, .bidirectional);
+    t.replica(.R_).drop(.R_, .bidirectional, .do_view_change);
+    b1.drop_all(.R_, .incoming);
+
+    t.run();
+    try expectEqual(b1.view(), 1);
+    try expectEqual(b1.log_view(), 1);
+    try expectEqual(b2.view(), 2);
+    try expectEqual(b2.log_view(), 1);
+
+    // Reconnect primary, partition the backup with view=2 so it doesn't influence a view change.
+    a0.pass_all(.R_, .bidirectional);
+    b2.drop_all(.R_, .bidirectional);
+
+    // Verify that the client is able to get its requests processed by the cluster even though
+    // there is a partitioned replica with a higher view number (view=2) than the cluster (view=1).
+    try c.request(2, 2);
+
+    try expectEqual(b2.view(), 2);
+    try expectEqual(b1.view(), 1);
+    try expectEqual(a0.view(), 1);
+
+    try expectEqual(b1.commit(), 2);
+    try expectEqual(a0.commit(), 2);
+}
+
+test "Cluster: broken hash chain within the same view does not stall commit via repair" {
+    const t = try TestContext.init(.{ .replica_count = 3 });
+    defer t.deinit();
+
+    // Forcefully stall commit pipeline. We let the cluster run for a while to circumvent assertions
+    // related to `commit_stage` on replica startup.
+    t.run();
+    const b2 = t.replica(.B2);
+    const b2_replica = &t.cluster.replicas[b2.replicas.get(0)];
+    b2_replica.commit_stage = .compact;
+
+    // Disallow receiving a specific prepare, and repairing headers via repair and start_view, to
+    // force a hash chain break.
+    b2.drop_fn(.R_, .incoming, struct {
+        fn drop_message(message: *const Message) bool {
+            const header = message.header.into(.prepare) orelse return false;
+            return header.op == constants.pipeline_prepare_queue_max + 1;
+        }
+    }.drop_message);
+    b2.drop(.R_, .outgoing, .request_headers);
+    b2.drop(.R_, .incoming, .start_view);
+
+    var c = t.clients(.{});
+    try c.request(
+        constants.pipeline_prepare_queue_max - 1,
+        constants.pipeline_prepare_queue_max - 1,
+    );
+
+    try expectEqual(t.replica(.R_).op_head(), constants.pipeline_prepare_queue_max - 1);
+    try expectEqual(t.replica(.R_).commit_max(), constants.pipeline_prepare_queue_max - 1);
+    try expectEqual(b2.commit(), 0);
+
+    try c.request(
+        2 * constants.pipeline_prepare_queue_max,
+        2 * constants.pipeline_prepare_queue_max,
+    );
+
+    // Disallow commit pipeline initiation via commit. Dropping incoming commit messages, and the
+    // fact that no more prepares are exchanged, ensures commit can only be initiated via repair.
+    b2_replica.commit_stage = .idle;
+    b2.drop(.R_, .incoming, .commit);
+    t.run();
+
+    try expectEqual(b2.op_head(), constants.pipeline_prepare_queue_max * 2);
+    try expectEqual(b2.commit_max(), constants.pipeline_prepare_queue_max * 2);
+    try expectEqual(b2.commit(), constants.pipeline_prepare_queue_max);
+}
+
+test "Cluster: backups prepare past prepare_max if the next checkpoint is durable" {
+    const t = try TestContext.init(.{ .replica_count = 3 });
+    defer t.deinit();
+
+    var c = t.clients(.{});
+    try c.request(checkpoint_1_trigger - 1, checkpoint_1_trigger - 1);
+
+    try expectEqual(t.replica(.R_).op_head(), checkpoint_1_trigger - 1);
+    try expectEqual(t.replica(.R_).commit(), checkpoint_1_trigger - 1);
+    try expectEqual(t.replica(.R_).op_checkpoint(), 0);
+
+    const a0 = t.replica(.A0);
+    const b1 = t.replica(.B1);
+    const b2 = t.replica(.B2);
+
+    b2.drop(.R_, .incoming, .start_view);
+    const b2_replica = &t.cluster.replicas[b2.replicas.get(0)];
+
+    // Stall commit pipeline on b2, forcing it to accept prepares but advance its checkpoint past 0.
+    // Meanwhile, the rest of the cluster moves to checkpoint=checkpoint_2.
+    b2_replica.commit_stage = .compact;
+
+    try c.request(checkpoint_2_prepare_max, checkpoint_2_prepare_max);
+
+    try expectEqual(t.replica(.R_).commit_max(), checkpoint_2_prepare_max);
+
+    try expectEqual(a0.op_head(), checkpoint_2_prepare_max);
+    try expectEqual(b1.op_head(), checkpoint_2_prepare_max);
+
+    // Since checkpoint_1 is durable on a0, b1 (a commit quorum of replicas), b2 is able to accept
+    // some prepares from the next checkpoint, overwriting some of its committed prepares.
+    // However, even though ops [checkpoint_1, checkpoint_1_trigger - 1] are committed on b2,
+    // they are not overwritten as they are required during checkpointing & upgrade.
+    try expectEqual(b2.op_head(), checkpoint_1 + constants.journal_slot_count - 1);
+
+    try expectEqual(a0.op_checkpoint(), checkpoint_2);
+    try expectEqual(b1.op_checkpoint(), checkpoint_2);
+    try expectEqual(b2.op_checkpoint(), 0);
+
+    // b2 crashes and restarts, and truncates all prepares that past checkpoint_1_prepare_max,
+    // since all prepares in checkpoint=0 must be replayed after restart.
+    b2.stop();
+    try b2.open();
+
+    try expectEqual(b2.op_head(), checkpoint_1_prepare_max);
+
+    b2.pass(.R_, .incoming, .start_view);
+    t.run();
+
+    try expectEqual(t.replica(.R_).op_head(), checkpoint_2_prepare_max);
+    try expectEqual(t.replica(.R_).commit(), checkpoint_2_prepare_max);
+    try expectEqual(t.replica(.R_).op_checkpoint(), checkpoint_2);
+}
+
 const ProcessSelector = enum {
     __, // all replicas, standbys, and clients
     R_, // all (non-standby) replicas
@@ -1981,6 +2128,7 @@ const TestContext = struct {
         const log_level_original = std.testing.log_level;
         std.testing.log_level = log_level;
         var prng = stdx.PRNG.from_seed(options.seed);
+        const storage_size_limit = vsr.sector_floor(128 * MiB);
 
         const cluster = try Cluster.init(allocator, .{
             .cluster = .{
@@ -1988,7 +2136,7 @@ const TestContext = struct {
                 .replica_count = options.replica_count,
                 .standby_count = options.standby_count,
                 .client_count = options.client_count,
-                .storage_size_limit = vsr.sector_floor(128 * 1024 * 1024),
+                .storage_size_limit = storage_size_limit,
                 .seed = prng.int(u64),
                 .releases = &releases,
                 .client_release = options.client_release,
@@ -2002,19 +2150,20 @@ const TestContext = struct {
                 .node_count = options.replica_count + options.standby_count,
                 .client_count = options.client_count,
                 .seed = prng.int(u64),
-                .one_way_delay_mean = prng.range_inclusive(u16, 3, 12),
-                .one_way_delay_min = prng.int_inclusive(u16, 2),
+                .one_way_delay_mean = fuzz.range_inclusive_ms(&prng, 30, 120),
+                .one_way_delay_min = fuzz.range_inclusive_ms(&prng, 0, 20),
 
                 .path_maximum_capacity = 10,
-                .path_clog_duration_mean = 0,
+                .path_clog_duration_mean = .{ .ns = 0 },
                 .path_clog_probability = Ratio.zero(),
                 .recorded_count_max = 16,
             },
             .storage = .{
-                .read_latency_min = 1,
-                .read_latency_mean = 5,
-                .write_latency_min = 1,
-                .write_latency_mean = 5,
+                .size = storage_size_limit,
+                .read_latency_min = .ms(10),
+                .read_latency_mean = .ms(50),
+                .write_latency_min = .ms(10),
+                .write_latency_mean = .ms(50),
             },
             .storage_fault_atlas = .{
                 .faulty_superblock = false,
@@ -2064,7 +2213,7 @@ const TestContext = struct {
     pub fn replica(t: *TestContext, selector: ProcessSelector) TestReplicas {
         const replica_processes = t.processes(selector);
         var replica_indexes = stdx.BoundedArrayType(u8, constants.members_max){};
-        for (replica_processes.const_slice()) |p| replica_indexes.append_assume_capacity(p.replica);
+        for (replica_processes.const_slice()) |p| replica_indexes.push(p.replica);
         return TestReplicas{
             .context = t,
             .cluster = t.cluster,
@@ -2083,7 +2232,7 @@ const TestContext = struct {
         assert(index + count <= t.cluster.options.client_count);
 
         var client_indexes = stdx.BoundedArrayType(usize, constants.clients_max){};
-        for (index..index + count) |i| client_indexes.append_assume_capacity(i);
+        for (index..index + count) |i| client_indexes.push(i);
         return TestClients{
             .context = t,
             .cluster = t.cluster,
@@ -2144,45 +2293,45 @@ const TestContext = struct {
 
         var array = ProcessList{};
         switch (selector) {
-            .R0 => array.append_assume_capacity(.{ .replica = 0 }),
-            .R1 => array.append_assume_capacity(.{ .replica = 1 }),
-            .R2 => array.append_assume_capacity(.{ .replica = 2 }),
-            .R3 => array.append_assume_capacity(.{ .replica = 3 }),
-            .R4 => array.append_assume_capacity(.{ .replica = 4 }),
-            .R5 => array.append_assume_capacity(.{ .replica = 5 }),
-            .S0 => array.append_assume_capacity(.{ .replica = replica_count + 0 }),
-            .S1 => array.append_assume_capacity(.{ .replica = replica_count + 1 }),
-            .S2 => array.append_assume_capacity(.{ .replica = replica_count + 2 }),
-            .S3 => array.append_assume_capacity(.{ .replica = replica_count + 3 }),
-            .S4 => array.append_assume_capacity(.{ .replica = replica_count + 4 }),
-            .S5 => array.append_assume_capacity(.{ .replica = replica_count + 5 }),
+            .R0 => array.push(.{ .replica = 0 }),
+            .R1 => array.push(.{ .replica = 1 }),
+            .R2 => array.push(.{ .replica = 2 }),
+            .R3 => array.push(.{ .replica = 3 }),
+            .R4 => array.push(.{ .replica = 4 }),
+            .R5 => array.push(.{ .replica = 5 }),
+            .S0 => array.push(.{ .replica = replica_count + 0 }),
+            .S1 => array.push(.{ .replica = replica_count + 1 }),
+            .S2 => array.push(.{ .replica = replica_count + 2 }),
+            .S3 => array.push(.{ .replica = replica_count + 3 }),
+            .S4 => array.push(.{ .replica = replica_count + 4 }),
+            .S5 => array.push(.{ .replica = replica_count + 5 }),
             .A0 => array
-                .append_assume_capacity(.{ .replica = @intCast((view + 0) % replica_count) }),
+                .push(.{ .replica = @intCast((view + 0) % replica_count) }),
             .B1 => array
-                .append_assume_capacity(.{ .replica = @intCast((view + 1) % replica_count) }),
+                .push(.{ .replica = @intCast((view + 1) % replica_count) }),
             .B2 => array
-                .append_assume_capacity(.{ .replica = @intCast((view + 2) % replica_count) }),
+                .push(.{ .replica = @intCast((view + 2) % replica_count) }),
             .B3 => array
-                .append_assume_capacity(.{ .replica = @intCast((view + 3) % replica_count) }),
+                .push(.{ .replica = @intCast((view + 3) % replica_count) }),
             .B4 => array
-                .append_assume_capacity(.{ .replica = @intCast((view + 4) % replica_count) }),
+                .push(.{ .replica = @intCast((view + 4) % replica_count) }),
             .B5 => array
-                .append_assume_capacity(.{ .replica = @intCast((view + 5) % replica_count) }),
-            .C0 => array.append_assume_capacity(.{ .client = t.cluster.clients[0].?.id }),
+                .push(.{ .replica = @intCast((view + 5) % replica_count) }),
+            .C0 => array.push(.{ .client = t.cluster.clients[0].?.id }),
             .__, .R_, .S_, .C_ => {
                 if (selector == .__ or selector == .R_) {
                     for (t.cluster.replicas[0..replica_count], 0..) |_, i| {
-                        array.append_assume_capacity(.{ .replica = @intCast(i) });
+                        array.push(.{ .replica = @intCast(i) });
                     }
                 }
                 if (selector == .__ or selector == .S_) {
                     for (t.cluster.replicas[replica_count..], 0..) |_, i| {
-                        array.append_assume_capacity(.{ .replica = @intCast(replica_count + i) });
+                        array.push(.{ .replica = @intCast(replica_count + i) });
                     }
                 }
                 if (selector == .__ or selector == .C_) {
                     for (t.cluster.clients) |*client| {
-                        array.append_assume_capacity(.{ .client = client.*.?.id });
+                        array.push(.{ .client = client.*.?.id });
                     }
                 }
             },
@@ -2214,10 +2363,7 @@ const TestReplicas = struct {
     pub fn open(t: *const TestReplicas) !void {
         for (t.replicas.const_slice()) |r| {
             log.info("{}: restart replica", .{r});
-            t.cluster.replica_restart(
-                r,
-                t.cluster.replicas[r].releases_bundled,
-            ) catch |err| {
+            t.cluster.replica_restart(r) catch |err| {
                 assert(t.replicas.count() == 1);
                 return switch (err) {
                     error.WALCorrupt => return error.WALCorrupt,
@@ -2229,18 +2375,20 @@ const TestReplicas = struct {
     }
 
     pub fn open_upgrade(t: *const TestReplicas, releases_bundled_patch: []const u8) !void {
-        var releases_bundled = vsr.ReleaseList{};
+        var releases_bundled: vsr.ReleaseList = .empty;
         for (releases_bundled_patch) |patch| {
-            releases_bundled.append_assume_capacity(vsr.Release.from(.{
+            releases_bundled.push(vsr.Release.from(.{
                 .major = 0,
                 .minor = 0,
                 .patch = patch,
             }));
         }
+        releases_bundled.verify();
 
         for (t.replicas.const_slice()) |r| {
             log.info("{}: restart replica", .{r});
-            t.cluster.replica_restart(r, &releases_bundled) catch |err| {
+            t.cluster.replica_set_releases(r, &releases_bundled);
+            t.cluster.replica_restart(r) catch |err| {
                 assert(t.replicas.count() == 1);
                 return switch (err) {
                     error.WALCorrupt => return error.WALCorrupt,
@@ -2254,7 +2402,7 @@ const TestReplicas = struct {
     pub fn open_reformat(t: *const TestReplicas) !void {
         for (t.replicas.const_slice()) |r| {
             log.info("{}: recover replica", .{r});
-            try t.cluster.replica_reformat(r, t.cluster.replicas[r].releases_bundled);
+            try t.cluster.replica_reformat(r);
         }
     }
 
@@ -2285,8 +2433,8 @@ const TestReplicas = struct {
     fn get(
         t: *const TestReplicas,
         comptime field: std.meta.FieldEnum(Cluster.Replica),
-    ) std.meta.fieldInfo(Cluster.Replica, field).type {
-        var value_all: ?std.meta.fieldInfo(Cluster.Replica, field).type = null;
+    ) @FieldType(Cluster.Replica, @tagName(field)) {
+        var value_all: ?@FieldType(Cluster.Replica, @tagName(field)) = null;
         for (t.replicas.const_slice()) |r| {
             const replica = &t.cluster.replicas[r];
             const value = @field(replica, @tagName(field));
@@ -2551,10 +2699,10 @@ const TestReplicas = struct {
             const process_a = Process{ .replica = a };
             for (peers.const_slice()) |process_b| {
                 if (direction == .bidirectional or direction == .outgoing) {
-                    paths.append_assume_capacity(.{ .source = process_a, .target = process_b });
+                    paths.push(.{ .source = process_a, .target = process_b });
                 }
                 if (direction == .bidirectional or direction == .incoming) {
-                    paths.append_assume_capacity(.{ .source = process_b, .target = process_a });
+                    paths.push(.{ .source = process_b, .target = process_a });
                 }
             }
         }

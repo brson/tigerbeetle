@@ -3,7 +3,7 @@ const posix = std.posix;
 const mem = std.mem;
 const assert = std.debug.assert;
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("../constants.zig");
 const QueueType = @import("../queue.zig").QueueType;
 const buffer_limit = @import("../io.zig").buffer_limit;
@@ -123,6 +123,8 @@ pub const IO = struct {
         self.completed.push(completion);
     }
 
+    pub const OpenDataFilePurpose = enum { format, open, inspect };
+
     pub const ReadError = error{
         WouldBlock,
         NotOpenForReading,
@@ -175,8 +177,8 @@ pub const IO = struct {
 
                     const sector_has_larger_than_logical_sector_read_fault =
                         (op.len > constants.sector_size and io.prng.chance(
-                        io.options.larger_than_logical_sector_read_fault_probability,
-                    ));
+                            io.options.larger_than_logical_sector_read_fault_probability,
+                        ));
 
                     if (sector_marked_in_fault_map or
                         sector_has_larger_than_logical_sector_read_fault)

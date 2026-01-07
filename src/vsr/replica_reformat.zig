@@ -32,18 +32,12 @@ pub fn ReplicaReformatType(
     comptime StateMachine: type,
     comptime MessageBus: type,
     comptime Storage: type,
-    comptime Time: type,
 ) type {
-    const Client = vsr.ClientType(StateMachine, MessageBus, Time);
+    const Client = vsr.ClientType(StateMachine.Operation, MessageBus);
     const SuperBlock = vsr.SuperBlockType(Storage);
 
     return struct {
         const ReplicaReformat = @This();
-
-        pub const Options = struct {
-            format: SuperBlock.FormatOptions,
-            superblock: SuperBlock.Options,
-        };
 
         const Result = union(enum) {
             failed: anyerror,
@@ -51,8 +45,9 @@ pub fn ReplicaReformatType(
         };
 
         allocator: std.mem.Allocator,
-        options: Options,
+        options: SuperBlock.FormatOptions,
         client: *Client,
+        storage: *Storage,
 
         requests_done: u32 = 0,
         result: ?Result = null,
@@ -60,15 +55,17 @@ pub fn ReplicaReformatType(
         pub fn init(
             allocator: std.mem.Allocator,
             client: *Client,
-            options: Options,
+            storage: *Storage,
+            options: SuperBlock.FormatOptions,
         ) !ReplicaReformat {
-            assert(options.format.view == null);
-            assert(options.format.replica_count >= 3);
+            assert(options.view == null);
+            assert(options.replica_count >= 3);
 
             return .{
                 .allocator = allocator,
                 .options = options,
                 .client = client,
+                .storage = storage,
             };
         }
 
@@ -95,7 +92,7 @@ pub fn ReplicaReformatType(
             const reformat: *ReplicaReformat = @ptrFromInt(@as(usize, @intCast(user_data)));
             assert(reformat.requests_done == 0);
 
-            log.debug("{}: register", .{reformat.options.format.replica});
+            log.debug("{}: register", .{reformat.options.replica});
 
             reformat.requests_done += 1;
             reformat.client_request();
@@ -105,7 +102,7 @@ pub fn ReplicaReformatType(
             assert(reformat.requests_done < constants.pipeline_prepare_queue_max);
 
             log.debug("{}: request start={}", .{
-                reformat.options.format.replica,
+                reformat.options.replica,
                 reformat.requests_done,
             });
 
@@ -120,6 +117,7 @@ pub fn ReplicaReformatType(
                 .release = reformat.client.release,
                 .operation = .noop,
                 .size = @sizeOf(vsr.Header),
+                .previous_request_latency = 0,
             };
 
             const user_data = @intFromPtr(reformat);
@@ -141,19 +139,19 @@ pub fn ReplicaReformatType(
             assert(results.len == 0);
 
             log.debug("{}: request done={}", .{
-                reformat.options.format.replica,
+                reformat.options.replica,
                 reformat.requests_done,
             });
 
             reformat.requests_done += 1;
             if (reformat.requests_done == constants.pipeline_prepare_queue_max) {
                 // +2 since we might have sent a DVC as part of +1 before we crashed.
-                reformat.options.format.view = reformat.client.view + 2;
+                reformat.options.view = reformat.client.view + 2;
                 format(
                     Storage,
                     reformat.allocator,
-                    reformat.options.format,
-                    reformat.options.superblock,
+                    reformat.storage,
+                    reformat.options,
                 ) catch |err| {
                     reformat.result = .{ .failed = err };
                     return;

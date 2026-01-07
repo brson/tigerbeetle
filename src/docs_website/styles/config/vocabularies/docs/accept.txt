@@ -23,6 +23,7 @@ biodigital
 bitcast
 bitemporality
 bitfield
+bitflags
 bitrot
 bitset
 block_pool
@@ -118,6 +119,7 @@ goto
 Grande
 Greef
 Hackathon
+Hallo
 hardcodes
 hashchain
 hoc
@@ -168,6 +170,7 @@ Lookin
 lookups
 loopback
 Luftballons
+Maatjie
 makefiles
 matklad
 MEGAHIT
@@ -246,6 +249,7 @@ queryable
 quickstart
 Rafiki
 Rappa
+rbino
 reactively
 READMEs
 realised

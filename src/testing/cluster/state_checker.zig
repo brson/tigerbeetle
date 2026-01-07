@@ -4,7 +4,7 @@ const mem = std.mem;
 
 const constants = @import("../../constants.zig");
 const vsr = @import("../../vsr.zig");
-const stdx = @import("../../stdx.zig");
+const stdx = @import("stdx");
 const maybe = stdx.maybe;
 
 const message_pool = @import("../../message_pool.zig");
@@ -32,7 +32,7 @@ pub fn StateCheckerType(comptime Client: type, comptime Replica: type) type {
         replica_count: u8,
 
         commits: Commits,
-        commit_mins: [constants.members_max]u64 = [_]u64{0} ** constants.members_max,
+        commit_mins: [constants.members_max]u64 = @splat(0),
 
         replicas: []const Replica,
         clients: []const ?Client,
@@ -181,20 +181,7 @@ pub fn StateCheckerType(comptime Client: type, comptime Replica: type) type {
                 return;
             }
 
-            if (replica.status != .recovering_head) {
-                const head_max = &state_checker.replica_head_max[replica_index];
-                const wal_prepares = replica.superblock.storage.wal_prepares();
-                const head_max_journal =
-                    wal_prepares[head_max.op % constants.journal_slot_count].header;
-
-                assert(replica.view > head_max.view or
-                    (replica.view == head_max.view and (replica.op >= head_max.op or
-                    // The last acked prepare may have been truncated through a view change,
-                    // replaced by a prepare from a newer view, and the replica may have crashed
-                    // before making this new view durable in the superblock. Such prepares are
-                    // then truncated on startup.
-                    head_max.view < head_max_journal.view)));
-            }
+            assert(replica.view >= state_checker.replica_head_max[replica_index].view);
 
             const commit_root_op = replica.superblock.working.vsr_state.checkpoint.header.op;
             const commit_root = replica.superblock.working.vsr_state.checkpoint.header.checksum;
@@ -203,7 +190,16 @@ pub fn StateCheckerType(comptime Client: type, comptime Replica: type) type {
             const commit_b = replica.commit_min;
 
             const header_b = replica.journal.header_with_op(replica.commit_min);
-            if (header_b == null) assert(replica.commit_min == replica.op_checkpoint());
+
+            if (header_b == null and replica.commit_min != replica.op_checkpoint()) {
+                // The slot with commit_min may have been overwritten by an op from the next wrap.
+                // Further, the op may then also be truncated as part of a view change.
+                if (replica.journal.header_for_op(replica.commit_min)) |header| {
+                    assert(header.op == replica.commit_min + constants.journal_slot_count);
+                }
+                return;
+            }
+
             if (header_b != null) assert(header_b.?.op == commit_b);
 
             const checksum_a = state_checker.commits.items[commit_a].header.checksum;

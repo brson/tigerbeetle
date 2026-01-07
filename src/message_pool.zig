@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
 
-const stdx = @import("stdx.zig");
+const stdx = @import("stdx");
 const constants = @import("constants.zig");
 
 const vsr = @import("vsr.zig");
@@ -18,6 +18,7 @@ pub const Options = union(vsr.ProcessType) {
     replica: struct {
         members_count: u8,
         pipeline_requests_limit: u32,
+        message_bus: enum { tcp, testing },
     },
     client,
 
@@ -53,16 +54,13 @@ pub const Options = union(vsr.ProcessType) {
 
                 const pipeline_limit =
                     constants.pipeline_prepare_queue_max + replica.pipeline_requests_limit;
-                // The maximum number of simultaneous open connections on the server.
-                // -1 since we never connect to ourself.
-                const connections_max = replica.members_count + pipeline_limit - 1;
 
-                sum += @intCast(constants.journal_iops_read_max); // Journal reads
-                sum += @intCast(constants.journal_iops_write_max); // Journal writes
-                sum += @intCast(constants.client_replies_iops_read_max); // Client-reply reads
-                sum += @intCast(constants.client_replies_iops_write_max); // Client-reply writes
+                sum += constants.journal_iops_read_max; // Journal reads
+                sum += constants.journal_iops_write_max; // Journal writes
+                sum += constants.client_replies_iops_read_max; // Client-reply reads
+                sum += constants.client_replies_iops_write_max; // Client-reply writes
                 // Replica.grid_reads (Replica.BlockRead)
-                sum += @intCast(constants.grid_repair_reads_max);
+                sum += constants.grid_repair_reads_max;
                 sum += 1; // Replica.loopback_queue
                 sum += pipeline_limit; // Replica.Pipeline{Queue|Cache}
                 sum += 1; // Replica.commit_prepare
@@ -74,13 +72,22 @@ pub const Options = union(vsr.ProcessType) {
                 // yet, so we may guess high. (We can't differentiate between replicas and
                 // standbys.)
                 sum += @min(replica.members_count, constants.replicas_max);
-                sum += connections_max; // Connection.recv_buffer
-                // Connection.send_queue:
-                sum += connections_max * constants.connection_send_queue_max_replica;
                 sum += 1; // Handle bursts (e.g. Connection.parse_message)
                 // Handle Replica.commit_op's reply:
                 // (This is separate from the burst +1 because they may occur concurrently).
                 sum += 1;
+
+                switch (replica.message_bus) {
+                    .tcp => {
+                        // The maximum number of simultaneous open connections on the server.
+                        // -1 since we never connect to ourself.
+                        const connections_max = replica.members_count + pipeline_limit - 1;
+                        sum += connections_max; // Connection.recv_buffer
+                        // Connection.send_queue:
+                        sum += connections_max * constants.connection_send_queue_max_replica;
+                    },
+                    .testing => {},
+                }
 
                 // This conditions is necessary (but not sufficient) to prevent deadlocks.
                 assert(sum > constants.replicas_max);
@@ -263,8 +270,8 @@ pub const MessagePool = struct {
     /// - `*Message`
     /// - `*MessageType(command)` for any `command`.
     pub fn unref(pool: *MessagePool, message: anytype) void {
-        assert(@typeInfo(@TypeOf(message)) == .Pointer);
-        assert(!@typeInfo(@TypeOf(message)).Pointer.is_const);
+        assert(@typeInfo(@TypeOf(message)) == .pointer);
+        assert(!@typeInfo(@TypeOf(message)).pointer.is_const);
 
         if (@TypeOf(message) == *Message) {
             pool.unref_base(message);

@@ -32,7 +32,7 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
         defer tmp_beetle.deinit(gpa);
         errdefer tmp_beetle.log_stderr();
 
-        try shell.env.put("TB_ADDRESS", tmp_beetle.port_str.slice());
+        try shell.env.put("TB_ADDRESS", tmp_beetle.port_str);
         try shell.exec(
             \\mvn --batch-mode --file pom.xml --quiet
             \\  package exec:java
@@ -51,7 +51,7 @@ pub fn validate_release(shell: *Shell, gpa: std.mem.Allocator, options: struct {
     defer tmp_beetle.deinit(gpa);
     errdefer tmp_beetle.log_stderr();
 
-    try shell.env.put("TB_ADDRESS", tmp_beetle.port_str.slice());
+    try shell.env.put("TB_ADDRESS", tmp_beetle.port_str);
 
     try shell.cwd.writeFile(.{ .sub_path = "pom.xml", .data = try shell.fmt(
         \\<project>
@@ -117,43 +117,51 @@ pub fn validate_release(shell: *Shell, gpa: std.mem.Allocator, options: struct {
     // Retry the download for 45 minutes, passing `--update-snapshots` to thwart local negative
     // caching.
     for (0..9) |_| {
-        if (try mvn_update(shell) == .ok) break;
-        log.warn("waiting for 5 minutes for the {s} version to appear in maven cental", .{
-            options.version,
-        });
-        std.time.sleep(5 * std.time.ns_per_min);
-    } else {
-        switch (try mvn_update(shell)) {
-            .ok => {},
-            .retry => |err| {
-                log.err("package is not available in maven central", .{});
-                return err;
-            },
+        if (shell.exec("mvn package --update-snapshots", .{})) {
+            break;
+        } else |_| {
+            log.warn("waiting for 5 minutes for the {s} version to appear in maven cental", .{
+                options.version,
+            });
+            std.time.sleep(5 * std.time.ns_per_min);
         }
+    } else {
+        shell.exec("mvn package --update-snapshots", .{}) catch |err| {
+            log.err("package is not available in maven central", .{});
+            return err;
+        };
     }
 
     try shell.exec("mvn exec:java", .{});
 }
 
-fn mvn_update(shell: *Shell) !union(enum) { ok, retry: anyerror } {
-    if (shell.exec("mvn package --update-snapshots", .{})) {
-        return .ok;
-    } else |err| {
-        // Re-run immediately to capture stdout (sic) to check if the failure is indeed due to
-        // the package missing from the registry.
-        const exec_result = try shell.exec_raw("mvn package --update-snapshots", .{});
-        switch (exec_result.term) {
-            .Exited => |code| if (code == 0) return .ok,
-            else => {},
-        }
+pub fn release_published_latest(shell: *Shell) ![]const u8 {
+    const url = "https://central.sonatype.com/api/internal/browse/component/versions?" ++
+        "sortField=normalizedVersion&sortDirection=desc&page=0&size=1&" ++
+        "filter=namespace%3Acom.tigerbeetle%2Cname%3Atigerbeetle-java";
 
-        const package_missing = std.mem.indexOf(
-            u8,
-            exec_result.stdout,
-            "Could not resolve dependencies",
-        ) != null;
-        if (package_missing) return .{ .retry = err };
+    const response_body = try shell.http_get(url, .{});
 
-        return err;
-    }
+    const MavenSearch = struct {
+        const Component = struct {
+            namespace: []const u8,
+            name: []const u8,
+            version: []const u8,
+        };
+        components: []Component,
+    };
+
+    const maven_search_results = try std.json.parseFromSliceLeaky(
+        MavenSearch,
+        shell.arena.allocator(),
+        response_body,
+        .{ .ignore_unknown_fields = true },
+    );
+
+    assert(maven_search_results.components.len == 1);
+
+    assert(std.mem.eql(u8, maven_search_results.components[0].namespace, "com.tigerbeetle"));
+    assert(std.mem.eql(u8, maven_search_results.components[0].name, "tigerbeetle-java"));
+
+    return maven_search_results.components[0].version;
 }

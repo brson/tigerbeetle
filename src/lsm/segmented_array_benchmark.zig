@@ -1,5 +1,5 @@
 const std = @import("std");
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 
 const constants = @import("../constants.zig");
 const NodePoolType = @import("node_pool.zig").NodePoolType;
@@ -95,6 +95,7 @@ test "benchmark: segmented array" {
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
+
         const allocator = arena.allocator();
 
         var node_pool: NodePool = undefined;
@@ -108,7 +109,7 @@ test "benchmark: segmented array" {
         while (i < options.value_count) : (i += 1) {
             _ = array.insert_element(&node_pool, .{
                 .key = prng.int_inclusive(u64, options.value_count - 1),
-                .padding = [_]u8{0} ** (options.value_size - @sizeOf(Key)),
+                .padding = @splat(0),
             });
         }
 

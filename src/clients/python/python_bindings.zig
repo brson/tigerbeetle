@@ -3,12 +3,6 @@ const vsr = @import("vsr");
 const exports = vsr.tb_client.exports;
 const assert = std.debug.assert;
 
-const constants = vsr.constants;
-const IO = vsr.io.IO;
-
-const Tracer = vsr.trace.TracerType(vsr.time.Time);
-const Storage = vsr.storage.StorageType(IO, Tracer);
-const StateMachine = vsr.state_machine.StateMachineType(Storage, constants.state_machine_config);
 const tb = vsr.tigerbeetle;
 
 /// VSR type mappings: these will always be the same regardless of state machine.
@@ -73,16 +67,16 @@ fn mapping_name_from_type(mappings: anytype, Type: type) ?[]const u8 {
 /// FFI.
 fn zig_to_ctype(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
-        .Array => |info| {
+        .array => |info| {
             return std.fmt.comptimePrint("{s} * {d}", .{
                 comptime zig_to_ctype(info.child),
                 info.len,
             });
         },
-        .Enum => |info| return zig_to_ctype(info.tag_type),
-        .Struct => return zig_to_ctype(std.meta.Int(.unsigned, @bitSizeOf(Type))),
-        .Bool => return "ctypes.c_bool",
-        .Int => |info| {
+        .@"enum" => |info| return zig_to_ctype(info.tag_type),
+        .@"struct" => return zig_to_ctype(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .bool => return "ctypes.c_bool",
+        .int => |info| {
             assert(info.signedness == .unsigned);
             return switch (info.bits) {
                 8 => "ctypes.c_uint8",
@@ -93,12 +87,12 @@ fn zig_to_ctype(comptime Type: type) []const u8 {
                 else => @compileError("invalid int type"),
             };
         },
-        .Optional => |info| switch (@typeInfo(info.child)) {
-            .Pointer => return zig_to_ctype(info.child),
+        .optional => |info| switch (@typeInfo(info.child)) {
+            .pointer => return zig_to_ctype(info.child),
             else => @compileError("Unsupported optional type: " ++ @typeName(Type)),
         },
-        .Pointer => |info| {
-            assert(info.size == .One);
+        .pointer => |info| {
+            assert(info.size == .one);
             assert(!info.is_allowzero);
 
             if (Type == *anyopaque) {
@@ -109,7 +103,7 @@ fn zig_to_ctype(comptime Type: type) []const u8 {
                 mapping_name_from_type(mappings_all, info.child).? ++
                 ")";
         },
-        .Void => return "None",
+        .void => return "None",
         else => @compileError("Unhandled type: " ++ @typeName(Type)),
     }
 }
@@ -119,16 +113,16 @@ fn zig_to_ctype(comptime Type: type) []const u8 {
 /// internal to the client, and not exposed to calling code.
 fn zig_to_python(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
-        .Enum => return comptime mapping_name_from_type(mappings_state_machine, Type).?,
-        .Array => |info| {
+        .@"enum" => return comptime mapping_name_from_type(mappings_state_machine, Type).?,
+        .array => |info| {
             return std.fmt.comptimePrint("{s}[{d}]", .{
                 comptime zig_to_python(info.child),
                 info.len,
             });
         },
-        .Struct => return comptime mapping_name_from_type(mappings_state_machine, Type).?,
-        .Bool => return "bool",
-        .Int => |info| {
+        .@"struct" => return comptime mapping_name_from_type(mappings_state_machine, Type).?,
+        .bool => return "bool",
+        .int => |info| {
             assert(info.signedness == .unsigned);
             return switch (info.bits) {
                 8 => "int",
@@ -139,7 +133,7 @@ fn zig_to_python(comptime Type: type) []const u8 {
                 else => @compileError("invalid int type"),
             };
         },
-        .Void => return "None",
+        .void => return "None",
         else => @compileError("Unhandled type: " ++ @typeName(Type)),
     }
 }
@@ -160,11 +154,11 @@ fn emit_enum(
     comptime python_name: []const u8,
     comptime skip_fields: []const []const u8,
 ) !void {
-    if (@typeInfo(Type) == .Enum) {
+    if (@typeInfo(Type) == .@"enum") {
         buffer.print("class {s}(enum.IntEnum):\n", .{python_name});
     } else {
         // Packed structs.
-        assert(@typeInfo(Type) == .Struct and @typeInfo(Type).Struct.layout == .@"packed");
+        assert(@typeInfo(Type) == .@"struct" and @typeInfo(Type).@"struct".layout == .@"packed");
 
         buffer.print("class {s}(enum.IntFlag):\n", .{python_name});
         buffer.print("    NONE = 0\n", .{});
@@ -179,7 +173,7 @@ fn emit_enum(
 
         if (!skip) {
             const field_name = to_uppercase(field.name);
-            if (@typeInfo(Type) == .Enum) {
+            if (@typeInfo(Type) == .@"enum") {
                 buffer.print("    {s} = {}\n", .{
                     @as([]const u8, &field_name),
                     @intFromEnum(@field(Type, field.name)),
@@ -206,7 +200,7 @@ fn emit_struct_ctypes(
     buffer.print(
         \\class C{[type_name]s}(ctypes.Structure):
         \\    @classmethod
-        \\    def from_param(cls, obj):
+        \\    def from_param(cls, obj: Any) -> Self:
         \\
     , .{
         .type_name = c_name,
@@ -218,11 +212,11 @@ fn emit_struct_ctypes(
         // Emit a bounds check for all integer types that aren't using the custom c_uint128 class.
         // That has an explicit check built in, but the standard Python ctypes ones (eg,
         // ctypes.c_uint64) don't and will happily overflow otherwise.
-        if (comptime !std.mem.eql(u8, field.name, "reserved") and field_type_info == .Int) {
+        if (comptime !std.mem.eql(u8, field.name, "reserved") and field_type_info == .int) {
             buffer.print("        validate_uint(bits={[int_bits]}, name=\"{[field_name]s}\", " ++
                 "number=obj.{[field_name]s})\n", .{
                 .field_name = field.name,
-                .int_bits = field_type_info.Int.bits,
+                .int_bits = field_type_info.int.bits,
             });
         }
     }
@@ -231,7 +225,7 @@ fn emit_struct_ctypes(
 
     inline for (type_info.fields) |field| {
         const field_type_info = @typeInfo(field.type);
-        const field_is_u128 = field_type_info == .Int and field_type_info.Int.bits == 128;
+        const field_is_u128 = field_type_info == .int and field_type_info.int.bits == 128;
         const convert_prefix = if (field_is_u128) "c_uint128.from_param(" else "";
         const convert_suffix = if (field_is_u128) ")" else "";
 
@@ -249,7 +243,7 @@ fn emit_struct_ctypes(
     if (generate_ctypes_to_python) {
         buffer.print(
             \\
-            \\    def to_python(self):
+            \\    def to_python(self) -> {[type_name]s}:
             \\        return {[type_name]s}(
             \\
         , .{
@@ -289,7 +283,7 @@ fn convert_ctypes_to_python(comptime name: []const u8, comptime Type: type) []co
             return python_name ++ "(" ++ name ++ ")";
         }
     }
-    if (@typeInfo(Type) == .Int and @typeInfo(Type).Int.bits == 128) {
+    if (@typeInfo(Type) == .int and @typeInfo(Type).int.bits == 128) {
         return name ++ ".to_python()";
     }
 
@@ -313,10 +307,17 @@ fn emit_struct_dataclass(
                 .python_type = python_type,
             });
 
-            if (field_type_info == .Struct and field_type_info.Struct.layout == .@"packed") {
+            if (field_type_info == .@"struct" and field_type_info.@"struct".layout == .@"packed") {
+                // Flags:
                 buffer.print("{s}.NONE\n", .{python_type});
             } else {
-                buffer.print("0\n", .{});
+                if (field_type_info == .@"enum") {
+                    // Enums - the only ones exposed by the client call `.0` as `.OK`:
+                    buffer.print("{s}.OK\n", .{python_type});
+                } else {
+                    // Simple integer types:
+                    buffer.print("0\n", .{});
+                }
             }
         }
     }
@@ -334,27 +335,28 @@ fn ctype_type_name(comptime Type: type) []const u8 {
 
 fn emit_method(
     buffer: *Buffer,
-    comptime operation: StateMachine.Operation,
+    comptime operation: tb.Operation,
     options: struct { is_async: bool },
 ) void {
-    const event_type = comptime if (StateMachine.operation_is_batchable(operation))
-        "list[" ++ zig_to_python(StateMachine.EventType(operation)) ++ "]"
+    const event_type = comptime if (operation.is_batchable())
+        "list[" ++ zig_to_python(operation.EventType()) ++ "]"
     else
-        zig_to_python(StateMachine.EventType(operation));
+        zig_to_python(operation.EventType());
 
     const result_type =
-        comptime "list[" ++ zig_to_python(StateMachine.ResultType(operation)) ++ "]";
+        comptime "list[" ++ zig_to_python(operation.ResultType()) ++ "]";
 
     // For ergonomics, the client allows calling things like .query_accounts(filter) even
     // though the _submit function requires a list for everything. Wrap them here.
-    const event_name_or_list = comptime if (!StateMachine.operation_is_batchable(operation))
+    const event_name_or_list = comptime if (!operation.is_batchable())
         "[" ++ event_name(operation) ++ "]"
     else
         event_name(operation);
 
+    // NB: _submit is loosely annotated, the operations define interfaces for the Python developer.
     buffer.print(
         \\    {[prefix_fn]s}def {[fn_name]s}(self, {[event_name]s}: {[event_type]s}) -> {[result_type]s}:
-        \\        return {[prefix_call]s}self._submit(
+        \\        return {[prefix_call]s}self._submit(  # type: ignore[no-any-return]
         \\            Operation.{[uppercase_name]s},
         \\            {[event_name_or_list]s},
         \\            {[event_type_c]s},
@@ -372,8 +374,8 @@ fn emit_method(
             .event_name_or_list = event_name_or_list,
             .prefix_call = if (options.is_async) "await " else "",
             .uppercase_name = to_uppercase(@tagName(operation)),
-            .event_type_c = ctype_type_name(StateMachine.EventType(operation)),
-            .result_type_c = ctype_type_name(StateMachine.ResultType(operation)),
+            .event_type_c = ctype_type_name(operation.EventType()),
+            .result_type_c = ctype_type_name(operation.ResultType()),
         },
     );
 }
@@ -395,10 +397,21 @@ pub fn main() !void {
         \\
         \\import ctypes
         \\import enum
+        \\import sys
+        \\from dataclasses import dataclass
         \\from collections.abc import Callable # noqa: TCH003
         \\from typing import Any
+        \\if sys.version_info >= (3, 11):
+        \\    from typing import Self
+        \\else:
+        \\    from typing_extensions import Self
         \\
-        \\from .lib import c_uint128, dataclass, tbclient, validate_uint
+        \\from .lib import c_uint128, tbclient, validate_uint
+        \\
+        \\# Use slots=True if the version of Python is new enough (3.10+) to support it.
+        \\if sys.version_info >= (3, 10):
+        \\    # mypy: ignore assignment (3.10+) and unused-ignore (pre 3.10)
+        \\    dataclass = dataclass(slots=True) # type: ignore[assignment, unused-ignore]
         \\
         \\
         \\
@@ -409,12 +422,12 @@ pub fn main() !void {
         const ZigType, const python_name = type_mapping;
 
         switch (@typeInfo(ZigType)) {
-            .Struct => |info| switch (info.layout) {
+            .@"struct" => |info| switch (info.layout) {
                 .auto => @compileError("Invalid C struct type: " ++ @typeName(ZigType)),
                 .@"packed" => try emit_enum(&buffer, ZigType, info, python_name, &.{"padding"}),
                 .@"extern" => continue,
             },
-            .Enum => |info| {
+            .@"enum" => |info| {
                 comptime var skip: []const []const u8 = &.{};
                 if (ZigType == exports.tb_operation) {
                     skip = &.{ "reserved", "root", "register" };
@@ -435,7 +448,7 @@ pub fn main() !void {
 
         // Enums, non-extern structs and everything else have been emitted by the first pass.
         switch (@typeInfo(ZigType)) {
-            .Struct => |info| switch (info.layout) {
+            .@"struct" => |info| switch (info.layout) {
                 .@"extern" => try emit_struct_dataclass(&buffer, info, python_name),
                 else => {},
             },
@@ -455,7 +468,7 @@ pub fn main() !void {
         ) != null;
 
         switch (@typeInfo(ZigType)) {
-            .Struct => |info| switch (info.layout) {
+            .@"struct" => |info| switch (info.layout) {
                 .auto => @compileError("Invalid C struct type: " ++ @typeName(ZigType)),
                 .@"packed" => continue,
                 .@"extern" => try emit_struct_ctypes(
@@ -520,7 +533,7 @@ pub fn main() !void {
         \\tb_client_register_log_callback = tbclient.tb_client_register_log_callback
         \\tb_client_register_log_callback.restype = RegisterLogCallbackStatus
         \\# Need to pass in None to clear - ctypes will error if argtypes is set.
-        \\#tb_client_register_log_callback.argtypes = [LogHandler, ctypes.c_bool]
+        \\# tb_client_register_log_callback.argtypes = [LogHandler, ctypes.c_bool]
         \\
         \\
         \\
@@ -529,13 +542,15 @@ pub fn main() !void {
     inline for (.{ true, false }) |is_async| {
         const prefix_class = if (is_async) "Async" else "";
 
+        // This is annotated loosely, the operations calling it will contain their
+        // own annotations so the interface is clear to Python as well.
         buffer.print(
             \\class {s}StateMachineMixin:
             \\    _submit: Callable[[Operation, Any, Any, Any], Any]
             \\
         , .{prefix_class});
 
-        const operations: []const StateMachine.Operation = &.{
+        const operations: []const tb.Operation = &.{
             .create_accounts,
             .create_transfers,
             .lookup_accounts,
@@ -558,7 +573,7 @@ pub fn main() !void {
 /// Used by client code generation to make clearer APIs: the name of the Event parameter,
 /// when used as a variable.
 /// Inline function so that `operation` can be known at comptime.
-fn event_name(comptime operation: StateMachine.Operation) []const u8 {
+fn event_name(comptime operation: tb.Operation) []const u8 {
     return switch (operation) {
         .create_accounts => "accounts",
         .create_transfers => "transfers",

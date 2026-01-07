@@ -52,6 +52,11 @@ Here what the arguments mean:
   when the last query returned no events.<br>
   Optional. Defaults to `1000` ms if omitted.
 
+* `--requests-per-second-limit` throttles the maximum number of requests per second made
+  to TigerBeetle.<br>
+  Must be greater than zero.<br>
+  Optional. No limit if omitted.
+
 * `--timestamp-last` overrides the last published timestamp, resuming from this point.<br>
   This is a TigerBeetle timestamp with nanosecond precision.<br>
   Optional. If omitted, the last acknowledged timestamp is used.
@@ -162,3 +167,43 @@ However, during crash recovery, the CDC job may replay unacknowledged messages t
 been already delivered to consumers.
 
 It is the consumer's responsibility to perform **idempotency checks** when processing messages.
+
+## Upgrading
+
+The CDC job requires TigerBeetle cluster version `0.16.43` or greater.
+
+The same [upgrade planning](./upgrading.md#planning-for-upgrades) recommended for clients applies
+to the CDC job. The CDC job version must not be newer than the cluster version, as it will fail
+with an error message if so.
+
+Any transactions _originally_ created by TigerBeetle versions before `0.16.29` have the following
+limitations for CDC processing:
+
+- Events of type `two_phase_expired` are **not** supported.
+- Only transfers where both the debit and credit accounts have the
+  [`flags.history`](../reference/account.md#flagshistory) enabled are visible to CDC.
+
+Transactions committed after version `0.16.29` are fully compatible with CDC and do not require
+the `history` flag.
+
+## CDC to RabbitMQ (AMQP 0.9.1) in production
+
+### High Availability
+
+The CDC job is single instance. Starting a second `tigerbeetle amqp` with the same `cluster_id`
+will exit with a non-zero exit code. For high availability, the CDC job could be monitored for
+crashes and restarted in case a failure.
+
+The CDC job itself is stateless, and will resume from the last event acknowledged by RabbitMQ,
+however it may replay events that weren't acknowledged but received by the exchange.
+
+### TLS Support
+
+For secure `AMQPS` connections, we recommend using a TLS Tunnel to wrap the connection between
+TigerBeetle and RabbitMQ.
+
+### Event Replay
+
+By default, when the CDC job starts, it resumes from the timestamp of the last acknowledged event in
+RabbitMQ. This can be overridden to using `--timestamp-last`. For example, `--timestamp-last=0` will
+replay all events.

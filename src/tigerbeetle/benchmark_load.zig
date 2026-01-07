@@ -16,17 +16,18 @@ const panic = std.debug.panic;
 const log = std.log.scoped(.benchmark);
 
 const vsr = @import("vsr");
+const tb = vsr.tigerbeetle;
 const constants = vsr.constants;
 const stdx = vsr.stdx;
 const ratio = stdx.PRNG.ratio;
 const flags = vsr.flags;
 const random_int_exponential = vsr.testing.random_int_exponential;
 const IO = vsr.io.IO;
+const Time = vsr.time.Time;
+const Duration = stdx.Duration;
 const MessagePool = vsr.message_pool.MessagePool;
-const MessageBus = vsr.message_bus.MessageBusClient;
-const StateMachine = @import("./main.zig").StateMachine;
-const Client = vsr.ClientType(StateMachine, MessageBus, vsr.time.Time);
-const tb = vsr.tigerbeetle;
+const MessageBus = vsr.message_bus.MessageBusType(IO);
+const Client = vsr.ClientType(tb.Operation, MessageBus);
 const IdPermutation = vsr.testing.IdPermutation;
 const ZipfianGenerator = stdx.ZipfianGenerator;
 const ZipfianShuffled = stdx.ZipfianShuffled;
@@ -35,6 +36,8 @@ const cli = @import("./cli.zig");
 
 pub fn main(
     allocator: std.mem.Allocator,
+    io: *IO,
+    time: Time,
     addresses: []const std.net.Address,
     cli_args: *const cli.Command.Benchmark,
 ) !void {
@@ -76,13 +79,11 @@ pub fn main(
 
     const cluster_id: u128 = 0;
 
-    var io = try IO.init(32, 0);
-    defer io.deinit();
-
     var message_pools = stdx.BoundedArrayType(MessagePool, constants.clients_max){};
     defer for (message_pools.slice()) |*message_pool| message_pool.deinit(allocator);
+
     for (0..cli_args.clients) |_| {
-        message_pools.append_assume_capacity(try MessagePool.init(allocator, .client));
+        message_pools.push(try MessagePool.init(allocator, .client));
     }
 
     std.log.info("Benchmark running against {any}", .{addresses});
@@ -91,14 +92,17 @@ pub fn main(
     defer for (clients.slice()) |*client| client.deinit(allocator);
 
     for (0..cli_args.clients) |i| {
-        clients.append_assume_capacity(try Client.init(allocator, .{
-            .id = stdx.unique_u128(),
-            .cluster = cluster_id,
-            .replica_count = @intCast(addresses.len),
-            .time = .{},
-            .message_pool = &message_pools.slice()[i],
-            .message_bus_options = .{ .configuration = addresses, .io = &io },
-        }));
+        clients.push(try Client.init(
+            allocator,
+            time,
+            &message_pools.slice()[i],
+            .{
+                .id = stdx.unique_u128(),
+                .cluster = cluster_id,
+                .replica_count = @intCast(addresses.len),
+                .message_bus_options = .{ .configuration = addresses, .io = io },
+            },
+        ));
     }
 
     // Each array position corresponds to a histogram bucket of 1ms. The last bucket is 10_000ms+.
@@ -155,7 +159,7 @@ pub fn main(
     });
 
     var benchmark = Benchmark{
-        .io = &io,
+        .io = io,
         .prng = &prng,
         .timer = try std.time.Timer.start(),
         .output = std.io.getStdOut().writer().any(),
@@ -172,7 +176,7 @@ pub fn main(
         .account_generator_hot = account_generator_hot,
         .transfer_id_permutation = account_id_permutation,
         .transfer_batch_size = cli_args.transfer_batch_size,
-        .transfer_batch_delay_us = cli_args.transfer_batch_delay_us,
+        .transfer_batch_delay = cli_args.transfer_batch_delay,
         .transfer_count = cli_args.transfer_count,
         .transfer_hot_percent = cli_args.transfer_hot_percent,
         .transfer_pending = cli_args.transfer_pending,
@@ -249,18 +253,18 @@ const Benchmark = struct {
 
     // Configuration:
     account_id_permutation: IdPermutation,
-    account_batch_size: usize,
-    account_count: usize,
-    account_count_hot: usize,
+    account_batch_size: u32,
+    account_count: u32,
+    account_count_hot: u32,
     account_generator: Generator,
     account_generator_hot: Generator,
     transfer_id_permutation: IdPermutation,
-    transfer_batch_size: usize,
-    transfer_batch_delay_us: usize,
-    transfer_count: usize,
-    transfer_hot_percent: usize,
+    transfer_batch_size: u32,
+    transfer_batch_delay: Duration,
+    transfer_count: u64,
+    transfer_hot_percent: u32,
     transfer_pending: bool,
-    query_count: usize,
+    query_count: u32,
     flag_history: bool,
     flag_imported: bool,
     validate: bool,
@@ -268,7 +272,7 @@ const Benchmark = struct {
 
     // State:
     clients_busy: stdx.BitSetType(constants.clients_max) = .{},
-    clients_request_ns: [constants.clients_max]u64 = .{undefined} ** constants.clients_max,
+    clients_request_ns: [constants.clients_max]u64 = @splat(undefined),
     client_requests: []align(constants.sector_size) [constants.message_body_size_max]u8,
     client_replies: []align(constants.sector_size) [constants.message_body_size_max]u8,
     client_timeouts: []Timeout,
@@ -462,7 +466,7 @@ const Benchmark = struct {
             &b.client_timeouts[client_index],
             create_transfers_next,
             &b.client_timeouts[client_index].completion,
-            @intCast(b.transfer_batch_delay_us * std.time.ns_per_us),
+            @intCast(b.transfer_batch_delay.ns),
         );
     }
 
@@ -490,15 +494,18 @@ const Benchmark = struct {
         b.output.print(
             \\{[batch_count]} batches in {[batch_duration_s]d:.2} s
             \\transfer batch size = {[batch_size]} txs
-            \\transfer batch delay = {[batch_delay_us]} us
+            \\transfer batch delay = {[batch_delay]}
             \\load accepted = {[transfer_rate]} tx/s
             \\
         , .{
             .batch_count = b.request_index,
             .batch_duration_s = @as(f64, @floatFromInt(b.timer.read())) / std.time.ns_per_s,
             .batch_size = b.transfer_batch_size,
-            .batch_delay_us = b.transfer_batch_delay_us,
-            .transfer_rate = @divTrunc(b.transfer_count * std.time.ns_per_s, b.timer.read()),
+            .batch_delay = b.transfer_batch_delay,
+            .transfer_rate = @divTrunc(
+                @as(u64, b.transfer_count) * std.time.ns_per_s,
+                b.timer.read(),
+            ),
         }) catch unreachable;
         print_percentiles_histogram(b.output, "batch", b.request_latency_histogram);
 
@@ -753,7 +760,7 @@ const Benchmark = struct {
     fn request(
         b: *Benchmark,
         client_index: usize,
-        operation: StateMachine.Operation,
+        operation: tb.Operation,
         options: struct {
             batch_count: u32,
             event_size: u32,
@@ -792,7 +799,7 @@ const Benchmark = struct {
         timestamp: u64,
         result: []u8,
     ) void {
-        const operation = operation_vsr.cast(StateMachine);
+        const operation = operation_vsr.cast(tb.Operation);
         const context: RequestContext = @bitCast(user_data);
         const client = context.client_index;
         const b: *Benchmark = context.benchmark;
@@ -807,10 +814,10 @@ const Benchmark = struct {
         b.request_latency_histogram[@min(duration_ms, b.request_latency_histogram.len - 1)] += 1;
 
         const input: []const u8 = input: {
-            assert(StateMachine.operation_is_multi_batch(operation));
+            assert(operation.is_multi_batch());
             var reply_decoder = vsr.multi_batch.MultiBatchDecoder.init(
                 result,
-                .{ .element_size = StateMachine.result_size_bytes(operation) },
+                .{ .element_size = operation.result_size() },
             ) catch unreachable;
             assert(reply_decoder.batch_count() == 1);
             break :input reply_decoder.peek();

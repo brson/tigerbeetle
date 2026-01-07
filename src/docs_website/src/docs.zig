@@ -25,6 +25,7 @@ pub fn build(
     var page_buffer: [1 << 16]u8 = undefined;
     var base = try b.build_root.handle.openDir(base_path, .{});
     defer base.close();
+
     const root_page = try content.load(arena, base, &page_buffer);
 
     try tree_install(b, website, output, &search_index, root_page, root_page);
@@ -174,7 +175,7 @@ fn run_pandoc(
 ) std.Build.LazyPath {
     const pandoc_step = std.Build.Step.Run.create(b, "run pandoc");
     pandoc_step.addFileArg(pandoc_bin);
-    pandoc_step.addArgs(&.{ "--from", "gfm+smart", "--to", "html5" });
+    pandoc_step.addArgs(&.{ "--from", "gfm+smart-tex_math_dollars", "--to", "html5" });
     pandoc_step.addPrefixedFileArg("--lua-filter=", b.path("pandoc/markdown-links.lua"));
     pandoc_step.addPrefixedFileArg("--lua-filter=", b.path("pandoc/anchor-links.lua"));
     pandoc_step.addPrefixedFileArg("--lua-filter=", b.path("pandoc/table-wrapper.lua"));

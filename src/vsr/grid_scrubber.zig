@@ -22,9 +22,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const maybe = stdx.maybe;
+const KiB = stdx.KiB;
+const TiB = stdx.TiB;
 const log = std.log.scoped(.grid_scrubber);
 
-const stdx = @import("../stdx.zig");
+const stdx = @import("stdx");
 const vsr = @import("../vsr.zig");
 const constants = @import("../constants.zig");
 const schema = @import("../lsm/schema.zig");
@@ -37,7 +39,7 @@ const BlockPtr = @import("./grid.zig").BlockPtr;
 const ForestTableIteratorType = @import("../lsm/forest_table_iterator.zig").ForestTableIteratorType;
 const TestStorage = @import("../testing/storage.zig").Storage;
 
-pub fn GridScrubberType(comptime Forest: type) type {
+pub fn GridScrubberType(comptime Forest: type, grid_scrubber_reads_max: comptime_int) type {
     return struct {
         const GridScrubber = @This();
         const Grid = GridType(Forest.Storage);
@@ -52,29 +54,32 @@ pub fn GridScrubberType(comptime Forest: type) type {
             block_type: schema.BlockType,
         };
 
+        pub const BlockStatus = enum {
+            /// If `read.done`: The scrub failed – the block must be repaired.
+            /// If `!read.done`: The scrub is still in progress. (This is the initial state).
+            repair,
+            /// The scrub succeeded.
+            /// Don't repair the block.
+            ok,
+            /// The scrub was aborted (the replica is about to state-sync).
+            /// Don't repair the block.
+            canceled,
+            /// The block was freed by a checkpoint in the time that the read was in progress.
+            /// Don't repair the block.
+            ///
+            /// (At checkpoint, the FreeSet frees blocks released during the preceding
+            /// checkpoint. We can scrub released blocks, but not free blocks. Setting this flag
+            /// ensures that GridScrubber doesn't require a read-barrier at checkpoint.)
+            released,
+        };
+
         const Read = struct {
             scrubber: *GridScrubber,
             read: Grid.Read = undefined,
             block_type: schema.BlockType,
 
-            status: enum {
-                /// If `read.done`: The scrub failed – the block must be repaired.
-                /// If `!read.done`: The scrub is still in progress. (This is the initial state).
-                repair,
-                /// The scrub succeeded.
-                /// Don't repair the block.
-                ok,
-                /// The scrub was aborted (the replica is about to state-sync).
-                /// Don't repair the block.
-                canceled,
-                /// The block was freed by a checkpoint in the time that the read was in progress.
-                /// Don't repair the block.
-                ///
-                /// (At checkpoint, the FreeSet frees blocks released during the preceding
-                /// checkpoint. We can scrub released blocks, but not free blocks. Setting this flag
-                /// ensures that GridScrubber doesn't require a read-barrier at checkpoint.)
-                released,
-            },
+            status: BlockStatus,
+
             /// Whether the read is ready to be released.
             done: bool,
 
@@ -86,7 +91,7 @@ pub fn GridScrubberType(comptime Forest: type) type {
         forest: *Forest,
         client_sessions_checkpoint: *const CheckpointTrailer,
 
-        reads: IOPSType(Read, constants.grid_scrubber_reads_max) = .{},
+        reads: IOPSType(Read, grid_scrubber_reads_max) = .{},
 
         /// A list of reads that are in progress.
         reads_busy: QueueType(Read) = QueueType(Read).init(.{ .name = "grid_scrubber_reads_busy" }),
@@ -104,12 +109,12 @@ pub fn GridScrubberType(comptime Forest: type) type {
             init,
             done,
             table_index,
-            table_data: struct {
+            table_value: struct {
                 index_checksum: u128,
                 index_address: u64,
                 /// Points to `tour_index_block` once the index block has been read.
                 index_block: ?BlockPtr = null,
-                data_block_index: u32 = 0,
+                value_block_index: u32 = 0,
             },
             /// The manifest log tour iterates manifest blocks in reverse order.
             /// (To ensure that manifest compaction doesn't lead to missed blocks.)
@@ -126,10 +131,12 @@ pub fn GridScrubberType(comptime Forest: type) type {
         /// This varies between replicas to minimize risk of data loss.
         tour_tables_origin: ?WrappingForestTableIterator.Origin,
 
-        /// Contains a table index block when tour=table_data.
+        /// Contains a table index block when tour=table_value.
         tour_index_block: BlockPtr,
 
         /// These counters reset after every tour cycle.
+        /// NB: tour_blocks_scrubbed_count will include repeat index blocks reads.
+        /// (See read_next_callback() for more detail.)
         tour_blocks_scrubbed_count: u64,
 
         pub fn init(
@@ -188,7 +195,7 @@ pub fn GridScrubberType(comptime Forest: type) type {
                     const tree = scrubber.forest.tree_for_id_const(tree_id);
                     const levels = &tree.manifest.levels;
                     const tree_level_weight = @as(u64, levels[level].tables.len()) *
-                        tree_info.Tree.Table.index.data_block_count_max;
+                        tree_info.Tree.Table.index.value_block_count_max;
                     if (tree_level_weight > 0 and reservoir.replace(prng, tree_level_weight)) {
                         scrubber.tour_tables_origin = .{
                             .level = @intCast(level),
@@ -215,7 +222,7 @@ pub fn GridScrubberType(comptime Forest: type) type {
                 }
             }
 
-            if (scrubber.tour == .table_data) {
+            if (scrubber.tour == .table_value) {
                 // Skip scrubbing the table data; the table may not exist when state sync finishes.
                 scrubber.tour = .table_index;
             }
@@ -247,8 +254,8 @@ pub fn GridScrubberType(comptime Forest: type) type {
                 }
             }
 
-            if (scrubber.tour == .table_data) {
-                const index_address = scrubber.tour.table_data.index_address;
+            if (scrubber.tour == .table_value) {
+                const index_address = scrubber.tour.table_value.index_address;
                 assert(!scrubber.forest.grid.free_set.is_free(index_address));
 
                 if (scrubber.forest.grid.free_set
@@ -321,22 +328,23 @@ pub fn GridScrubberType(comptime Forest: type) type {
             });
 
             if (read.status == .repair and
-                scrubber.tour == .table_data and
-                scrubber.tour.table_data.index_block == null and
-                scrubber.tour.table_data.index_checksum == read.read.checksum and
-                scrubber.tour.table_data.index_address == read.read.address)
+                scrubber.tour == .table_value and
+                scrubber.tour.table_value.index_block == null and
+                scrubber.tour.table_value.index_checksum == read.read.checksum and
+                scrubber.tour.table_value.index_address == read.read.address)
             {
-                assert(scrubber.tour.table_data.data_block_index == 0);
+                assert(scrubber.tour.table_value.value_block_index == 0);
 
                 if (result == .valid) {
                     stdx.copy_disjoint(.inexact, u8, scrubber.tour_index_block, result.valid);
-                    scrubber.tour.table_data.index_block = scrubber.tour_index_block;
+                    scrubber.tour.table_value.index_block = scrubber.tour_index_block;
                 } else {
-                    // The scrubber can't scrub the table data blocks until it has the corresponding
-                    // index block. We will wait for the index block, and keep re-scrubbing it until
-                    // it is repaired (or until the block is released by a checkpoint).
+                    // The scrubber can't scrub the table value blocks until it has the
+                    // corresponding index block. We will wait for the index block, and keep
+                    // re-scrubbing it until it is repaired (or until the block is released by
+                    // a checkpoint).
                     //
-                    // (Alternatively, we could just skip past the table data blocks, and we will
+                    // (Alternatively, we could just skip past the table value blocks, and we will
                     // come across them again during the next cycle. But waiting for them makes for
                     // nicer invariants + tests.)
                     log.debug("{}: read_next_callback: waiting for index repair " ++
@@ -359,25 +367,26 @@ pub fn GridScrubberType(comptime Forest: type) type {
             scrubber.reads_done.push(read);
         }
 
-        pub fn read_fault(scrubber: *GridScrubber) ?BlockId {
+        pub fn read_result_next(scrubber: *GridScrubber) ?struct {
+            block: BlockId,
+            status: BlockStatus,
+        } {
             assert(scrubber.reads_busy.count() + scrubber.reads_done.count() ==
                 scrubber.reads.executing());
             defer assert(scrubber.reads_busy.count() + scrubber.reads_done.count() ==
                 scrubber.reads.executing());
 
-            while (scrubber.reads_done.pop()) |read| {
-                defer scrubber.reads.release(read);
-                assert(read.done);
+            const read = scrubber.reads_done.pop() orelse return null;
+            defer scrubber.reads.release(read);
 
-                if (read.status == .repair) {
-                    return .{
-                        .block_address = read.read.address,
-                        .block_checksum = read.read.checksum,
-                        .block_type = read.block_type,
-                    };
-                }
-            }
-            return null;
+            assert(read.done);
+
+            const block: BlockId = .{
+                .block_address = read.read.address,
+                .block_checksum = read.read.checksum,
+                .block_type = read.block_type,
+            };
+            return .{ .block = block, .status = read.status };
         }
 
         fn tour_next(scrubber: *GridScrubber) ?BlockId {
@@ -390,39 +399,39 @@ pub fn GridScrubberType(comptime Forest: type) type {
                 tour.* = .table_index;
             }
 
-            if (tour.* == .table_data) {
-                const index_block = tour.table_data.index_block orelse {
+            if (tour.* == .table_value) {
+                const index_block = tour.table_value.index_block orelse {
                     // The table index is `null` if:
                     // - It was corrupt when we just scrubbed it.
                     // - Or `grid_scrubber_reads > 1`.
                     // Keep trying until either we find it, or a checkpoint removes it.
                     // (See read_next_callback() for more detail.)
                     return .{
-                        .block_checksum = tour.table_data.index_checksum,
-                        .block_address = tour.table_data.index_address,
+                        .block_checksum = tour.table_value.index_checksum,
+                        .block_address = tour.table_value.index_address,
                         .block_type = .index,
                     };
                 };
 
                 const index_schema = schema.TableIndex.from(index_block);
-                const data_block_index = tour.table_data.data_block_index;
-                if (data_block_index <
-                    index_schema.data_blocks_used(scrubber.tour_index_block))
+                const value_block_index = tour.table_value.value_block_index;
+                if (value_block_index <
+                    index_schema.value_blocks_used(scrubber.tour_index_block))
                 {
-                    tour.table_data.data_block_index += 1;
+                    tour.table_value.value_block_index += 1;
 
-                    const data_block_addresses =
-                        index_schema.data_addresses_used(scrubber.tour_index_block);
-                    const data_block_checksums =
-                        index_schema.data_checksums_used(scrubber.tour_index_block);
+                    const value_block_addresses =
+                        index_schema.value_addresses_used(scrubber.tour_index_block);
+                    const value_block_checksums =
+                        index_schema.value_checksums_used(scrubber.tour_index_block);
                     return .{
-                        .block_checksum = data_block_checksums[data_block_index].value,
-                        .block_address = data_block_addresses[data_block_index],
-                        .block_type = .data,
+                        .block_checksum = value_block_checksums[value_block_index].value,
+                        .block_address = value_block_addresses[value_block_index],
+                        .block_type = .value,
                     };
                 } else {
-                    assert(data_block_index ==
-                        index_schema.data_blocks_used(scrubber.tour_index_block));
+                    assert(value_block_index ==
+                        index_schema.value_blocks_used(scrubber.tour_index_block));
                     tour.* = .table_index;
                 }
             }
@@ -436,7 +445,7 @@ pub fn GridScrubberType(comptime Forest: type) type {
                         );
                     }
 
-                    tour.* = .{ .table_data = .{
+                    tour.* = .{ .table_value = .{
                         .index_checksum = table_info.checksum,
                         .index_address = table_info.address,
                     } };
@@ -529,13 +538,17 @@ pub fn GridScrubberType(comptime Forest: type) type {
                 scrubber.tour_blocks_scrubbed_count,
             });
 
-            // Wrap around to the next cycle.
             assert(tour.* == .done);
-            tour.* = .init;
+            return null;
+        }
+
+        pub fn wrap(scrubber: *GridScrubber) void {
+            assert(scrubber.tour == .done);
+
+            scrubber.tour = .init;
+
             scrubber.tour_tables = WrappingForestTableIterator.init(scrubber.tour_tables_origin.?);
             scrubber.tour_blocks_scrubbed_count = 0;
-
-            return null;
         }
     };
 }
@@ -700,7 +713,7 @@ test "GridScrubber cycle interval" {
     // The total size of the data file.
     // Note that since this parameter is separate from the faults/year rate, increasing
     // `storage_size` actually reduces the likelihood of data loss.
-    const storage_size = 16 * (1024 * 1024 * 1024 * 1024);
+    const storage_size = 16 * TiB;
 
     // The expected (average) number of sector faults per year.
     // I can't find any good, recent statistics for faults on SSDs.
@@ -720,7 +733,7 @@ test "GridScrubber cycle interval" {
     //
     // Increasing this parameter increases the likelihood of eventual data loss.
     // (Intuitively, a single bitrot within 1GiB is more likely than a single bitrot within 1KiB.)
-    const block_size = 512 * 1024;
+    const block_size = 512 * KiB;
 
     // The total number of copies of each sector.
     // The cluster is recoverable if a sector's number of faults is less than `replicas_total`.
@@ -775,8 +788,8 @@ test "GridScrubber cycle interval" {
     // In other words, P(eventual data loss).
     const p_cluster_blocks_corrupt_per_span = 1.0 - p_cluster_blocks_healthy_per_span;
 
-    const Snap = @import("../testing/snaptest.zig").Snap;
-    const snap = Snap.snap;
+    const Snap = stdx.Snap;
+    const snap = Snap.snap_fn("src");
 
     try snap(@src(),
         \\4.3582921528e-3

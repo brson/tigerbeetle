@@ -6,7 +6,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const vsr = @import("vsr.zig");
 const Config = @import("config.zig").Config;
-const stdx = @import("stdx.zig");
+const stdx = @import("stdx");
+
+const MiB = stdx.MiB;
 
 pub const config = @import("config.zig").configs.current;
 
@@ -17,9 +19,6 @@ pub const semver = std.SemanticVersion{
     .pre = null,
     .build = if (config.process.git_commit) |sha_full| sha_full[0..7] else null,
 };
-
-// Which mode to use for ./testing/hash_log.zig.
-pub const hash_log_mode = config.process.hash_log_mode;
 
 /// The maximum number of replicas allowed in a cluster.
 pub const replicas_max = 6;
@@ -231,7 +230,7 @@ comptime {
 /// However, this impacts bufferbloat and head-of-line blocking latency for pipelined requests.
 /// For a 1 Gbps NIC = 125 MiB/s throughput: 2 MiB / 125 * 1000ms = 16ms for the next request.
 /// This impacts the amount of memory allocated at initialization by the server.
-pub const message_size_max = config.cluster.message_size_max;
+pub const message_size_max: u32 = config.cluster.message_size_max;
 pub const message_body_size_max = message_size_max - @sizeOf(vsr.Header);
 
 comptime {
@@ -242,7 +241,7 @@ comptime {
     assert(message_size_max >= Config.Cluster.message_size_max_min(clients_max));
 
     // Ensure that DVC/SV messages can fit all necessary headers.
-    assert(message_body_size_max >= view_change_headers_max * @sizeOf(vsr.Header));
+    assert(message_body_size_max >= view_headers_max * @sizeOf(vsr.Header));
 
     assert(message_body_size_max >= @sizeOf(vsr.ReconfigurationRequest));
     assert(message_body_size_max >= @sizeOf(vsr.BlockRequest));
@@ -301,19 +300,19 @@ pub const view_change_headers_suffix_max = config.cluster.view_change_headers_su
 /// - We must include all uncommitted headers.
 /// - +1 We must include the highest cluster-committed header, so that the new primary still has a
 ///   head op if it truncates the entire pipeline.
-pub const view_change_headers_max = view_change_headers_suffix_max + 2;
+pub const view_headers_max = view_change_headers_suffix_max + 2;
 
 comptime {
     assert(view_change_headers_suffix_max >= pipeline_prepare_queue_max + 1);
 
-    assert(view_change_headers_max > 0);
-    assert(view_change_headers_max >= pipeline_prepare_queue_max + 3);
-    assert(view_change_headers_max <= journal_slot_count);
-    assert(view_change_headers_max <= @divFloor(
+    assert(view_headers_max > 0);
+    assert(view_headers_max >= pipeline_prepare_queue_max + 3);
+    assert(view_headers_max <= journal_slot_count);
+    assert(view_headers_max <= @divFloor(
         message_body_size_max - @sizeOf(vsr.CheckpointState),
         @sizeOf(vsr.Header),
     ));
-    assert(view_change_headers_max > view_change_headers_suffix_max);
+    assert(view_headers_max > view_change_headers_suffix_max);
 }
 
 /// The maximum number of headers to include with a response to a command=request_headers message.
@@ -366,7 +365,7 @@ comptime {
     assert(grid_repair_reads_max > 0);
     assert(grid_repair_writes_max > 0);
     assert(grid_repair_writes_max <=
-        grid_missing_blocks_max + grid_missing_tables_max * lsm_table_data_blocks_max);
+        grid_missing_blocks_max + grid_missing_tables_max * lsm_table_value_blocks_max);
 
     assert(grid_missing_blocks_max > 0);
     assert(grid_missing_tables_max > 0);
@@ -445,8 +444,8 @@ pub const tcp_sndbuf_client = connection_send_queue_max_client * message_size_ma
 
 comptime {
     // Avoid latency issues from setting sndbuf too high:
-    assert(tcp_sndbuf_replica <= 16 * 1024 * 1024);
-    assert(tcp_sndbuf_client <= 16 * 1024 * 1024);
+    assert(tcp_sndbuf_replica <= 16 * MiB);
+    assert(tcp_sndbuf_client <= 16 * MiB);
 }
 
 /// Whether to enable TCP keepalive:
@@ -658,8 +657,8 @@ comptime {
 // runtime-known number of free blocks.
 //
 // For simplicity for now, size IOPS to always be available.
-pub const lsm_compaction_queue_read_max = 8;
-pub const lsm_compaction_queue_write_max = 8;
+pub const lsm_compaction_queue_read_max = 16;
+pub const lsm_compaction_queue_write_max = 16;
 pub const lsm_compaction_iops_read_max = lsm_compaction_queue_read_max + 2; // + two index blocks.
 pub const lsm_compaction_iops_write_max = lsm_compaction_queue_write_max + 1; // + one index block.
 
@@ -669,8 +668,8 @@ pub const lsm_snapshots_max = config.cluster.lsm_snapshots_max;
 ///
 /// - This is a very conservative (upper-bound) calculation that doesn't rely on the StateMachine's
 ///   tree configuration. (To prevent Grid from depending on StateMachine).
-/// - This counts data blocks, but does not count the index block itself.
-pub const lsm_table_data_blocks_max = table_blocks_max: {
+/// - This counts value blocks, but does not count the index block itself.
+pub const lsm_table_value_blocks_max = table_blocks_max: {
     const checksum_size = @sizeOf(u256);
     const address_size = @sizeOf(u64);
     break :table_blocks_max @divFloor(
@@ -700,7 +699,7 @@ pub const lsm_manifest_memory_size_min = lsm_manifest_memory_size_multiplier;
 /// to 1MiB so it is a more obvious increment for users.
 pub const lsm_manifest_memory_size_multiplier = lsm_manifest_memory_multiplier: {
     const lsm_manifest_memory_multiplier = 64 * lsm_manifest_node_size;
-    assert(lsm_manifest_memory_multiplier == 1024 * 1024);
+    assert(lsm_manifest_memory_multiplier == MiB);
     break :lsm_manifest_memory_multiplier lsm_manifest_memory_multiplier;
 };
 
@@ -758,18 +757,6 @@ pub const clock_synchronization_window_min_ms = config.process.clock_synchroniza
 /// This eliminates the impact of gradual clock drift on our clock offset (clock skew) measurements.
 /// If a window expires because of this then it is likely that the clock epoch will also be expired.
 pub const clock_synchronization_window_max_ms = config.process.clock_synchronization_window_max_ms;
-
-pub const StateMachineConfig = struct {
-    release: vsr.Release,
-    message_body_size_max: comptime_int,
-    lsm_compaction_ops: comptime_int,
-};
-
-pub const state_machine_config = StateMachineConfig{
-    .release = config.process.release,
-    .message_body_size_max = message_body_size_max,
-    .lsm_compaction_ops = lsm_compaction_ops,
-};
 
 /// TigerBeetle uses asserts proactively, unless they severely degrade performance. For production,
 /// 5% slow down might be deemed critical, tests tolerate slowdowns up to 5x. Tests should be

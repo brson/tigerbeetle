@@ -4,7 +4,11 @@ const os = std.os;
 const posix = std.posix;
 const testing = std.testing;
 const assert = std.debug.assert;
+const stdx = @import("stdx");
+const KiB = stdx.KiB;
+const MiB = stdx.MiB;
 
+const TimeOS = @import("../time.zig").TimeOS;
 const Time = @import("../time.zig").Time;
 const IO = @import("../io.zig").IO;
 
@@ -26,8 +30,8 @@ test "open/write/read/close/statx" {
         done: bool = false,
 
         fd: ?posix.fd_t = null,
-        write_buf: [20]u8 = [_]u8{97} ** 20,
-        read_buf: [20]u8 = [_]u8{98} ** 20,
+        write_buf: [20]u8 = @splat(97),
+        read_buf: [20]u8 = @splat(98),
 
         written: usize = 0,
         read: usize = 0,
@@ -283,15 +287,16 @@ test "timeout" {
         const Context = @This();
 
         io: IO,
-        timer: *Time,
+        timer: Time,
         count: u32 = 0,
         stop_time: u64 = 0,
 
         fn run_test() !void {
-            var timer = Time{};
-            const start_time = timer.monotonic();
+            var time_os: TimeOS = .{};
+            const timer = time_os.time();
+            const start_time = timer.monotonic().ns;
             var self: Context = .{
-                .timer = &timer,
+                .timer = timer,
                 .io = try IO.init(32, 0),
             };
             defer self.io.deinit();
@@ -326,7 +331,7 @@ test "timeout" {
             _ = completion;
             _ = result catch @panic("timeout error");
 
-            if (self.stop_time == 0) self.stop_time = self.timer.monotonic();
+            if (self.stop_time == 0) self.stop_time = self.timer.monotonic().ns;
             self.count += 1;
         }
     }.run_test();
@@ -355,7 +360,8 @@ test "event" {
             self.event = try self.io.open_event();
             defer self.io.close_event(self.event);
 
-            var timer = Time{};
+            var time_os: TimeOS = .{};
+            const timer = time_os.time();
             const start = timer.monotonic();
 
             // Listen to the event and spawn a thread that triggers the completion after some time.
@@ -370,8 +376,8 @@ test "event" {
             assert(self.count == events_count);
 
             // Make sure at least some time has passed.
-            const elapsed = timer.monotonic() - start;
-            assert(elapsed >= delay);
+            const elapsed = timer.monotonic().duration_since(start);
+            assert(elapsed.ns >= delay);
         }
 
         fn trigger_event(self: *Context) void {
@@ -447,7 +453,7 @@ test "tick to wait" {
         const Context = @This();
 
         io: IO,
-        accepted: posix.socket_t = IO.INVALID_SOCKET,
+        accepted: ?posix.socket_t = null,
         connected: bool = false,
         received: bool = false,
 
@@ -494,14 +500,14 @@ test "tick to wait" {
 
             // Tick the IO to drain the accept & connect completions.
             assert(!self.connected);
-            assert(self.accepted == IO.INVALID_SOCKET);
+            assert(self.accepted == null);
 
-            while (self.accepted == IO.INVALID_SOCKET or !self.connected)
+            while (self.accepted == null or !self.connected)
                 try self.io.run();
 
             assert(self.connected);
-            assert(self.accepted != IO.INVALID_SOCKET);
-            defer self.io.close_socket(self.accepted);
+            assert(self.accepted != null);
+            defer self.io.close_socket(self.accepted.?);
 
             // Start receiving on the client.
             var recv_completion: IO.Completion = undefined;
@@ -524,8 +530,8 @@ test "tick to wait" {
             // Complete the recv() *outside* of the IO instance.
             // Other tests already check .tick() with IO based completions.
             // This simulates IO being completed by an external system.
-            var send_buf = std.mem.zeroes([64]u8);
-            const wrote = try os_send(self.accepted, &send_buf, 0);
+            var send_buf: [64]u8 = @splat(0);
+            const wrote = try os_send(self.accepted.?, &send_buf, 0);
             try testing.expectEqual(wrote, send_buf.len);
 
             // Wait for the recv() to complete using only IO.run().
@@ -547,7 +553,7 @@ test "tick to wait" {
         ) void {
             _ = completion;
 
-            assert(self.accepted == IO.INVALID_SOCKET);
+            assert(self.accepted == null);
             self.accepted = result catch @panic("accept error");
         }
 
@@ -575,45 +581,8 @@ test "tick to wait" {
             self.received = true;
         }
 
-        // TODO: use posix.send() instead when it gets fixed for windows.
         fn os_send(sock: posix.socket_t, buf: []const u8, flags: u32) !usize {
-            if (builtin.target.os.tag != .windows) {
-                return posix.send(sock, buf, flags);
-            }
-
-            const rc = os.windows.sendto(sock, buf.ptr, buf.len, flags, null, 0);
-            if (rc == os.windows.ws2_32.SOCKET_ERROR) {
-                switch (os.windows.ws2_32.WSAGetLastError()) {
-                    .WSAEACCES => return error.AccessDenied,
-                    .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
-                    .WSAECONNRESET => return error.ConnectionResetByPeer,
-                    .WSAEMSGSIZE => return error.MessageTooBig,
-                    .WSAENOBUFS => return error.SystemResources,
-                    .WSAENOTSOCK => return error.FileDescriptorNotASocket,
-                    .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
-                    .WSAEDESTADDRREQ => unreachable, // A destination address is required.
-                    // The lpBuffers, lpTo, lpOverlapped, lpNumberOfBytesSent,
-                    // or lpCompletionRoutine parameters are not part of the user address space,
-                    // or the lpTo parameter is too small.
-                    .WSAEFAULT => unreachable,
-                    .WSAEHOSTUNREACH => return error.NetworkUnreachable,
-                    // TODO: WSAEINPROGRESS, WSAEINTR
-                    .WSAEINVAL => unreachable,
-                    .WSAENETDOWN => return error.NetworkSubsystemFailed,
-                    .WSAENETRESET => return error.ConnectionResetByPeer,
-                    .WSAENETUNREACH => return error.NetworkUnreachable,
-                    .WSAENOTCONN => return error.SocketNotConnected,
-                    // The socket has been shut down; it is not possible to WSASendTo on a socket
-                    // after shutdown has been invoked with how set to SD_SEND or SD_BOTH.
-                    .WSAESHUTDOWN => unreachable,
-                    .WSAEWOULDBLOCK => return error.WouldBlock,
-                    // A successful WSAStartup call must occur before using this function.
-                    .WSANOTINITIALISED => unreachable,
-                    else => |err| return os.windows.unexpectedWSAError(err),
-                }
-            } else {
-                return @intCast(rc);
-            }
+            return posix.sendto(sock, buf, flags, null, 0);
         }
     }.run_test();
 }
@@ -625,11 +594,11 @@ test "pipe data over socket" {
         rx: Pipe,
         server: Socket = .{},
 
-        const buffer_size = 1 * 1024 * 1024;
+        const buffer_size = 1 * MiB;
 
         const Context = @This();
         const Socket = struct {
-            fd: posix.socket_t = IO.INVALID_SOCKET,
+            fd: ?posix.socket_t = null,
             completion: IO.Completion = undefined,
         };
         const Pipe = struct {
@@ -641,6 +610,7 @@ test "pipe data over socket" {
         fn run() !void {
             const tx_buf = try testing.allocator.alloc(u8, buffer_size);
             defer testing.allocator.free(tx_buf);
+
             const rx_buf = try testing.allocator.alloc(u8, buffer_size);
             defer testing.allocator.free(rx_buf);
 
@@ -654,40 +624,40 @@ test "pipe data over socket" {
             defer self.io.deinit();
 
             self.server.fd = try self.io.open_socket_tcp(posix.AF.INET, tcp_options);
-            defer self.io.close_socket(self.server.fd);
+            defer self.io.close_socket(self.server.fd.?);
 
             const address = try std.net.Address.parseIp4("127.0.0.1", 0);
             try posix.setsockopt(
-                self.server.fd,
+                self.server.fd.?,
                 posix.SOL.SOCKET,
                 posix.SO.REUSEADDR,
                 &std.mem.toBytes(@as(c_int, 1)),
             );
 
-            try posix.bind(self.server.fd, &address.any, address.getOsSockLen());
-            try posix.listen(self.server.fd, 1);
+            try posix.bind(self.server.fd.?, &address.any, address.getOsSockLen());
+            try posix.listen(self.server.fd.?, 1);
 
             var client_address = std.net.Address.initIp4(undefined, undefined);
             var client_address_len = client_address.getOsSockLen();
-            try posix.getsockname(self.server.fd, &client_address.any, &client_address_len);
+            try posix.getsockname(self.server.fd.?, &client_address.any, &client_address_len);
 
             self.io.accept(
                 *Context,
                 &self,
                 on_accept,
                 &self.server.completion,
-                self.server.fd,
+                self.server.fd.?,
             );
 
             self.tx.socket.fd = try self.io.open_socket_tcp(posix.AF.INET, tcp_options);
-            defer self.io.close_socket(self.tx.socket.fd);
+            defer self.io.close_socket(self.tx.socket.fd.?);
 
             self.io.connect(
                 *Context,
                 &self,
                 on_connect,
                 &self.tx.socket.completion,
-                self.tx.socket.fd,
+                self.tx.socket.fd.?,
                 client_address,
             );
 
@@ -701,10 +671,10 @@ test "pipe data over socket" {
                 }
             }
 
-            try testing.expect(self.server.fd != IO.INVALID_SOCKET);
-            try testing.expect(self.tx.socket.fd != IO.INVALID_SOCKET);
-            try testing.expect(self.rx.socket.fd != IO.INVALID_SOCKET);
-            self.io.close_socket(self.rx.socket.fd);
+            try testing.expect(self.server.fd != null);
+            try testing.expect(self.tx.socket.fd != null);
+            try testing.expect(self.rx.socket.fd != null);
+            self.io.close_socket(self.rx.socket.fd.?);
 
             try testing.expectEqual(self.tx.transferred, buffer_size);
             try testing.expectEqual(self.rx.transferred, buffer_size);
@@ -716,7 +686,7 @@ test "pipe data over socket" {
             completion: *IO.Completion,
             result: IO.AcceptError!posix.socket_t,
         ) void {
-            assert(self.rx.socket.fd == IO.INVALID_SOCKET);
+            assert(self.rx.socket.fd == null);
             assert(&self.server.completion == completion);
             self.rx.socket.fd = result catch |err| std.debug.panic("accept error {}", .{err});
 
@@ -731,7 +701,7 @@ test "pipe data over socket" {
         ) void {
             _ = result catch unreachable;
 
-            assert(self.tx.socket.fd != IO.INVALID_SOCKET);
+            assert(self.tx.socket.fd != null);
             assert(&self.tx.socket.completion == completion);
 
             assert(self.tx.transferred == 0);
@@ -748,7 +718,7 @@ test "pipe data over socket" {
                     self,
                     on_send,
                     &self.tx.socket.completion,
-                    self.tx.socket.fd,
+                    self.tx.socket.fd.?,
                     self.tx.buffer[self.tx.transferred..],
                 );
             }
@@ -774,7 +744,7 @@ test "pipe data over socket" {
                     self,
                     on_recv,
                     &self.rx.socket.completion,
-                    self.rx.socket.fd,
+                    self.rx.socket.fd.?,
                     self.rx.buffer[self.rx.transferred..],
                 );
             }
@@ -797,7 +767,7 @@ test "cancel_all" {
     const allocator = std.testing.allocator;
     const file_path = "test_cancel_all";
     const read_count = 8;
-    const read_size = 1024 * 16;
+    const read_size = 16 * KiB;
 
     // For this test to be useful, we rely on open(DIRECT).
     // (See below).
@@ -819,6 +789,7 @@ test "cancel_all" {
                 // Initialize a file filled with test data.
                 const file_buffer = try allocator.alloc(u8, read_size);
                 defer allocator.free(file_buffer);
+
                 for (file_buffer, 0..) |*b, i| b.* = @intCast(i % 256);
 
                 try std.fs.cwd().writeFile(.{ .sub_path = file_path, .data = file_buffer });
@@ -884,6 +855,151 @@ test "cancel_all" {
             _ = result catch @panic("read error");
 
             assert(!context.canceled);
+        }
+    }.run_test();
+}
+
+test "cancel" {
+    if (builtin.target.os.tag != .linux) return;
+    try struct {
+        const Context = @This();
+
+        io: *IO,
+        server: posix.socket_t,
+        client: posix.socket_t,
+        accepted_sock: posix.socket_t = undefined,
+
+        accepted: bool = false,
+        connected: bool = false,
+        canceled: bool = false,
+
+        recv_result: ?IO.RecvError!usize = null,
+
+        fn run_test() !void {
+            const allocator = std.testing.allocator;
+            var io = try IO.init(32, 0);
+            defer io.deinit();
+
+            const buffer_size = 512 * KiB;
+
+            const buffer: []u8 = try allocator.alloc(u8, buffer_size);
+            defer allocator.free(buffer);
+
+            const address = try std.net.Address.parseIp4("127.0.0.1", 0);
+
+            const server = try io.open_socket_tcp(address.any.family, tcp_options);
+            defer io.close_socket(server);
+
+            const client = try io.open_socket_tcp(address.any.family, tcp_options);
+            defer io.close_socket(client);
+
+            try posix.setsockopt(
+                server,
+                posix.SOL.SOCKET,
+                posix.SO.REUSEADDR,
+                &std.mem.toBytes(@as(c_int, 1)),
+            );
+            try posix.bind(server, &address.any, address.getOsSockLen());
+            try posix.listen(server, 1);
+
+            var client_address = std.net.Address.initIp4(undefined, undefined);
+            var client_address_len = client_address.getOsSockLen();
+            try posix.getsockname(
+                server,
+                &client_address.any,
+                &client_address_len,
+            );
+
+            var context: Context = .{
+                .io = &io,
+                .server = server,
+                .client = client,
+            };
+
+            var client_completion: IO.Completion = undefined;
+            context.io.connect(
+                *Context,
+                &context,
+                connect_callback,
+                &client_completion,
+                client,
+                client_address,
+            );
+
+            var server_completion: IO.Completion = undefined;
+            context.io.accept(
+                *Context,
+                &context,
+                accept_callback,
+                &server_completion,
+                server,
+            );
+
+            while (!(context.connected and context.accepted)) try context.io.run();
+
+            var recv_completion: IO.Completion = undefined;
+            context.io.recv(
+                *Context,
+                &context,
+                recv_callback,
+                &recv_completion,
+                context.accepted_sock,
+                buffer,
+            );
+            try context.io.run();
+
+            var cancel_completion: IO.Completion = undefined;
+            context.io.cancel(
+                *Context,
+                &context,
+                cancel_callback,
+                .{
+                    .completion = &cancel_completion,
+                    .target = &recv_completion,
+                },
+            );
+
+            while (!context.canceled or context.recv_result == null) try context.io.run();
+
+            try std.testing.expectError(
+                IO.RecvError.Canceled,
+                context.recv_result.?,
+            );
+        }
+
+        fn cancel_callback(
+            self: *Context,
+            _: *IO.Completion,
+            result: IO.CancelError!void,
+        ) void {
+            _ = result catch @panic("cancel error");
+            self.canceled = true;
+        }
+
+        fn connect_callback(
+            self: *Context,
+            _: *IO.Completion,
+            result: IO.ConnectError!void,
+        ) void {
+            _ = result catch @panic("connect error");
+            self.connected = true;
+        }
+
+        fn accept_callback(
+            self: *Context,
+            _: *IO.Completion,
+            result: IO.AcceptError!posix.socket_t,
+        ) void {
+            self.accepted_sock = result catch @panic("accept error");
+            self.accepted = true;
+        }
+
+        fn recv_callback(
+            self: *Context,
+            _: *IO.Completion,
+            result: IO.RecvError!usize,
+        ) void {
+            self.recv_result = result;
         }
     }.run_test();
 }

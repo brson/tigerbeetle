@@ -5,16 +5,10 @@ const vsr = @import("vsr.zig");
 const stdx = vsr.stdx;
 const constants = vsr.constants;
 const IO = vsr.io.IO;
-const Tracer = vsr.trace.TracerType(vsr.time.Time);
+const Time = vsr.time.Time;
 const StaticAllocator = @import("static_allocator.zig");
-const Storage = vsr.storage.StorageType(IO, Tracer);
-const StateMachine = vsr.state_machine.StateMachineType(
-    Storage,
-    constants.state_machine_config,
-);
 const MessagePool = vsr.message_pool.MessagePool;
 const RingBufferType = stdx.RingBufferType;
-
 const tb = vsr.tigerbeetle;
 
 const Terminal = @import("repl/terminal.zig").Terminal;
@@ -27,8 +21,8 @@ const repl_history_entry_bytes_without_nul = 511;
 
 const ReplBufferBoundedArray = stdx.BoundedArrayType(u8, repl_history_entry_bytes_without_nul);
 
-pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
-    const Client = vsr.ClientType(StateMachine, MessageBus, Time);
+pub fn ReplType(comptime MessageBus: type) type {
+    const Client = vsr.ClientType(tb.Operation, MessageBus);
 
     // Requires 512 * 256 == 128KiB of stack space.
     const HistoryBuffer = RingBufferType(
@@ -99,11 +93,9 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                 .query_accounts,
                 .query_transfers,
                 => |operation| {
-                    const state_machine_operation =
-                        std.meta.stringToEnum(StateMachine.Operation, @tagName(operation));
-                    assert(state_machine_operation != null);
+                    const state_machine_operation = operation.state_machine_op();
                     try repl.send(
-                        state_machine_operation.?,
+                        state_machine_operation,
                         statement.arguments,
                     );
                 },
@@ -225,7 +217,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                             });
                         }
 
-                        repl.buffer.insert_assume_capacity(buffer_index, character);
+                        repl.buffer.insert_at(buffer_index, character);
                         buffer_index += 1;
                     },
                     .backspace => if (buffer_index > 0) {
@@ -360,9 +352,9 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                         // Re-fill the buffer with prefix, current match and suffix. Set the
                         // buffer index where the current selected match ends.
                         repl.buffer.clear();
-                        repl.buffer.append_slice_assume_capacity(repl.completion.prefix.slice());
-                        repl.buffer.append_slice_assume_capacity(current_completion);
-                        repl.buffer.append_slice_assume_capacity(repl.completion.suffix.slice());
+                        repl.buffer.push_slice(repl.completion.prefix.slice());
+                        repl.buffer.push_slice(current_completion);
+                        repl.buffer.push_slice(repl.completion.suffix.slice());
                         buffer_index = repl.buffer.count() - repl.completion.suffix.count();
                     },
                     .left, .ctrlb => if (buffer_index > 0) {
@@ -408,14 +400,12 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
 
                         if (history_index == repl.history.count) {
                             repl.buffer_outside_history.clear();
-                            repl.buffer_outside_history.append_slice_assume_capacity(
-                                repl.buffer.const_slice(),
-                            );
+                            repl.buffer_outside_history.push_slice(repl.buffer.const_slice());
                         }
                         history_index = history_index_next;
 
                         repl.buffer.clear();
-                        repl.buffer.append_slice_assume_capacity(buffer_next);
+                        repl.buffer.push_slice(buffer_next);
                         buffer_index = repl.buffer.count();
                     },
                     .down, .ctrln => if (history_index < repl.history.count) {
@@ -452,7 +442,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                         });
 
                         repl.buffer.clear();
-                        repl.buffer.append_slice_assume_capacity(buffer_next);
+                        repl.buffer.push_slice(buffer_next);
                         buffer_index = repl.buffer.count();
                     },
                     .altf, .ctrlright => {
@@ -628,6 +618,8 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                     error.SystemResources,
                     error.Unexpected,
                     error.WouldBlock,
+                    error.NoDevice,
+                    error.ProcessNotFound,
                     => return err,
                 }
             };
@@ -653,6 +645,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
 
         pub fn init(
             parent_allocator: std.mem.Allocator,
+            io: *IO,
             time: Time,
             options: struct {
                 addresses: []const std.net.Address,
@@ -675,21 +668,15 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
             message_pool.* = try MessagePool.init(allocator, .client);
             errdefer message_pool.deinit(allocator);
 
-            var io = try allocator.create(IO);
-            errdefer allocator.destroy(io);
-
-            io.* = try IO.init(32, 0);
-            errdefer io.deinit();
-
             const client_id = stdx.unique_u128();
             const client = try Client.init(
                 allocator,
+                time,
+                message_pool,
                 .{
                     .id = client_id,
                     .cluster = options.cluster_id,
                     .replica_count = @intCast(options.addresses.len),
-                    .time = time,
-                    .message_pool = message_pool,
                     .message_bus_options = .{
                         .configuration = options.addresses,
                         .io = io,
@@ -723,7 +710,6 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
             repl.static_allocator.transition_from_static_to_deinit();
 
             repl.client.deinit(allocator);
-            repl.io.deinit();
             repl.message_pool.deinit(allocator);
             allocator.destroy(repl.message_pool);
             repl.arguments.deinit(allocator);
@@ -799,6 +785,8 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                                 error.SystemResources,
                                 error.Unexpected,
                                 error.WouldBlock,
+                                error.NoDevice,
+                                error.ProcessNotFound,
                                 => return err,
                             }
                         };
@@ -826,7 +814,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
 
         fn send(
             repl: *Repl,
-            operation: StateMachine.Operation,
+            operation: tb.Operation,
             arguments: *std.ArrayListUnmanaged(u8),
         ) !void {
             const operation_type = switch (operation) {
@@ -862,7 +850,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                 break :buffer arguments.items;
             };
             var body_encoder = vsr.multi_batch.MultiBatchEncoder.init(buffer, .{
-                .element_size = StateMachine.event_size_bytes(operation),
+                .element_size = operation.event_size(),
             });
             body_encoder.add(payload_size);
             const bytes_written = body_encoder.finish();
@@ -882,7 +870,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                 @TypeOf(object.*) == tb.AccountBalance);
 
             try repl.terminal.print("{{\n", .{});
-            inline for (@typeInfo(@TypeOf(object.*)).Struct.fields, 0..) |object_field, i| {
+            inline for (@typeInfo(@TypeOf(object.*)).@"struct".fields, 0..) |object_field, i| {
                 if (comptime std.mem.eql(u8, object_field.name, "reserved")) {
                     continue;
                     // No need to print out reserved.
@@ -896,7 +884,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
                     try repl.terminal.print("  \"" ++ object_field.name ++ "\": [", .{});
                     var needs_comma = false;
 
-                    inline for (@typeInfo(object_field.type).Struct.fields) |flag_field| {
+                    inline for (@typeInfo(object_field.type).@"struct".fields) |flag_field| {
                         if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
                             if (@field(@field(object, "flags"), flag_field.name)) {
                                 if (needs_comma) {
@@ -923,7 +911,7 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
 
         fn client_request_completed(
             user_data: u128,
-            operation: StateMachine.Operation,
+            operation: tb.Operation,
             timestamp: u64,
             result: []const u8,
         ) !void {
@@ -1025,9 +1013,9 @@ pub fn ReplType(comptime MessageBus: type, comptime Time: type) type {
             timestamp: u64,
             result: []u8,
         ) void {
-            const operation = operation_vsr.cast(StateMachine);
+            const operation = operation_vsr.cast(tb.Operation);
             const reply_decoder = vsr.multi_batch.MultiBatchDecoder.init(result, .{
-                .element_size = StateMachine.result_size_bytes(operation),
+                .element_size = operation.result_size(),
             }) catch unreachable;
             assert(reply_decoder.batch_count() == 1);
             client_request_completed(
