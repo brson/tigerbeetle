@@ -289,7 +289,9 @@ module TBClient
   type log_handler = ^(LogLevel, untyped, Integer) -> void
 
   def self.tb_client_init: (Client, untyped, String, Integer, Integer, on_completion) -> InitStatus
+  def self.tb_client_init_echo: (Client, untyped, String, Integer, Integer, on_completion) -> InitStatus
   def self.tb_client_submit: (Client, Packet) -> ClientStatus
   def self.tb_client_deinit: (Client) -> ClientStatus
+  def self.tb_client_completion_context: (Client, untyped) -> ClientStatus
   def self.tb_client_register_log_callback: (log_handler, bool) -> RegisterLogCallbackStatus
 end

@@ -316,7 +316,9 @@ module TBClient
   callback :log_handler, [LogLevel, :pointer, :uint32], :void
 
   attach_function :tb_client_init, [Client.by_ref, :pointer, :string, :uint32, :uint, :on_completion], InitStatus
+  attach_function :tb_client_init_echo, [Client.by_ref, :pointer, :string, :uint32, :uint, :on_completion], InitStatus
   attach_function :tb_client_submit, [Client.by_ref, Packet.by_ref], ClientStatus
   attach_function :tb_client_deinit, [Client.by_ref], ClientStatus
+  attach_function :tb_client_completion_context, [Client.by_ref, :pointer], ClientStatus
   attach_function :tb_client_register_log_callback, [:log_handler, :bool], RegisterLogCallbackStatus
 end
