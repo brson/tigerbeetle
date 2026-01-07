@@ -211,7 +211,7 @@ module TBClient
       user_tag: :uint16,
       operation: :uint8,
       status: PacketStatus,
-      opaque: [:uint8, 32],
+      opaque: [:uint8, 64],
     )
   end
 

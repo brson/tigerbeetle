@@ -73,13 +73,13 @@ fn mapping_name_from_type(mappings: anytype, Type: type) ?[]const u8 {
 /// It is used to generate the FFI::Struct layout
 fn zig_to_rbs_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
-        .Array => |info| {
+        .array => |info| {
             return std.fmt.comptimePrint("Array[{s}]", .{
                 comptime zig_to_rbs_type(info.child),
             });
         },
-        .Enum, .Struct => return comptime mapping_name_from_type(mappings_all, Type).?,
-        .Int => |info| {
+        .@"enum", .@"struct" => return comptime mapping_name_from_type(mappings_all, Type).?,
+        .int => |info| {
             assert(info.signedness == .unsigned);
             return switch (info.bits) {
                 8, 16, 32, 64 => "Integer",
@@ -87,12 +87,12 @@ fn zig_to_rbs_type(comptime Type: type) []const u8 {
                 else => @compileError("invalid int type"),
             };
         },
-        .Optional => |info| switch (@typeInfo(info.child)) {
-            .Pointer => return zig_to_rbs_type(info.child),
+        .optional => |info| switch (@typeInfo(info.child)) {
+            .pointer => return zig_to_rbs_type(info.child),
             else => @compileError("Unsupported optional type: " ++ @typeName(Type)),
         },
-        .Pointer => |info| {
-            assert(info.size == .One);
+        .pointer => |info| {
+            assert(info.size == .one);
             assert(!info.is_allowzero);
 
             if (Type == *anyopaque) {
@@ -115,7 +115,7 @@ fn to_uppercase(comptime input: []const u8) [input.len]u8 {
 
 fn ffi_int_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
-        .Enum => {
+        .@"enum" => {
             return switch (std.meta.Tag(Type)) {
                 u8 => "UINT8",
                 u16 => "UINT16",
@@ -125,7 +125,7 @@ fn ffi_int_type(comptime Type: type) []const u8 {
                 else => @compileError("Could not set enum type: " ++ @typeName(Type) ++ " found type: " ++ @typeName(std.meta.Tag(Type))),
             };
         },
-        .Struct => {
+        .@"struct" => {
             return switch (@bitSizeOf(Type)) {
                 8 => "UINT8",
                 16 => "UINT16",
@@ -145,11 +145,11 @@ fn emit_enum(
     comptime ruby_name: []const u8,
     comptime skip_fields: []const []const u8,
 ) !void {
-    if (@typeInfo(Type) == .Enum) {
+    if (@typeInfo(Type) == .@"enum") {
         buffer.print("  {s}: {{\n", .{ruby_name});
     } else {
         // Packed structs.
-        assert(@typeInfo(Type) == .Struct and @typeInfo(Type).Struct.layout == .@"packed");
+        assert(@typeInfo(Type) == .@"struct" and @typeInfo(Type).@"struct".layout == .@"packed");
 
         buffer.print("  {s}: {{\n", .{ruby_name});
     }
@@ -214,12 +214,12 @@ pub fn main() !void {
         const ZigType, const ruby_name = type_mapping;
 
         switch (@typeInfo(ZigType)) {
-            .Struct => |info| switch (info.layout) {
+            .@"struct" => |info| switch (info.layout) {
                 .auto => @compileError("Invalid C struct type: " ++ @typeName(ZigType)),
                 .@"packed" => try emit_enum(&buffer, ZigType, info, ruby_name, &.{"padding"}),
                 .@"extern" => continue,
             },
-            .Enum => |info| {
+            .@"enum" => |info| {
                 comptime var skip: []const []const u8 = &.{};
                 if (ZigType == exports.tb_operation) {
                     skip = &.{ "reserved", "root", "register" };
@@ -245,7 +245,7 @@ pub fn main() !void {
         const ZigType, const ruby_name = type_mapping;
 
         switch (@typeInfo(ZigType)) {
-            .Struct => |info| switch (info.layout) {
+            .@"struct" => |info| switch (info.layout) {
                 .@"extern" => try emit_rb_ffi_struct(&buffer, info, ruby_name),
                 else => {},
             },

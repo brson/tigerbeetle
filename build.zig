@@ -311,7 +311,7 @@ pub fn build(b: *std.Build) !void {
     build_ruby_client(b, build_steps.clients_ruby, .{
         .vsr_module = vsr_module,
         .vsr_options = vsr_options,
-        .tb_client_header = tb_client_header.path,
+        .tb_client = tb_client,
         .mode = mode,
     });
     build_python_client(b, build_steps.clients_python, .{
@@ -1757,22 +1757,26 @@ fn build_ruby_client(
     options: struct {
         vsr_module: *std.Build.Module,
         vsr_options: *std.Build.Step.Options,
-        tb_client_header: std.Build.LazyPath,
-        mode: Mode,
+        tb_client: TBClientPrebuilt,
+        mode: std.builtin.OptimizeMode,
     },
 ) void {
     const ruby_signatures_generator = b.addExecutable(.{
         .name = "ruby_signatures",
-        .root_source_file = b.path("src/clients/ruby/ruby_sigs.zig"),
-        .target = b.graph.host,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/clients/ruby/ruby_sigs.zig"),
+            .target = b.graph.host,
+        }),
     });
     ruby_signatures_generator.root_module.addImport("vsr", options.vsr_module);
     ruby_signatures_generator.root_module.addOptions("vsr_options", options.vsr_options);
 
     const ruby_bindings_generator = b.addExecutable(.{
         .name = "ruby_bindings",
-        .root_source_file = b.path("src/clients/ruby/ruby_bindings.zig"),
-        .target = b.graph.host,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/clients/ruby/ruby_bindings.zig"),
+            .target = b.graph.host,
+        }),
     });
     ruby_bindings_generator.root_module.addImport("vsr", options.vsr_module);
     ruby_bindings_generator.root_module.addOptions("vsr_options", options.vsr_options);
@@ -1787,41 +1791,14 @@ fn build_ruby_client(
         .path = "./src/clients/ruby/lib/tb_client.rb",
     });
 
-    inline for (platforms) |platform| {
-        const cross_target = CrossTarget.parse(.{
-            .arch_os_abi = platform[0],
-            .cpu_features = platform[2],
-        }) catch unreachable;
-        const resolved_target = b.resolveTargetQuery(cross_target);
-
-        const shared_lib = b.addSharedLibrary(.{
-            .name = "tb_client",
-            .root_source_file = b.path("src/tigerbeetle/libtb_client.zig"),
-            .target = resolved_target,
-            .optimize = options.mode,
-        });
-        shared_lib.linkLibC();
-
-        if (resolved_target.result.os.tag == .windows) {
-            shared_lib.linkSystemLibrary("ws2_32");
-            shared_lib.linkSystemLibrary("advapi32");
-        }
-
-        shared_lib.root_module.addImport("vsr", options.vsr_module);
-        shared_lib.root_module.addOptions("vsr_options", options.vsr_options);
-
-        step_clients_ruby.dependOn(&b.addInstallFile(
-            shared_lib.getEmittedBin(),
-            b.pathJoin(&.{
-                "../src/clients/ruby/ext/tb_client/",
-                platform[0],
-                shared_lib.out_filename,
-            }),
-        ).step);
-    }
-
     step_clients_ruby.dependOn(&signatures.step);
     step_clients_ruby.dependOn(&bindings.step);
+
+    step_clients_ruby.dependOn(&b.addInstallDirectory(.{
+        .source_dir = options.tb_client.all_platforms,
+        .install_dir = .prefix,
+        .install_subdir = "../src/clients/ruby/ext/tb_client/",
+    }).step);
 }
 fn build_python_client(
     b: *std.Build,
