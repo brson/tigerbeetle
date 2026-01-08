@@ -1783,12 +1783,12 @@ fn build_ruby_client(
 
     const signatures = Generated.file(b, .{
         .generator = ruby_signatures_generator,
-        .path = "./src/clients/ruby/sig/tb_client.rbs",
+        .path = "./src/clients/ruby/sig/tigerbeetle/ffi.rbs",
     });
 
     const bindings = Generated.file(b, .{
         .generator = ruby_bindings_generator,
-        .path = "./src/clients/ruby/lib/tb_client.rb",
+        .path = "./src/clients/ruby/lib/tigerbeetle/ffi.rb",
     });
 
     step_clients_ruby.dependOn(&signatures.step);

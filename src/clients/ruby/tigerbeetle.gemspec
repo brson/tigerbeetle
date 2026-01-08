@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
-require_relative "lib/tb_client/version"
+require_relative "lib/tigerbeetle/ffi/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "tb_client"
-  spec.version = TBClient::VERSION
+  spec.name = "tigerbeetle"
+  spec.version = TigerBeetle::FFI::VERSION
   spec.authors = %w(antstorm trevorrjohn)
 
-  spec.summary = "TigerBeetle FFI Bindings"
-  spec.description = "Generated bindings for TigerBeetle"
+  spec.summary = "TigerBeetle Ruby Client"
+  spec.description = "Ruby client for TigerBeetle database"
   spec.homepage = "https://github.com/tigerbeetle/tigerbeetle"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"

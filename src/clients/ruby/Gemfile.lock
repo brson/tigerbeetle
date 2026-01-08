@@ -1,23 +1,23 @@
 PATH
   remote: .
   specs:
-    tb_client (0.1.0)
+    tigerbeetle (0.1.0)
       ffi (> 1.0)
 
 GEM
   remote: https://rubygems.org/
   specs:
-    ffi (1.17.2)
-    ffi (1.17.2-aarch64-linux-gnu)
-    ffi (1.17.2-aarch64-linux-musl)
-    ffi (1.17.2-arm-linux-gnu)
-    ffi (1.17.2-arm-linux-musl)
-    ffi (1.17.2-arm64-darwin)
-    ffi (1.17.2-x86-linux-gnu)
-    ffi (1.17.2-x86-linux-musl)
-    ffi (1.17.2-x86_64-darwin)
-    ffi (1.17.2-x86_64-linux-gnu)
-    ffi (1.17.2-x86_64-linux-musl)
+    ffi (1.17.3)
+    ffi (1.17.3-aarch64-linux-gnu)
+    ffi (1.17.3-aarch64-linux-musl)
+    ffi (1.17.3-arm-linux-gnu)
+    ffi (1.17.3-arm-linux-musl)
+    ffi (1.17.3-arm64-darwin)
+    ffi (1.17.3-x86-linux-gnu)
+    ffi (1.17.3-x86-linux-musl)
+    ffi (1.17.3-x86_64-darwin)
+    ffi (1.17.3-x86_64-linux-gnu)
+    ffi (1.17.3-x86_64-linux-musl)
     minitest (6.0.1)
       prism (~> 1.5)
     prism (1.7.0)
@@ -39,7 +39,7 @@ PLATFORMS
 DEPENDENCIES
   minitest
   rake
-  tb_client!
+  tigerbeetle!
 
 BUNDLED WITH
    2.6.2
