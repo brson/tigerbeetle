@@ -13,7 +13,7 @@ use futures::{Stream, StreamExt};
 
 use tigerbeetle as tb;
 
-// Singleton test database.
+// Singleton test database shared by most tests.
 // This can be a OnceLock in Rust 1.70+, and LazyLock in 1.80.
 fn get_test_db() -> &'static TestDb {
     struct OnceLock {
@@ -32,7 +32,8 @@ fn get_test_db() -> &'static TestDb {
 
     unsafe {
         TEST_DB.once.call_once(|| {
-            *(&mut *TEST_DB.value.get()) = Some(TestDb::new().expect(error_msg));
+            *(&mut *TEST_DB.value.get()) =
+                Some(TestDb::new("0_0.testdb.tigerbeetle").expect(error_msg));
         });
 
         (&*TEST_DB.value.get()).as_ref().expect(error_msg)
@@ -41,22 +42,20 @@ fn get_test_db() -> &'static TestDb {
 
 struct TestDb {
     port: u16,
-    // Keep the server's stdin handle open as long as the test process is running,
-    // at which point the server will terminate.
+    // Keep the server's stdin handle open as long as the TestDb is alive.
+    // When dropped, the server will terminate.
     _server: Child,
 }
 
 impl TestDb {
-    fn new() -> anyhow::Result<TestDb> {
+    /// Create a new test database with the given name.
+    ///
+    /// The database file is created in CARGO_TARGET_TMPDIR and reused across test runs.
+    /// The server listens on an ephemeral port (returned in `self.port`).
+    fn new(database_name: &str) -> anyhow::Result<TestDb> {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-
-        // NB: There is one test database shared between all tests, and reused
-        // between test runs. If the tests choose their IDs correctly there
-        // should never be any collisions, and that one database should work
-        // forever, just taking up a lot of space.
         let tigerbeetle_bin = format!("{manifest_dir}/../../../tigerbeetle{EXE_SUFFIX}");
         let work_dir = env!("CARGO_TARGET_TMPDIR");
-        let database_name = "0_0.testdb.tigerbeetle";
 
         if !Path::new(&format!("{work_dir}/{database_name}")).try_exists()? {
             let mut cmd = Command::new(&tigerbeetle_bin);
@@ -66,7 +65,8 @@ impl TestDb {
                 "--replica-count=1",
                 "--replica=0",
                 "--cluster=0",
-                &database_name,
+                "--development",
+                database_name,
             ]);
             let status = cmd.status()?;
             assert!(status.success());
@@ -76,11 +76,10 @@ impl TestDb {
         cmd.current_dir(&work_dir);
         cmd.args([
             "start",
-            // magic address 0: tell us the port to use,
-            // shutdown when stdin closes
+            // Magic address 0: use ephemeral port, shutdown when stdin closes.
             "--addresses=0",
             "--cache-grid=128MiB",
-            &database_name,
+            database_name,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
@@ -96,6 +95,10 @@ impl TestDb {
             port,
             _server: server,
         })
+    }
+
+    fn address(&self) -> String {
+        format!("127.0.0.1:{}", self.port)
     }
 }
 
@@ -1359,4 +1362,191 @@ fn example_lookup_transfers() -> Result<(), Box<dyn std::error::Error>> {
 
         Ok(())
     })
+}
+
+/// Stress test to force client evictions by overloading the server with clients.
+///
+/// Structure:
+/// - Create N_CLIENTS clients (more than server limit of 64)
+/// - Use a barrier to ensure all clients exist before any work starts
+/// - Each client has M_WORKER_THREADS that submit X_REQUESTS_PER_WORKER requests
+/// - Test fails if no eviction is observed
+///
+/// This test uses its own database instance to avoid evicting clients from other tests.
+#[test]
+fn eviction_stress() -> anyhow::Result<()> {
+    // Configurable parameters.
+    const T_TIMES: usize = 1;
+    const N_CLIENTS: usize = 65; // Server limit is 64, so 65 should trigger eviction.
+    const M_WORKER_THREADS: usize = 4;
+    const X_REQUESTS_PER_WORKER: usize = 10;
+
+    #[derive(Debug, Default)]
+    struct WorkerResults {
+        successes: usize,
+        evictions: usize,
+        shutdowns: usize,
+        other_errors: usize,
+    }
+
+    #[derive(Debug, Default)]
+    struct ClientResults {
+        created: bool,
+        worker_results: Vec<WorkerResults>,
+    }
+
+    // Use a dedicated database to avoid evicting clients from other tests.
+    let test_db = TestDb::new("eviction_stress.tigerbeetle")?;
+    let address = test_db.address();
+
+    for _ in 0..T_TIMES {
+        // Total worker threads across all clients.
+        let total_workers = N_CLIENTS * M_WORKER_THREADS;
+
+        // Global barrier: all workers wait here before starting requests.
+        // This ensures all clients are created and registered before any requests.
+        let work_barrier = Arc::new(Barrier::new(total_workers));
+
+        // Phase 1: Create all clients first.
+        let mut clients: Vec<Option<Arc<tb::Client>>> = Vec::with_capacity(N_CLIENTS);
+
+        for client_idx in 0..N_CLIENTS {
+            match tb::Client::new(0, &address) {
+                Ok(c) => {
+                    clients.push(Some(Arc::new(c)));
+                }
+                Err(e) => {
+                    clients.push(None);
+                }
+            }
+        }
+
+        // Give time for all clients to complete registration before workers start.
+        // Registration happens asynchronously on IO threads.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Phase 2: Now spawn workers for each client.
+        let mut all_worker_handles = Vec::with_capacity(total_workers);
+
+        for (client_idx, client_opt) in clients.iter().enumerate() {
+            for worker_idx in 0..M_WORKER_THREADS {
+                let work_barrier = work_barrier.clone();
+
+                let handle = if let Some(client) = client_opt.clone() {
+                    std::thread::spawn(move || -> WorkerResults {
+                        // Wait for ALL workers across ALL clients to be ready.
+                        work_barrier.wait();
+
+                        let mut results = WorkerResults::default();
+
+                        // Submit requests.
+                        block_on(async {
+                            let futures: Vec<_> = (0..X_REQUESTS_PER_WORKER)
+                                .map(|_| {
+                                    let account = tb::Account {
+                                        id: tb::id(),
+                                        ledger: TEST_LEDGER,
+                                        code: TEST_CODE,
+                                        ..Default::default()
+                                    };
+                                    client.create_accounts(&[account])
+                                })
+                                .collect();
+
+                            for (req_idx, future) in futures.into_iter().enumerate() {
+                                match future.await {
+                                    Ok(_) => {
+                                        results.successes += 1;
+                                    }
+                                    Err(tb::PacketStatus::ClientEvicted) => {
+                                        results.evictions += 1;
+                                    }
+                                    Err(tb::PacketStatus::ClientShutdown) => {
+                                        results.shutdowns += 1;
+                                    }
+                                    Err(e) => {
+                                        results.other_errors += 1;
+                                    }
+                                }
+                            }
+                        });
+
+                        results
+                    })
+                } else {
+                    // Client creation failed - placeholder worker
+                    std::thread::spawn(move || -> WorkerResults {
+                        work_barrier.wait();
+                        WorkerResults::default()
+                    })
+                };
+
+                all_worker_handles.push((client_idx, handle));
+            }
+        }
+
+        // Collect results grouped by client.
+        let mut client_results: Vec<ClientResults> = (0..N_CLIENTS)
+            .map(|i| ClientResults {
+                created: clients[i].is_some(),
+                worker_results: Vec::with_capacity(M_WORKER_THREADS),
+            })
+            .collect();
+
+        for (client_idx, handle) in all_worker_handles {
+            let worker_result = handle.join().expect("worker thread panic");
+            client_results[client_idx]
+                .worker_results
+                .push(worker_result);
+        }
+
+        // Aggregate results.
+        let total_successes: usize = client_results
+            .iter()
+            .flat_map(|c| &c.worker_results)
+            .map(|w| w.successes)
+            .sum();
+        let total_evictions: usize = client_results
+            .iter()
+            .flat_map(|c| &c.worker_results)
+            .map(|w| w.evictions)
+            .sum();
+        let total_shutdowns: usize = client_results
+            .iter()
+            .flat_map(|c| &c.worker_results)
+            .map(|w| w.shutdowns)
+            .sum();
+        let total_other_errors: usize = client_results
+            .iter()
+            .flat_map(|c| &c.worker_results)
+            .map(|w| w.other_errors)
+            .sum();
+        let clients_created: usize = client_results.iter().filter(|c| c.created).count();
+
+        // Report results.
+        println!("\n=== Eviction Stress Test Results ===");
+        println!("Configuration:");
+        println!("  Clients (N): {N_CLIENTS}");
+        println!("  Worker threads per client (M): {M_WORKER_THREADS}");
+        println!("  Requests per worker (X): {X_REQUESTS_PER_WORKER}");
+        println!(
+            "  Total requests: {}",
+            N_CLIENTS * M_WORKER_THREADS * X_REQUESTS_PER_WORKER
+        );
+        println!("\nResults:");
+        println!("  Clients created: {clients_created}");
+        println!("  Successes: {total_successes}");
+        println!("  Evictions: {total_evictions}");
+        println!("  Shutdowns: {total_shutdowns}");
+        println!("  Other errors: {total_other_errors}");
+
+        // Test fails if no eviction was observed.
+        assert!(
+            total_evictions > 0,
+            "Expected at least one eviction, but got none. \
+             Server may have higher client limit or evictions aren't being reported."
+        );
+    }
+
+    Ok(())
 }

@@ -26,6 +26,14 @@ pub const MessageBus = struct {
     /// The callback to be called when a message is received.
     on_messages_callback: *const fn (message_bus: *MessageBus, buffer: *MessageBuffer) void,
 
+    /// Called when connections are full and we need to evict a client.
+    /// Not used in test message bus (no connection limits).
+    on_evict_for_connection_callback: ?*const fn (message_bus: *MessageBus) ?u128 = null,
+
+    /// Map from client id to connection. Empty in test bus (no real connections).
+    /// Present for API compatibility with the real message bus.
+    clients: std.AutoHashMapUnmanaged(u128, void) = .{},
+
     pub const Options = struct {
         network: *Network,
     };

@@ -401,9 +401,13 @@ pub fn ClientType(
         }
 
         fn on_eviction(self: *Client, eviction: *const Message.Eviction) void {
-            assert(!self.evicted);
             assert(eviction.header.command == .eviction);
             assert(eviction.header.cluster == self.cluster);
+
+            // Ignore duplicate eviction messages. This can happen if a client is
+            // evicted from the session table and then also selected for connection
+            // eviction before its connection is closed.
+            if (self.evicted) return;
 
             if (eviction.header.client != self.id) {
                 log.warn("{}: on_eviction: ignoring (wrong client={})", .{

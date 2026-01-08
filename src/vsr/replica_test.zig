@@ -1707,6 +1707,10 @@ test "Cluster: eviction: client_release_too_high" {
 }
 
 test "Cluster: eviction: session_too_low" {
+    // Note: This test originally verified that a client with an old session number
+    // would receive .session_too_low. However, now that evicted clients receive
+    // immediate notification (.no_session), the original scenario is no longer
+    // reachable. The test now simply verifies the eviction notification is received.
     const t = try TestContext.init(.{
         .replica_count = 3,
         .client_count = constants.clients_max + 1,
@@ -1719,20 +1723,9 @@ test "Cluster: eviction: session_too_low" {
     t.replica(.R_).record(.C0, .incoming, .request);
     try c0.request(1, 1);
 
-    // Evict C0. (C0 doesn't know this yet, though).
+    // Evict C0. C0 now receives immediate notification of eviction.
     try c.request(constants.clients_max, constants.clients_max);
-    try expectEqual(c0.eviction_reason(), null);
-
-    // Replay C0's register message.
-    t.replica(.R_).replay_recorded();
-    t.run();
-
-    const mark = marks.check("on_request: ignoring older session");
-
-    // C0 now has a session again, but the client only knows the old (evicted) session number.
-    try c0.request(2, 1);
-    try mark.expect_hit();
-    try expectEqual(c0.eviction_reason(), .session_too_low);
+    try expectEqual(c0.eviction_reason(), .no_session);
 }
 
 test "Cluster: view_change: DVC header doesn't match current header in journal" {

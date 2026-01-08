@@ -1283,6 +1283,7 @@ pub fn ReplicaType(
                 options.message_bus_options,
             );
             errdefer self.message_bus.deinit(allocator);
+            self.message_bus.on_evict_for_connection_callback = Replica.on_evict_for_connection;
 
             try self.message_bus.listen();
 
@@ -1572,6 +1573,58 @@ pub fn ReplicaType(
         fn on_messages_from_bus(message_bus: *MessageBus, buffer: *MessageBuffer) void {
             const self: *Replica = @alignCast(@fieldParentPtr("message_bus", message_bus));
             self.on_messages(buffer);
+        }
+
+        /// Called by the MessageBus when connections are full and we need to evict a client.
+        /// Returns the client_id to evict, or null if no client can be evicted.
+        fn on_evict_for_connection(message_bus: *MessageBus) ?u128 {
+            const self: *Replica = @alignCast(@fieldParentPtr("message_bus", message_bus));
+
+            // Find a client to evict. Follow client_sessions.evictee() precedent:
+            // pick the client with the oldest (lowest) commit number.
+            // Prefer clients WITH sessions, but fall back to clients without sessions
+            // to avoid livelock when all connections are from unregistered clients.
+            var evictee_with_session: ?u128 = null;
+            var evictee_without_session: ?u128 = null;
+            var evictee_commit: ?u64 = null;
+
+            var clients_iter = message_bus.clients.iterator();
+            while (clients_iter.next()) |entry| {
+                const client_id = entry.key_ptr.*;
+                if (self.client_sessions.get(client_id)) |session| {
+                    if (evictee_commit == null or session.header.commit < evictee_commit.?) {
+                        evictee_with_session = client_id;
+                        evictee_commit = session.header.commit;
+                    }
+                } else {
+                    // Client without session - use as fallback.
+                    if (evictee_without_session == null) {
+                        evictee_without_session = client_id;
+                    }
+                }
+            }
+
+            // Prefer evicting clients with sessions (they've been using the system).
+            // Fall back to clients without sessions to avoid livelock.
+            const evictee_client = evictee_with_session orelse evictee_without_session;
+
+            if (evictee_client) |client_id| {
+                log.warn("{}: on_evict_for_connection: evicting client={}", .{
+                    self.log_prefix(),
+                    client_id,
+                });
+
+                // Send eviction message before connection is closed.
+                // Note: We do NOT remove from client_sessions - that's replicated state
+                // that should only be modified through the commit process. The client
+                // can reconnect and resume their session.
+                if (self.status == .normal and self.primary()) {
+                    self.send_eviction_message_to_client(client_id, .too_many_connections);
+                }
+
+                return client_id;
+            }
+            return null;
         }
 
         pub fn on_messages(self: *Replica, buffer: *MessageBuffer) void {
@@ -5642,6 +5695,12 @@ pub fn ReplicaType(
 
                 if (self.event_callback) |hook| {
                     hook(self, .{ .client_evicted = evictee });
+                }
+
+                // Notify the evicted client so it can shut down and release its connection.
+                // Only the primary in normal status can send eviction messages.
+                if (self.status == .normal and self.primary()) {
+                    self.send_eviction_message_to_client(evictee, .no_session);
                 }
             }
 

@@ -47,6 +47,10 @@ pub fn MessageBusType(comptime IO: type) type {
         /// The callback to be called when a message is received.
         on_messages_callback: *const fn (message_bus: *MessageBus, buffer: *MessageBuffer) void,
 
+        /// Called when connections are full and we need to evict a client.
+        /// Returns the client_id to evict, or null if no client can be evicted.
+        on_evict_for_connection_callback: ?*const fn (message_bus: *MessageBus) ?u128,
+
         /// SendQueue storage shared by all connections.
         send_queue_buffer: []*Message,
         /// This slice is allocated with a fixed size in the init function and never reallocated.
@@ -158,6 +162,7 @@ pub fn MessageBusType(comptime IO: type) type {
                     .client => |id| id,
                 },
                 .on_messages_callback = on_messages_callback,
+                .on_evict_for_connection_callback = null,
                 .send_queue_buffer = send_queue_buffer,
                 .connections = connections,
                 .replicas = replicas,
@@ -294,8 +299,20 @@ pub fn MessageBusType(comptime IO: type) type {
             assert(bus.accept_fd != null);
 
             if (bus.accept_connection != null) return;
-            // All connections are currently in use, do nothing.
-            if (bus.connections_used == bus.connections.len) return;
+            // All connections are currently in use, try to evict a client.
+            if (bus.connections_used == bus.connections.len) {
+                if (bus.on_evict_for_connection_callback) |callback| {
+                    if (callback(bus)) |client_to_evict| {
+                        if (bus.clients.get(client_to_evict)) |connection| {
+                            // terminate() is async - sends pending messages (including eviction),
+                            // then closes connection. Slot won't free until shutdown completes.
+                            // New client must retry; eviction gives them a chance to succeed.
+                            bus.terminate(connection, .shutdown);
+                        }
+                    }
+                }
+                return;
+            }
             assert(bus.connections_used < bus.connections.len);
             bus.accept_connection = for (bus.connections) |*connection| {
                 if (connection.state == .free) {
