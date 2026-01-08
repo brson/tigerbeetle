@@ -414,6 +414,7 @@ fn build_ci(
         java,
         node,
         python,
+        ruby,
 
         devhub, // Things that run on known-good commit on main branch after merge.
         @"devhub-dry-run",
@@ -478,7 +479,7 @@ fn build_ci(
         hide_stderr(aof);
         step_ci.dependOn(&aof.step);
     }
-    inline for (&.{ CIMode.dotnet, .go, .rust, .java, .node, .python }) |language| {
+    inline for (&.{ CIMode.dotnet, .go, .rust, .java, .node, .python, .ruby }) |language| {
         if (default or mode == .clients or mode == language) {
             // Client tests expect vortex to exist.
             build_ci_step(b, step_ci, .{"vortex:build"});

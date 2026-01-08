@@ -32,12 +32,23 @@ pub fn test_freshness(
     gpa: std.mem.Allocator,
     language: Language,
 ) !void {
+    return switch (language) {
+        inline else => |l| test_freshness_impl(shell, gpa, l),
+    };
+}
+
+fn test_freshness_impl(
+    shell: *Shell,
+    gpa: std.mem.Allocator,
+    comptime language: Language,
+) !void {
+    // Skip languages without docs.
+    if (!@hasField(@TypeOf(LanguageDocs), @tagName(language))) return;
+
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
-    const docs = switch (language) {
-        inline else => |l| @field(LanguageDocs, @tagName(l)),
-    };
+    const docs = @field(LanguageDocs, @tagName(language));
 
     const walkthrough_path = try shell.fmt(
         "./samples/walkthrough/{s}{s}.{s}",

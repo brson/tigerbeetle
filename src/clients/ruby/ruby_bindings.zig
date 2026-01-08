@@ -174,8 +174,9 @@ fn emit_enum(
                     @intFromEnum(@field(Type, field.name)),
                 });
             } else {
-                // Packed structs.
-                buffer.print("      :{s}, 1 << {},\n", .{
+                // Packed structs - Ruby FFI bitmask interprets numbers as bit positions,
+                // so we output the index directly (FFI will shift it).
+                buffer.print("      :{s}, {},\n", .{
                     @as([]const u8, &field_name),
                     i,
                 });

@@ -69,34 +69,34 @@ module TigerBeetle
     ])
 
     AccountFlags = bitmask(::FFI::Type::UINT16, [
-      :LINKED, 1 << 0,
-      :DEBITS_MUST_NOT_EXCEED_CREDITS, 1 << 1,
-      :CREDITS_MUST_NOT_EXCEED_DEBITS, 1 << 2,
-      :HISTORY, 1 << 3,
-      :IMPORTED, 1 << 4,
-      :CLOSED, 1 << 5,
+      :LINKED, 0,
+      :DEBITS_MUST_NOT_EXCEED_CREDITS, 1,
+      :CREDITS_MUST_NOT_EXCEED_DEBITS, 2,
+      :HISTORY, 3,
+      :IMPORTED, 4,
+      :CLOSED, 5,
     ])
 
     TransferFlags = bitmask(::FFI::Type::UINT16, [
-      :LINKED, 1 << 0,
-      :PENDING, 1 << 1,
-      :POST_PENDING_TRANSFER, 1 << 2,
-      :VOID_PENDING_TRANSFER, 1 << 3,
-      :BALANCING_DEBIT, 1 << 4,
-      :BALANCING_CREDIT, 1 << 5,
-      :CLOSING_DEBIT, 1 << 6,
-      :CLOSING_CREDIT, 1 << 7,
-      :IMPORTED, 1 << 8,
+      :LINKED, 0,
+      :PENDING, 1,
+      :POST_PENDING_TRANSFER, 2,
+      :VOID_PENDING_TRANSFER, 3,
+      :BALANCING_DEBIT, 4,
+      :BALANCING_CREDIT, 5,
+      :CLOSING_DEBIT, 6,
+      :CLOSING_CREDIT, 7,
+      :IMPORTED, 8,
     ])
 
     AccountFilterFlags = bitmask(::FFI::Type::UINT32, [
-      :DEBITS, 1 << 0,
-      :CREDITS, 1 << 1,
-      :REVERSED, 1 << 2,
+      :DEBITS, 0,
+      :CREDITS, 1,
+      :REVERSED, 2,
     ])
 
     QueryFilterFlags = bitmask(::FFI::Type::UINT32, [
-      :REVERSED, 1 << 0,
+      :REVERSED, 0,
     ])
 
     CreateAccountResult = enum(::FFI::Type::UINT32, [
