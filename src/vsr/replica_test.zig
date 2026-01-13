@@ -7,6 +7,7 @@ const expect = std.testing.expect;
 const allocator = std.testing.allocator;
 
 const stdx = @import("stdx");
+const skip = @import("../testing/skip.zig");
 const constants = @import("../constants.zig");
 const vsr = @import("../vsr.zig");
 const fuzz = @import("../testing/fuzz.zig");
@@ -73,6 +74,7 @@ test "Cluster: smoke" {
 }
 
 test "Cluster: recovery: WAL prepare corruption (R=3, corrupt right of head)" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -92,6 +94,7 @@ test "Cluster: recovery: WAL prepare corruption (R=3, corrupt right of head)" {
 }
 
 test "Cluster: recovery: WAL prepare corruption (R=3, corrupt left of head, 3/3 corrupt)" {
+    try skip.skipIfExpensive(3);
     // The replicas recognize that the corrupt entry is outside of the pipeline and
     // must be committed.
     const t = try TestContext.init(.{ .replica_count = 3 });
@@ -111,6 +114,7 @@ test "Cluster: recovery: WAL prepare corruption (R=3, corrupt left of head, 3/3 
 }
 
 test "Cluster: recovery: WAL prepare corruption (R=3, corrupt root)" {
+    try skip.skipIfExpensive(3);
     // A replica can recover from a corrupt root prepare.
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
@@ -129,6 +133,7 @@ test "Cluster: recovery: WAL prepare corruption (R=3, corrupt root)" {
 }
 
 test "Cluster: recovery: WAL prepare corruption (R=3, corrupt checkpoint…head)" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -204,6 +209,7 @@ test "Cluster: recovery: WAL torn prepare, standby with intact prepare (R=1 S=1)
 }
 
 test "Cluster: recovery: grid corruption (disjoint)" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -249,6 +255,7 @@ test "Cluster: recovery: grid corruption (disjoint)" {
 }
 
 test "Cluster: recovery: recovering_head, outdated start view" {
+    try skip.skipIfExpensive(3);
     // 1. Wait for B1 to ok op=3.
     // 2. Restart B1 while corrupting op=3, so that it gets into a .recovering_head with op=2.
     // 3. Try make B1 forget about op=3 by delivering it an outdated .start_view with op=2.
@@ -304,6 +311,7 @@ test "Cluster: recovery: recovering_head, outdated start view" {
 }
 
 test "Cluster: recovery: recovering head: idle cluster" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -327,6 +335,7 @@ test "Cluster: recovery: recovering head: idle cluster" {
 }
 
 test "Cluster: recovery: reformat unrecoverable replica" {
+    try skip.skipIfExpensive(3);
     for ([_]u64{
         // The cluster is still within the first checkpoint.
         // The recovering replica just needs to load a SV and then it can repair.
@@ -355,6 +364,7 @@ test "Cluster: recovery: reformat unrecoverable replica" {
 }
 
 test "Cluster: recovery: reformat unrecoverable replica: too many faults" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -389,6 +399,7 @@ test "Cluster: recovery: reformat unrecoverable replica: too many faults" {
 }
 
 test "Cluster: network: partition 2-1 (isolate backup, symmetric)" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -402,6 +413,7 @@ test "Cluster: network: partition 2-1 (isolate backup, symmetric)" {
 }
 
 test "Cluster: network: partition 2-1 (isolate backup, asymmetric, send-only)" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -415,6 +427,7 @@ test "Cluster: network: partition 2-1 (isolate backup, asymmetric, send-only)" {
 }
 
 test "Cluster: network: partition 2-1 (isolate backup, asymmetric, receive-only)" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -432,6 +445,7 @@ test "Cluster: network: partition 2-1 (isolate backup, asymmetric, receive-only)
 }
 
 test "Cluster: network: partition 1-2 (isolate primary, symmetric)" {
+    try skip.skipIfExpensive(3);
     // The primary cannot communicate with either backup, but the backups can communicate with one
     // another. The backups will perform a view-change since they don't receive heartbeats.
     const t = try TestContext.init(.{ .replica_count = 3 });
@@ -448,6 +462,7 @@ test "Cluster: network: partition 1-2 (isolate primary, symmetric)" {
 }
 
 test "Cluster: network: partition 1-2 (isolate primary, asymmetric, send-only)" {
+    try skip.skipIfExpensive(3);
     // The primary can send to the backups, but not receive.
     // After a short interval of not receiving messages (specifically prepare_ok's) it will abdicate
     // by pausing heartbeats, allowing the next replica to take over as primary.
@@ -464,6 +479,7 @@ test "Cluster: network: partition 1-2 (isolate primary, asymmetric, send-only)" 
 }
 
 test "Cluster: network: partition 1-2 (isolate primary, asymmetric, receive-only)" {
+    try skip.skipIfExpensive(3);
     // The primary can receive from the backups, but not send to them.
     // The backups will perform a view-change since they don't receive heartbeats.
     const t = try TestContext.init(.{ .replica_count = 3 });
@@ -477,6 +493,7 @@ test "Cluster: network: partition 1-2 (isolate primary, asymmetric, receive-only
 }
 
 test "Cluster: network: partition client-primary (symmetric)" {
+    try skip.skipIfExpensive(3);
     // Clients cannot communicate with the primary, but they still request/reply via a backup.
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
@@ -488,6 +505,7 @@ test "Cluster: network: partition client-primary (symmetric)" {
 }
 
 test "Cluster: network: partition client-primary (asymmetric, drop requests)" {
+    try skip.skipIfExpensive(3);
     // Primary cannot receive messages from the clients.
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
@@ -499,6 +517,7 @@ test "Cluster: network: partition client-primary (asymmetric, drop requests)" {
 }
 
 test "Cluster: network: partition client-primary (asymmetric, drop replies)" {
+    try skip.skipIfExpensive(3);
     // Clients cannot receive replies from the primary, but they receive replies from a backup.
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
@@ -510,6 +529,7 @@ test "Cluster: network: partition client-primary (asymmetric, drop replies)" {
 }
 
 test "Cluster: network: partition flexible quorum" {
+    try skip.skipIfExpensive(4);
     // Two out of four replicas should be able to carry on as long the pair includes the primary.
     const t = try TestContext.init(.{ .replica_count = 4 });
     defer t.deinit();
@@ -525,6 +545,7 @@ test "Cluster: network: partition flexible quorum" {
 }
 
 test "Cluster: network: primary no clock sync" {
+    try skip.skipIfExpensive(3);
     // When primary can't accept requests because the clock is not synchronized, it must proactively
     // abdicate (the rest of the cluster doesn't know that there are dropped requests).
     const t = try TestContext.init(.{ .replica_count = 3 });
@@ -548,6 +569,7 @@ test "Cluster: network: primary no clock sync" {
 }
 
 test "Cluster: repair: partition 2-1, then backup fast-forward 1 checkpoint" {
+    try skip.skipIfExpensive(3);
     // A backup that has fallen behind by two checkpoints can catch up, without using state sync.
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
@@ -581,6 +603,7 @@ test "Cluster: repair: partition 2-1, then backup fast-forward 1 checkpoint" {
 }
 
 test "Cluster: repair: view-change, new-primary lagging behind checkpoint, forfeit" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -630,6 +653,7 @@ test "Cluster: repair: view-change, new-primary lagging behind checkpoint, forfe
 }
 
 test "Cluster: repair: crash, corrupt committed pipeline op, repair it, view-change; dont nack" {
+    try skip.skipIfExpensive(3);
     // This scenario is also applicable when any op within the pipeline suffix is corrupted.
     // But we test by corrupting the last op to take advantage of recovering_head to learn the last
     // op's header without its prepare.
@@ -684,6 +708,7 @@ test "Cluster: repair: crash, corrupt committed pipeline op, repair it, view-cha
 }
 
 test "Cluster: repair: corrupt reply" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -715,6 +740,7 @@ test "Cluster: repair: corrupt reply" {
 }
 
 test "Cluster: repair: ack committed prepare" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -781,6 +807,7 @@ test "Cluster: repair: ack committed prepare" {
 }
 
 test "Cluster: repair: primary checkpoint, backup crash before checkpoint, primary prepare" {
+    try skip.skipIfExpensive(3);
     // 1. Given 3 replica: A0, B1, B2.
     // 2. B2 is partitioned (for the entire scenario).
     // 3. A0 and B1 prepare and commit many messages...
@@ -826,6 +853,7 @@ test "Cluster: repair: primary checkpoint, backup crash before checkpoint, prima
 }
 
 test "Cluster: view-change: DVC, 1+1/2 faulty header stall, 2+1/3 faulty header succeed" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -861,6 +889,7 @@ test "Cluster: view-change: DVC, 1+1/2 faulty header stall, 2+1/3 faulty header 
 }
 
 test "Cluster: view-change: DVC, 2/3 faulty header stall" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -882,6 +911,7 @@ test "Cluster: view-change: DVC, 2/3 faulty header stall" {
 }
 
 test "Cluster: view-change: duel of the primaries" {
+    try skip.skipIfExpensive(3);
     // In a cluster of 3, one replica gets partitioned away, and the remaining two _both_ become
     // primaries (for different views). Additionally, the primary from the  higher view is
     // abdicating. The primaries should figure out that they need to view-change to a higher view.
@@ -933,6 +963,7 @@ test "Cluster: view-change: duel of the primaries" {
 }
 
 test "Cluster: view_change: lagging replica advances checkpoint during view change" {
+    try skip.skipIfExpensive(3);
     // It could be the case that the replica with the most advanced checkpoint has its checkpoint
     // corrupted. In this case, a replica with a slightly older checkpoint must step up as primary.
 
@@ -1005,6 +1036,7 @@ test "Cluster: view_change: lagging replica advances checkpoint during view chan
 }
 
 test "Cluster: view-change: primary with dirty log" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -1046,6 +1078,7 @@ test "Cluster: view-change: primary with dirty log" {
 }
 
 test "Cluster: view-change: nack older view" {
+    try skip.skipIfExpensive(3);
     // a0 prepares (but does not commit) three ops (`x`, `x + 1`, `x + 2`) at view `v`.
     // b1 prepares (but does not commit) the same ops at view `v + 1`.
     // b2 receives only `x + 2` op prepared at b1.
@@ -1101,6 +1134,7 @@ test "Cluster: view-change: nack older view" {
 }
 
 test "Cluster: sync: partition, lag, sync (transition from idle)" {
+    try skip.skipIfExpensive(3);
     for ([_]u64{
         // Normal case: the cluster has prepared beyond the checkpoint.
         // The lagging replica can learn the latest checkpoint from a commit message.
@@ -1139,6 +1173,7 @@ test "Cluster: sync: partition, lag, sync (transition from idle)" {
 }
 
 test "Cluster: repair: R=2 (primary checkpoints, but backup lags behind)" {
+    try skip.skipIfExpensive(2);
     const t = try TestContext.init(.{ .replica_count = 2 });
     defer t.deinit();
 
@@ -1181,6 +1216,7 @@ test "Cluster: repair: R=2 (primary checkpoints, but backup lags behind)" {
 }
 
 test "Cluster: sync: R=4, 2/4 ahead + idle, 2/4 lagging, sync" {
+    try skip.skipIfExpensive(4);
     const t = try TestContext.init(.{ .replica_count = 4 });
     defer t.deinit();
 
@@ -1214,6 +1250,7 @@ test "Cluster: sync: R=4, 2/4 ahead + idle, 2/4 lagging, sync" {
 }
 
 test "Cluster: sync: view-change with lagging replica" {
+    try skip.skipIfExpensive(3);
     // Check that a cluster can view change even if view-change quorum contains syncing replicas.
     // This used to be a special case for an older sync protocol, but now this mostly holds by
     // construction.
@@ -1259,6 +1296,7 @@ test "Cluster: sync: view-change with lagging replica" {
 }
 
 test "Cluster: sync: slightly lagging replica" {
+    try skip.skipIfExpensive(3);
     // Sometimes a replica must switch to state sync even if it is within journal_slot_count
     // ops from commit_max. Checkpointed ops are not repaired and might become unavailable.
 
@@ -1287,6 +1325,7 @@ test "Cluster: sync: slightly lagging replica" {
 }
 
 test "Cluster: sync: using SV from durable checkpoint" {
+    try skip.skipIfExpensive(3);
     // Primary sends a SV message to backups when a checkpoint becomes durable. A lagging backup
     // must use this SV message to state sync to the checkpoint.
 
@@ -1334,6 +1373,7 @@ test "Cluster: sync: using SV from durable checkpoint" {
 }
 
 test "Cluster: sync: checkpoint from a newer view" {
+    try skip.skipIfExpensive(6);
     // B1 appends (but does not commit) prepares across a checkpoint boundary.
     // Then the cluster truncates those prepares and commits past the checkpoint trigger.
     // When B1 subsequently joins, it should state sync and truncate the log. Immediately
@@ -1407,6 +1447,7 @@ test "Cluster: sync: checkpoint from a newer view" {
 }
 
 test "Cluster: prepare beyond checkpoint trigger" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -1434,6 +1475,7 @@ test "Cluster: prepare beyond checkpoint trigger" {
 }
 
 test "Cluster: upgrade: operation=upgrade near trigger-minus-bar" {
+    try skip.skipIfExpensive(3);
     const trigger_for_checkpoint = vsr.Checkpoint.trigger_for_checkpoint;
     for ([_]struct {
         request: u64,
@@ -1496,6 +1538,7 @@ test "Cluster: upgrade: R=1" {
 }
 
 test "Cluster: upgrade: state-sync to new release" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -1541,6 +1584,7 @@ test "Cluster: upgrade: state-sync to new release" {
 }
 
 test "Cluster: scrub: background scrubber, fully corrupt grid" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -1661,6 +1705,7 @@ test "Cluster: client: empty command=request operation=register body" {
 }
 
 test "Cluster: eviction: no_session" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{
         .replica_count = 3,
         .client_count = constants.clients_max + 1,
@@ -1683,6 +1728,7 @@ test "Cluster: eviction: no_session" {
 }
 
 test "Cluster: eviction: client_release_too_low" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{
         .replica_count = 3,
         .client_release = .{ .value = releases[0].release.value - 1 },
@@ -1695,6 +1741,7 @@ test "Cluster: eviction: client_release_too_low" {
 }
 
 test "Cluster: eviction: client_release_too_high" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{
         .replica_count = 3,
         .client_release = .{ .value = releases[0].release.value + 1 },
@@ -1707,6 +1754,7 @@ test "Cluster: eviction: client_release_too_high" {
 }
 
 test "Cluster: eviction: session_too_low" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{
         .replica_count = 3,
         .client_count = constants.clients_max + 1,
@@ -1736,6 +1784,7 @@ test "Cluster: eviction: session_too_low" {
 }
 
 test "Cluster: view_change: DVC header doesn't match current header in journal" {
+    try skip.skipIfExpensive(3);
     // It could be the case that a replica's DVC headers don't match the journal's current state.
     // For example, a header could be blank in the DVC but present in the journal (could happen if
     // the DVC was computed when that header was corrupt/missing in the replica's journal, and the
@@ -1836,6 +1885,7 @@ test "Cluster: view_change: DVC header doesn't match current header in journal" 
 }
 
 test "Cluster: view_change: lagging replica repairs WAL using start_view from potential primary" {
+    try skip.skipIfExpensive(3);
     // It could be the case that the replica with the most advanced checkpoint has a corruption in
     // its grid. In this case, a replica on an older checkpoint can use a start_view message from
     // the most up-to-date replica to repair its WAL, advance its checkpoint, and become primary.
@@ -1941,6 +1991,7 @@ test "Cluster: view_change: lagging replica repairs WAL using start_view from po
 }
 
 test "Cluster: partitioned replica with higher view cannot lock out client" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -1985,6 +2036,7 @@ test "Cluster: partitioned replica with higher view cannot lock out client" {
 }
 
 test "Cluster: broken hash chain within the same view does not stall commit via repair" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
@@ -2033,6 +2085,7 @@ test "Cluster: broken hash chain within the same view does not stall commit via 
 }
 
 test "Cluster: backups prepare past prepare_max if the next checkpoint is durable" {
+    try skip.skipIfExpensive(3);
     const t = try TestContext.init(.{ .replica_count = 3 });
     defer t.deinit();
 
