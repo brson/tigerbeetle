@@ -8,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const stdx = @import("stdx");
+const skip = @import("../skip.zig");
 
 const assert = std.debug.assert;
 const log = std.log.scoped(.logged_process);
@@ -148,6 +149,7 @@ pub const main =
     }.main;
 
 test "LoggedProcess: starts and stops" {
+    try skip.skipIfExpensiveAlways();
     if (builtin.os.tag != .linux) {
         return error.SkipZigTest;
     }
