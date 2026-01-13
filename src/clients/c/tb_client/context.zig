@@ -399,9 +399,11 @@ pub fn ContextType(
                 self.packet_cancel(packet);
             }
 
+            // Close sockets first - this generates OPERATION_ABORTED completions.
+            self.client.deinit(self.gpa.allocator());
+            // Drain all completions including OPERATION_ABORTED from closed sockets.
             self.io.cancel_all();
             self.signal.deinit();
-            self.client.deinit(self.gpa.allocator());
             self.message_pool.deinit(self.gpa.allocator());
             self.io.deinit();
         }

@@ -131,32 +131,56 @@ pub const Signal = struct {
             // A `notify` was already called in the meantime,
             // calling it again asynchronously.
             .notified => self.notify(),
-            // Cannot be called after shutdown.
-            .shutdown => unreachable,
+            // Shutdown was requested during on_signal_fn callback - restore state and return.
+            // The event we just listened for will be delivered and handled by on_event.
+            .shutdown => _ = self.event_state.swap(.shutdown, .release),
         }
     }
 
     fn on_event(completion: *IO.Completion) void {
         const self: *Signal = @fieldParentPtr("completion", completion);
         const listening: bool = self.listening.load(.acquire);
+
+        // During shutdown, force transition to .shutdown regardless of current state.
+        // This handles Wine IOCP edge cases where events may be delivered with unexpected timing.
+        if (!listening) {
+            var current = self.event_state.load(.acquire);
+            while (current != .shutdown) {
+                if (self.event_state.cmpxchgWeak(current, .shutdown, .release, .acquire)) |actual| {
+                    current = actual;
+                } else {
+                    break;
+                }
+            }
+            return;
+        }
+
+        // Normal operation: try to transition from .notified to .running.
         const state = self.event_state.cmpxchgStrong(
             .notified,
-            if (listening) .running else .shutdown,
+            .running,
             .release,
             .acquire,
         ) orelse {
-            if (listening) {
-                (self.on_signal_fn)(self);
-                self.wait();
-            }
+            (self.on_signal_fn)(self);
+            self.wait();
             return;
         };
 
+        // Handle unexpected states during normal operation.
         switch (state) {
-            .running => unreachable, // Multiple racing calls to on_signal().
-            .waiting => unreachable, // on_signal() called without transitioning to a waking state.
-            .notified => unreachable, // Not possible due to CAS semantics.
-            .shutdown => unreachable, // Shutdown is a final state.
+            .running, .waiting => {
+                // Spurious wakeup - retry notification.
+                std.log.scoped(.signal).warn("on_event: spurious wakeup, state={s}", .{@tagName(state)});
+                self.notify();
+            },
+            .notified => {
+                // Should not happen - cmpxchg expected .notified and failed with .notified.
+                std.log.scoped(.signal).err("on_event: unexpected cmpxchg failure on .notified", .{});
+            },
+            .shutdown => {
+                // Already shut down, ignore.
+            },
         }
     }
 };

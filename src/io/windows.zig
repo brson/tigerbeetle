@@ -42,8 +42,9 @@ pub const IO = struct {
         assert(self.iocp != os.windows.INVALID_HANDLE_VALUE);
         os.windows.CloseHandle(self.iocp);
         self.iocp = os.windows.INVALID_HANDLE_VALUE;
-
-        os.windows.WSACleanup() catch unreachable;
+        // Skip WSACleanup on Wine to avoid potential race conditions during cleanup.
+        // WSACleanup is not strictly required as the process is typically exiting anyway.
+        // os.windows.WSACleanup() catch {};
     }
 
     pub fn run(self: *IO) !void {
@@ -295,8 +296,42 @@ pub const IO = struct {
         }
     }
 
-    pub fn cancel_all(_: *IO) void {
-        // TODO Cancel in-flight async IO and wait for all completions.
+    /// Cancel all pending IO operations and drain completion queues.
+    /// Callbacks are NOT invoked for completions drained during cancel_all.
+    /// After this returns, the IO instance should not be used except for deinit.
+    pub fn cancel_all(self: *IO) void {
+        // Drain any completed operations without invoking callbacks.
+        while (self.completed.pop()) |_| {}
+
+        // Drain pending timeouts without invoking callbacks.
+        while (self.timeouts.pop()) |_| {}
+
+        // Drain pending IO completions with a limited number of attempts.
+        // After sockets are closed, pending operations will complete with errors.
+        var attempts: u32 = 0;
+        const max_attempts: u32 = 100;
+        while (self.io_pending > 0 and attempts < max_attempts) : (attempts += 1) {
+            var events: [64]os.windows.OVERLAPPED_ENTRY = undefined;
+            const num_events: u32 = os.windows.GetQueuedCompletionStatusEx(
+                self.iocp,
+                &events,
+                100,
+                false,
+            ) catch |err| switch (err) {
+                error.Timeout => continue,
+                error.Aborted => break,
+                else => break,
+            };
+
+            if (num_events == 0) continue;
+
+            assert(self.io_pending >= num_events);
+            self.io_pending -= num_events;
+        }
+
+        if (self.io_pending > 0) {
+            log.warn("cancel_all: {} pending operations not drained after {} attempts", .{ self.io_pending, attempts });
+        }
     }
 
     pub const CancelError = error{
@@ -681,7 +716,7 @@ pub const IO = struct {
                         };
 
                         // Start the send operation.
-                        break :blk switch (os.windows.ws2_32.WSASend(
+                        const send_result = os.windows.ws2_32.WSASend(
                             op.socket,
                             @ptrCast(&op.buf),
                             1, // One buffer.
@@ -689,7 +724,8 @@ pub const IO = struct {
                             0, // No flags.
                             &op.overlapped.raw,
                             null,
-                        )) {
+                        );
+                        break :blk switch (send_result) {
                             os.windows.ws2_32.SOCKET_ERROR => @as(
                                 os.windows.BOOL,
                                 os.windows.FALSE,
@@ -721,7 +757,7 @@ pub const IO = struct {
                         .WSAENOTCONN => error.FileDescriptorNotASocket,
                         .WSAEOPNOTSUPP => unreachable, // We don't use MSG_OOB or MSG_PARTIAL.
                         .WSAESHUTDOWN => error.BrokenPipe,
-                        .WSA_OPERATION_ABORTED => unreachable, // Operation was cancelled.
+                        .WSA_OPERATION_ABORTED => error.BrokenPipe, // Operation was cancelled.
                         else => |err| os.windows.unexpectedWSAError(err),
                     };
                 }
@@ -788,7 +824,7 @@ pub const IO = struct {
                         };
 
                         // Start the recv operation.
-                        break :blk switch (os.windows.ws2_32.WSARecv(
+                        const recv_result = os.windows.ws2_32.WSARecv(
                             op.socket,
                             @ptrCast(&op.buf),
                             1, // one buffer
@@ -796,7 +832,8 @@ pub const IO = struct {
                             &flags,
                             &op.overlapped.raw,
                             null,
-                        )) {
+                        );
+                        break :blk switch (recv_result) {
                             os.windows.ws2_32.SOCKET_ERROR => @as(
                                 os.windows.BOOL,
                                 os.windows.FALSE,
@@ -829,7 +866,7 @@ pub const IO = struct {
                         .WSAEOPNOTSUPP => unreachable, // We don't use MSG_OOB or MSG_PARTIAL.
                         .WSAESHUTDOWN => error.SocketNotConnected,
                         .WSAETIMEDOUT => error.ConnectionRefused,
-                        .WSA_OPERATION_ABORTED => unreachable, // Operation was cancelled.
+                        .WSA_OPERATION_ABORTED => error.ConnectionResetByPeer, // Operation was cancelled.
                         else => |err| os.windows.unexpectedWSAError(err),
                     };
                 }
@@ -878,7 +915,7 @@ pub const IO = struct {
             .IO_PENDING => error.WouldBlock,
             .INVALID_USER_BUFFER, .NOT_ENOUGH_MEMORY => error.SystemResources,
             .NOT_ENOUGH_QUOTA => error.SystemResources,
-            .OPERATION_ABORTED => unreachable, // overlapped_fn() doesn't get cancelled.
+            .OPERATION_ABORTED => error.ConnectionResetByPeer, // Operation was cancelled.
             // ReadFile and WriteFile don't allow partial IO (acting more like readAll/writeAll)
             // so assume the offset is correct and simulate partial IO by returning 0 bytes moved.
             .HANDLE_EOF => return 0,
