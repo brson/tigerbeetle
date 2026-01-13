@@ -18,6 +18,7 @@ const TmpTigerBeetle = @import("./testing/tmp_tigerbeetle.zig");
 
 const stdx = @import("stdx");
 const ratio = stdx.PRNG.ratio;
+const skip = @import("./testing/skip.zig");
 
 const vortex_exe: []const u8 = @import("test_options").vortex_exe;
 const tigerbeetle: []const u8 = @import("test_options").tigerbeetle_exe;
@@ -353,6 +354,7 @@ test "help/version smoke" {
 }
 
 test "in-place upgrade" {
+    try skip.skipIfExpensiveAlways();
     // Smoke test that in-place upgrades work.
     //
     // Starts a cluster of three replicas using the previous release of TigerBeetle and then
@@ -421,6 +423,7 @@ test "in-place upgrade" {
 }
 
 test "recover smoke" {
+    try skip.skipIfExpensiveAlways();
     if (builtin.os.tag != .linux) {
         return error.SkipZigTest;
     }
@@ -451,6 +454,7 @@ test "recover smoke" {
 }
 
 test "vortex smoke" {
+    try skip.skipIfExpensiveAlways();
     if (builtin.os.tag != .linux) {
         return error.SkipZigTest;
     }
