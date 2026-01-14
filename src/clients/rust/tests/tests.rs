@@ -13,8 +13,14 @@ use futures::{Stream, StreamExt};
 
 use tigerbeetle as tb;
 
-// Singleton test database.
-// This can be a OnceLock in Rust 1.70+, and LazyLock in 1.80.
+/// Singleton test database.
+
+/// There is one test database shared between most tests, and reused
+/// between test runs. If the tests choose their IDs correctly there
+/// should never be any collisions, and that one database should work
+/// forever, just taking up a lot of space.
+///
+/// This can be a OnceLock in Rust 1.70+, and LazyLock in 1.80.
 fn get_test_db() -> &'static TestDb {
     struct OnceLock {
         once: Once,
@@ -32,7 +38,7 @@ fn get_test_db() -> &'static TestDb {
 
     unsafe {
         TEST_DB.once.call_once(|| {
-            *(&mut *TEST_DB.value.get()) = Some(TestDb::new().expect(error_msg));
+            *(&mut *TEST_DB.value.get()) = Some(TestDb::new("testdb").expect(error_msg));
         });
 
         (&*TEST_DB.value.get()).as_ref().expect(error_msg)
@@ -47,16 +53,12 @@ struct TestDb {
 }
 
 impl TestDb {
-    fn new() -> anyhow::Result<TestDb> {
+    fn new(name: &str) -> anyhow::Result<TestDb> {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
-        // NB: There is one test database shared between all tests, and reused
-        // between test runs. If the tests choose their IDs correctly there
-        // should never be any collisions, and that one database should work
-        // forever, just taking up a lot of space.
         let tigerbeetle_bin = format!("{manifest_dir}/../../../tigerbeetle{EXE_SUFFIX}");
         let work_dir = env!("CARGO_TARGET_TMPDIR");
-        let database_name = "0_0.testdb.tigerbeetle";
+        let database_name = format!("0_0.{name}.tigerbeetle");
 
         if !Path::new(&format!("{work_dir}/{database_name}")).try_exists()? {
             let mut cmd = Command::new(&tigerbeetle_bin);
