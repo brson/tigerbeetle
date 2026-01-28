@@ -2491,7 +2491,7 @@ public class IntegrationTest {
         }
 
         @Override
-        public synchronized void run() {
+        public void run() {
 
             final var transfers = new TransferBatch(1);
             transfers.add();
@@ -2523,6 +2523,7 @@ public class IntegrationTest {
         public final String tb_file;
         private final Process process;
         private String address;
+        private Thread stdoutDrainer;
 
         public Server(final String label) throws IOException, Exception, InterruptedException {
             this.tb_file = "./0_0.tigerbeetle." + label;
@@ -2553,9 +2554,21 @@ public class IntegrationTest {
                     .redirectOutput(Redirect.PIPE).redirectError(Redirect.INHERIT).start();
 
             final var stdout = process.getInputStream();
-            try (final var reader = new BufferedReader(new InputStreamReader(stdout))) {
-                this.address = reader.readLine().trim();
-            }
+            final var reader = new BufferedReader(new InputStreamReader(stdout));
+            this.address = reader.readLine().trim();
+
+            // Keep draining stdout to prevent the process from blocking on a full pipe.
+            this.stdoutDrainer = new Thread(() -> {
+                try {
+                    while (reader.readLine() != null) {
+                        // Discard output.
+                    }
+                } catch (IOException e) {
+                    // Process likely terminated; ignore.
+                }
+            });
+            this.stdoutDrainer.setDaemon(true);
+            this.stdoutDrainer.start();
         }
 
         public String getAddress() {
@@ -2571,6 +2584,13 @@ public class IntegrationTest {
             try {
                 if (process != null && process.isAlive()) {
                     process.destroy();
+                    if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                        process.destroyForcibly();
+                    }
+                }
+
+                if (stdoutDrainer != null) {
+                    stdoutDrainer.join(1000);
                 }
 
                 final var file = new File("./" + tb_file);
