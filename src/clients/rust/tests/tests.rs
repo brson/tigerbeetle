@@ -43,7 +43,8 @@ struct TestDb {
     port: u16,
     // Keep the server's stdin handle open as long as the test process is running,
     // at which point the server will terminate.
-    _server: Child,
+    // This is None when using an external server (TIGERBEETLE_SERVER_PORT).
+    _server: Option<Child>,
 }
 
 fn tigerbeetle_bin() -> String {
@@ -57,6 +58,16 @@ fn work_dir() -> &'static str {
 
 impl TestDb {
     fn new() -> anyhow::Result<TestDb> {
+        // If TIGERBEETLE_SERVER_PORT is set, use an external server on that port.
+        // This is useful for Wine testing where spawning and piping don't work reliably.
+        if let Ok(port_str) = env::var("TIGERBEETLE_SERVER_PORT") {
+            let port: u16 = port_str.parse()?;
+            return Ok(TestDb {
+                port,
+                _server: None,
+            });
+        }
+
         // NB: There is one test database shared between all tests, and reused
         // between test runs. If the tests choose their IDs correctly there
         // should never be any collisions, and that one database should work
@@ -126,7 +137,7 @@ impl TestDb {
 
         Ok(TestDb {
             port,
-            _server: server,
+            _server: Some(server),
         })
     }
 
@@ -1398,6 +1409,13 @@ fn example_lookup_transfers() -> Result<(), Box<dyn std::error::Error>> {
 // This is a copy of the Java testClientEvicted case.
 #[test]
 fn client_evicted() -> anyhow::Result<()> {
+    // This test needs its own server to avoid evicting the shared test client.
+    // Skip when using an external server (e.g. Wine testing).
+    if env::var("TIGERBEETLE_SERVER_PORT").is_ok() {
+        eprintln!("Skipping client_evicted: requires spawning a separate server");
+        return Ok(());
+    }
+
     const CLIENTS_MAX: usize = 64;
 
     // Use a separate server to avoid evicting the shared test client.

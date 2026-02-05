@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         ("x86_64", "linux", "gnu") => "x86_64-linux-gnu.2.27",
         ("x86_64", "linux", "musl") => "x86_64-linux-musl",
         ("x86_64", "macos", "") => "x86_64-macos",
-        ("x86_64", "windows", "msvc") => "x86_64-windows",
+        ("x86_64", "windows", "msvc") | ("x86_64", "windows", "gnu") => "x86_64-windows",
         (arch, os, abi) => todo!("Unsupported platform {arch}-{os}-{abi}"),
     };
 
@@ -60,6 +60,7 @@ fn main() -> anyhow::Result<()> {
         println!("cargo:rustc-link-lib=ntdll");
         // tb_client needs access to the random number generator in here.
         println!("cargo:rustc-link-lib=advapi32");
+        println!("cargo:rustc-link-lib=ws2_32");
     }
 
     Ok(())
