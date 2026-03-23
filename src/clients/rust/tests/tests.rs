@@ -1445,5 +1445,11 @@ fn client_evicted() -> Result<()> {
     let result = client_evict.lookup_accounts(&[tb::id()]);
     assert_eq!(result.err(), Some(tb::ClientClosed));
 
+    // After eviction, deinit returns ClientInvalid.
+    // That's right - it is not possible to destruct the client successfully after eviction.
+    let raw: *mut tb::tb_client::tb_client_t = unsafe { mem::transmute(client_evict) };
+    let status = unsafe { tb::tb_client::tb_client_deinit(raw) };
+    assert_eq!(status, tb::tb_client::TB_CLIENT_STATUS_TB_CLIENT_INVALID);
+
     Ok(())
 }
