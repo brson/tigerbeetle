@@ -411,7 +411,7 @@ pub fn ContextType(
             assert(self.pending.pop() == null);
             maybe(self.eviction_reason != null);
 
-            self.io.cancel_all();
+            assert(self.client.shutdown_complete());
             self.signal.deinit();
             self.client.deinit(self.gpa.allocator());
             self.message_pool.deinit(self.gpa.allocator());
@@ -460,6 +460,20 @@ pub fn ContextType(
             while (self.submitted.pop()) |packet| {
                 packet.assert_phase(.submitted);
                 self.packet_cancel(packet);
+            }
+
+            // Gracefully close every connection and drain outstanding IO before tearing the
+            // client down. This ensures no kernel operation can still reference memory
+            // freed by `client.deinit()` / `message_pool.deinit()`.
+            self.client.shutdown();
+            while (!self.client.shutdown_complete()) {
+                self.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms) catch |err| {
+                    log.err("{}: IO.run() failed during shutdown: {s}", .{
+                        self.client_id,
+                        @errorName(err),
+                    });
+                    @panic("IO.run() failed");
+                };
             }
 
             self.deinit();
