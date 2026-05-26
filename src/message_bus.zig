@@ -57,6 +57,11 @@ pub fn MessageBusType(comptime IO: type) type {
         connections_suspended: QueueType(Connection) = QueueType(Connection).init(.{
             .name = null,
         }),
+        /// Tracks the asynchronous shutdown sequence kicked off by `shutdown()`.
+        /// `running`: normal operation. `shutdown_pending`: all in-use connections have been
+        /// asked to terminate; we are waiting for their `io.close` completions to land.
+        /// `shutdown`: every connection has reached `.free`; safe to call `deinit`.
+        shutdown_state: enum { running, shutdown_pending, shutdown } = .running,
         resume_receive_next_tick: IO.Completion = undefined,
         resume_receive_submitted: bool = false,
 
@@ -186,12 +191,17 @@ pub fn MessageBusType(comptime IO: type) type {
 
         /// Begin a graceful shutdown of every active connection.
         ///
-        /// After this is called, the caller must continue to drive `io.run_for_ns()` until
-        /// `shutdown_complete()` returns true. Only then is it safe to call `deinit()` or
-        /// to tear down the underlying IO.
+        /// After this is called, the caller must continue to drive `io.run_for_ns()` and
+        /// poll `shutdown_complete()` until it returns true. Only then is it safe to call
+        /// `deinit()` or to tear down the underlying IO.
         ///
-        /// Idempotent: connections already terminating are left alone.
+        /// Idempotent: calling on a bus that is already `shutdown_pending` / `shutdown`
+        /// is a no-op.
         pub fn shutdown(bus: *MessageBus) void {
+            switch (bus.shutdown_state) {
+                .shutdown_pending, .shutdown => return,
+                .running => bus.shutdown_state = .shutdown_pending,
+            }
             for (bus.connections) |*connection| {
                 switch (connection.state) {
                     .free, .terminating => {},
@@ -205,13 +215,27 @@ pub fn MessageBusType(comptime IO: type) type {
             }
         }
 
-        /// True when every connection initiated by `shutdown()` has fully closed, so no
-        /// outstanding kernel operation references this bus's memory.
-        pub fn shutdown_complete(bus: *const MessageBus) bool {
-            return bus.connections_used == 0;
+        /// True when every connection initiated by `shutdown()` has fully closed.
+        /// Transitions the state from `shutdown_pending` to `shutdown` the first time all
+        /// connections reach `.free`, so that downstream invariants can be asserted.
+        pub fn shutdown_complete(bus: *MessageBus) bool {
+            switch (bus.shutdown_state) {
+                .running => return false,
+                .shutdown => return true,
+                .shutdown_pending => {
+                    if (bus.connections_used == 0) {
+                        bus.shutdown_state = .shutdown;
+                        return true;
+                    }
+                    return false;
+                },
+            }
         }
 
         pub fn deinit(bus: *MessageBus, allocator: std.mem.Allocator) void {
+            // If shutdown was begun it must have completed before deinit, otherwise
+            // freeing the connections array races with outstanding kernel IO.
+            assert(bus.shutdown_state != .shutdown_pending);
             bus.clients.deinit(allocator);
 
             if (bus.accept_fd) |fd| {

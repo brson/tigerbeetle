@@ -198,7 +198,7 @@ pub fn ClientType(
             self.message_bus.shutdown();
         }
 
-        pub fn shutdown_complete(self: *const Client) bool {
+        pub fn shutdown_complete(self: *Client) bool {
             return self.message_bus.shutdown_complete();
         }
 

@@ -1418,15 +1418,64 @@ fn client_evicted() -> Result<()> {
     let result = block_on(client_evict.lookup_accounts(&[tb::id()])?);
     assert_eq!(result, Err(tb::PacketStatus::ClientEvicted));
 
-    // After eviction, the client handle is invalidated. Subsequent
-    // submissions are rejected.
-    let result = client_evict.lookup_accounts(&[tb::id()]);
-    assert_eq!(result.err(), Some(tb::ClientClosed));
+    // After eviction the IO thread keeps running, so subsequent submissions are
+    // accepted at the call site and the futures resolve to `ClientEvicted`.
+    let result = block_on(client_evict.lookup_accounts(&[tb::id()])?);
+    assert_eq!(result, Err(tb::PacketStatus::ClientEvicted));
 
-    // After eviction, close completes with ClientClosed because the eviction
-    // callback nulls the context pointer that deinit also checks.
+    // `close` joins the IO thread cleanly (the eviction-triggered IO thread leak
+    // is fixed), so it completes with `Ok(())`.
     let result = block_on(client_evict.close());
-    assert_eq!(result, Err(tb::ClientClosed));
+    assert_eq!(result, Ok(()));
+
+    Ok(())
+}
+
+#[test]
+fn client_evicted_close_terminates() -> Result<()> {
+    // Regression: before the eviction-keeps-iothread-alive fix, `close()` after
+    // eviction returned immediately with `ClientClosed` and the IO thread was
+    // never joined. Now `close()` must actually drive shutdown to completion.
+    use std::time::{Duration, Instant};
+
+    const CLIENTS_MAX: usize = 64;
+
+    let _guard = DB_LOCK.write().unwrap();
+
+    let server = TestDb::new_development("client_evicted_close_terminates")?;
+    let address = server.address();
+
+    let client_evict = tb::Client::new(0, &address)?;
+    let _ = block_on(client_evict.lookup_accounts(&[tb::id()])?)?;
+
+    // Provoke eviction by exceeding the cluster's max client sessions.
+    let mut handles = Vec::new();
+    for _ in 0..CLIENTS_MAX {
+        let address = address.clone();
+        handles.push(std::thread::spawn(move || {
+            let client = tb::Client::new(0, &address).unwrap();
+            let _ = block_on(client.lookup_accounts(&[tb::id()]).unwrap()).unwrap();
+        }));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    // Confirm we're evicted.
+    let result = block_on(client_evict.lookup_accounts(&[tb::id()])?);
+    assert_eq!(result, Err(tb::PacketStatus::ClientEvicted));
+
+    // `close` must complete in bounded time: it joins the IO thread which has
+    // been kept alive after eviction.
+    let start = Instant::now();
+    let close_result = block_on(client_evict.close());
+    let elapsed = start.elapsed();
+    assert_eq!(close_result, Ok(()));
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "close took too long after eviction: {:?}",
+        elapsed,
+    );
 
     Ok(())
 }

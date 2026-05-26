@@ -428,6 +428,10 @@ pub fn ContextType(
         fn tick(self: *Context) void {
             if (self.eviction_reason == null) {
                 self.client.tick();
+            } else {
+                // Post-eviction: stop reconnecting and start tearing down connections.
+                // Idempotent: `MessageBus.shutdown` no-ops after the first call.
+                self.client.shutdown();
             }
         }
 
@@ -448,11 +452,17 @@ pub fn ContextType(
                 };
             }
 
-            self.cancel_request_inflight();
-
-            while (self.pending.pop()) |packet| {
-                packet.assert_phase(.pending);
-                self.packet_cancel(packet);
+            // On eviction, `client_eviction_callback` already drained the in-flight
+            // request and the pending queue; skip those here. (Re-cancelling the
+            // in-flight packet would dereference a freed pointer.)
+            if (self.eviction_reason == null) {
+                self.cancel_request_inflight();
+                while (self.pending.pop()) |packet| {
+                    packet.assert_phase(.pending);
+                    self.packet_cancel(packet);
+                }
+            } else {
+                assert(self.pending.count() == 0);
             }
 
             // The submitted queue is no longer accessible to user threads,
@@ -464,7 +474,8 @@ pub fn ContextType(
 
             // Gracefully close every connection and drain outstanding IO before tearing the
             // client down. This ensures no kernel operation can still reference memory
-            // freed by `client.deinit()` / `message_pool.deinit()`.
+            // freed by `client.deinit()` / `message_pool.deinit()`. Idempotent —
+            // the eviction path already called `client.shutdown()`.
             self.client.shutdown();
             while (!self.client.shutdown_complete()) {
                 self.io.run_for_ns(constants.tick_ms * std.time.ns_per_ms) catch |err| {
@@ -570,9 +581,10 @@ pub fn ContextType(
             maybe(batch.event_count == 0);
             maybe(batch.result_count_expected == 0);
 
-            // Avoid making a packet inflight by cancelling it if the client was shutdown.
-            if (self.signal.status() != .running) {
-                maybe(self.eviction_reason != null);
+            // Cancel rather than enqueue when the client is shutting down or evicted.
+            // Post-eviction the signal stays `.running` until user-thread `deinit`,
+            // so we must check `eviction_reason` explicitly.
+            if (self.signal.status() != .running or self.eviction_reason != null) {
                 self.packet_cancel(packet);
                 return;
             }
@@ -654,11 +666,10 @@ pub fn ContextType(
             assert(self.client.request_inflight == null);
             packet_list.assert_phase(.pending);
 
-            // On shutdown, cancel this packet as well as any others batched onto it.
-            if (self.signal.status() != .running) {
+            // On shutdown or eviction, cancel this packet and any others batched onto it.
+            if (self.signal.status() != .running or self.eviction_reason != null) {
                 return self.packet_cancel(packet_list);
             }
-            assert(self.eviction_reason == null);
 
             const message = self.client.get_message().build(.request);
             defer {
@@ -837,19 +848,30 @@ pub fn ContextType(
                 @intFromEnum(eviction.header.reason),
             });
 
-            // The client was evicted, clearing the interface context so no more
-            // requests can be submitted.
-            // In-flight requests fail with the eviction reason; subsequent ones fail
-            // with "shutdown".
-            self.interface.locker.lock();
-            defer self.interface.locker.unlock();
-
-            self.interface.context = .{ .ptr = null };
-
-            // Stops the IO thread, which then deinitializes the client before
-            // it exits (see `io_thread`).
+            // Record the eviction. Keep the IO thread running and the interface
+            // context valid so that the user thread's eventual `deinit` will join
+            // the IO thread normally (rather than returning ClientInvalid and
+            // leaking the thread).
+            //
+            // Subsequent submissions short-circuit with ClientEvicted via the
+            // eviction_reason checks in `packet_enqueue` / `packet_send`.
             self.eviction_reason = eviction.header.reason;
-            self.signal.stop();
+
+            // Fail the in-flight + pending packets immediately so callers see
+            // results without waiting for user-thread deinit. The submitted queue
+            // is still shared with user threads under the locker; it gets drained
+            // lazily by `signal_notify_callback`, and any leftover entries are
+            // drained by the io_thread cleanup phase.
+            //
+            // We deliberately do NOT call `client.shutdown()` here: this callback
+            // fires from inside `MessageBus.recv_buffer_drain`, and terminating the
+            // current connection would null its `recv_buffer` while the caller is
+            // still dereferencing it. The next tick in `io_thread` picks it up.
+            self.cancel_request_inflight();
+            while (self.pending.pop()) |packet| {
+                packet.assert_phase(.pending);
+                self.packet_cancel(packet);
+            }
         }
 
         fn client_result_callback(
