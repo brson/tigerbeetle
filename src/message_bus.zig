@@ -44,6 +44,9 @@ pub fn MessageBusType(comptime IO: type) type {
         /// The connection reserved for the currently in progress accept operation.
         /// This is non-null exactly when an accept operation is submitted.
         accept_connection: ?*Connection = null,
+        /// Set when accept() can't find a free slot. Cleared when a slot becomes
+        /// available. Drives tick_accept_reclaim to evict the LRU connection.
+        accept_blocked: bool = false,
 
         /// The callback to be called when a message is received.
         on_messages_callback: *const fn (message_bus: *MessageBus, buffer: *MessageBuffer) void,
@@ -59,6 +62,9 @@ pub fn MessageBusType(comptime IO: type) type {
         }),
         resume_receive_next_tick: IO.Completion = undefined,
         resume_receive_submitted: bool = false,
+
+        /// Monotonically increasing tick counter, bumped each tick().
+        tick_counter: u64 = 0,
 
         /// Map from replica index to the currently active connection for that replica, if any.
         /// The connection for the process replica if any will always be null.
@@ -289,8 +295,10 @@ pub fn MessageBusType(comptime IO: type) type {
 
         pub fn tick(bus: *MessageBus) void {
             assert(bus.process == .replica);
+            bus.tick_counter +%= 1;
             bus.tick_connect();
             bus.tick_accept(); // Only replicas accept connections from other replicas and clients.
+            bus.tick_accept_reclaim();
         }
 
         pub fn trace_gauge(bus: *MessageBus) void {
@@ -342,20 +350,65 @@ pub fn MessageBusType(comptime IO: type) type {
             bus.accept();
         }
 
+        /// When all connection slots are full and accept() couldn't proceed,
+        /// terminate the least-recently-active client connection to free a slot.
+        /// The incoming connection waits in the kernel backlog while the eviction
+        /// completes, then the next tick's accept() picks up the freed slot.
+        fn tick_accept_reclaim(bus: *MessageBus) void {
+            if (!bus.accept_blocked) return;
+
+            // If there is already a connection being shut down, wait for it.
+            for (bus.connections) |*connection| {
+                if (connection.state == .terminating) return;
+            }
+
+            // Find the client connection with the smallest last_active_tick.
+            // Skip .unknown connections — they haven't identified themselves yet.
+            var lru_connection: ?*Connection = null;
+            for (bus.connections) |*connection| {
+                if (connection.state != .connected) continue;
+                switch (connection.peer) {
+                    .client, .client_likely => {},
+                    .replica, .unknown => continue,
+                }
+                if (lru_connection) |lru| {
+                    if (connection.last_active_tick < lru.last_active_tick) {
+                        lru_connection = connection;
+                    }
+                } else {
+                    lru_connection = connection;
+                }
+            }
+
+            if (lru_connection) |connection| {
+                log.info("{}: tick_accept_reclaim: accept blocked, disconnecting LRU peer={}", .{
+                    bus.id,
+                    connection.peer,
+                });
+                bus.terminate(connection, .shutdown);
+            }
+        }
+
         fn accept(bus: *MessageBus) void {
             assert(bus.process == .replica);
             assert(bus.accept_fd != null);
 
             if (bus.accept_connection != null) return;
-            // All connections are currently in use, do nothing.
-            if (bus.connections_used == bus.connections.len) return;
-            assert(bus.connections_used < bus.connections.len);
+
+            // Wait for a free slot. If all slots are full, tick_accept_reclaim
+            // will evict the LRU connection to free one. The incoming connection
+            // waits in the kernel's TCP backlog until then.
             bus.accept_connection = for (bus.connections) |*connection| {
                 if (connection.state == .free) {
                     connection.state = .accepting;
                     break connection;
                 }
-            } else unreachable;
+            } else {
+                bus.accept_blocked = true;
+                return;
+            };
+            bus.accept_blocked = false;
+
             bus.io.accept(
                 *MessageBus,
                 bus,
@@ -384,6 +437,7 @@ pub fn MessageBusType(comptime IO: type) type {
             if (result) |fd| {
                 connection.state = .connected;
                 connection.fd = fd;
+                connection.last_active_tick = bus.tick_counter;
                 bus.connections_used += 1;
 
                 bus.assert_connection_initial_state(connection);
@@ -664,6 +718,7 @@ pub fn MessageBusType(comptime IO: type) type {
                 // bounded by the time it takes to ping, we can hear from a peer before we
                 // can send back to them.
                 .replica => {
+                    connection.last_active_tick = bus.tick_counter;
                     while (connection.recv_buffer.?.next_header()) |header| {
                         if (bus.recv_update_peer(connection, header.peer_type())) {
                             connection.recv_buffer.?.suspend_message(&header);
@@ -1237,6 +1292,8 @@ pub fn MessageBusType(comptime IO: type) type {
             send_progress: u32 = 0,
             /// The queue of messages to send to the client or replica peer.
             send_queue: SendQueue,
+            /// Tick at which this connection last received data.
+            last_active_tick: u64 = 0,
             /// For connections_suspended.
             link: QueueType(Connection).Link = .{},
         };
